@@ -1,0 +1,27 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+
+Name=G-TMCE
+Name[tr]=G-TMCE
+
+GenericName=MKV Creator and Extractor
+GenericName[tr]=MKV Oluşturma ve Parça Çıkarma Aracı
+
+Comment=Create MKV files with TMDB metadata and extract tracks, subtitles, chapters, and attachments
+Comment[tr]=TMDB verileriyle MKV oluşturur; parça, altyazı, chapter ve ekleri çıkarır
+
+Exec=g-tmce %F
+Icon=g-tmce
+Path=/opt/G-TMCE
+
+Terminal=false
+StartupNotify=true
+StartupWMClass=G-TMCE
+
+MimeType=video/x-matroska;application/x-matroska;video/webm;
+
+Categories=AudioVideo;Video;Utility;
+
+Keywords=G-TMCE;mkv;matroska;tmdb;metadata;extract;tracks;subtitles;chapters;attachments;
+Keywords[tr]=G-TMCE;mkv;matroska;tmdb;metadata;çıkar;parça;altyazı;chapter;ekler;
