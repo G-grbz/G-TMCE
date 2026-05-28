@@ -5159,8 +5159,8 @@ class MkvCreatorApp(tk.Tk):
         speed_values = [("auto", self.tr("speed_factor_auto"))] + [
             (key, self.tr(f"speed_factor_{key}")) for key in AUDIO_SPEED_FACTORS if key != "auto"
         ]
-        speed_label_to_key = {label: key for key, label in speed_values}
         speed_key_to_label = {key: label for key, label in speed_values}
+
         def update_volume_label(value: Any, variable: tk.DoubleVar, label_var: tk.StringVar) -> None:
             level = normalise_audio_volume_multiplier(value)
             if abs(normalise_audio_volume_multiplier(variable.get()) - level) > 0.001:
@@ -5217,6 +5217,7 @@ class MkvCreatorApp(tk.Tk):
                     "layout": layout_var,
                     "volume": volume_var,
                     "speed": speed_var,
+                    "speed_values": speed_values,
                     "defaults": defaults,
                 }
             )
@@ -5254,6 +5255,9 @@ class MkvCreatorApp(tk.Tk):
             delta = parse_seconds_delta(row["delta"].get())
             codec = row["codec"].get().strip().lower()
             speed_label = row["speed"].get().strip()
+            speed_label_to_key = {
+                label: key for key, label in row.get("speed_values", [("auto", self.tr("speed_factor_auto"))])
+            }
             speed_key = speed_label_to_key.get(speed_label, "auto")
             speed = AUDIO_SPEED_FACTORS.get(speed_key, 1.0)
             tasks.append(
