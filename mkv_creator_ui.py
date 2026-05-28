@@ -842,6 +842,16 @@ LANG_ALIASES = {
     "fij": "fj",
     "fj": "fj",
     "fijian": "fj",
+    "baq": "eu",
+    "eu": "eu",
+    "basque": "eu",
+    "glg": "gl",
+    "gl": "gl",
+    "galician": "gl",
+    "nob": "no",
+    "nb": "no",
+    "bokmal": "no",
+    "norwegianbokmal": "no",
 }
 
 AUDIO_SPEED_FACTORS = {
