@@ -457,7 +457,7 @@ The following settings are saved automatically:
 Location:
 
 ```text
-~/.config/mkv-creator-ui/settings.json
+~/.config/g-tmce/settings.json
 ```
 
 ---
