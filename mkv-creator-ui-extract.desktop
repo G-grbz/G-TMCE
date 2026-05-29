@@ -4,17 +4,31 @@ Type=Service
 Name=G-TMCE Extract
 Name[tr]=G-TMCE Extract
 
-Comment=Extract tracks, subtitles, chapters and attachments from MKV files
-Comment[tr]=MKV dosyalarından parça, altyazı, chapter ve ek çıkar
+Comment=Extract tracks, subtitles, chapters and attachments from media files
+Comment[tr]=Medya dosyalarından parça, altyazı, chapter ve ek çıkar
 
 ServiceTypes=KonqPopupMenu/Plugin
 X-KDE-ServiceTypes=KonqPopupMenu/Plugin
 X-KDE-Priority=TopLevel
 
-MimeType=video/x-matroska;application/x-matroska;video/webm;
+MimeType=application/octet-stream;video/*;
 
-Keywords=mkv;extract;subtitles;chapters;attachments;
-Keywords[tr]=mkv;çıkar;altyazı;chapter;ekler;
+Patterns=\
+*.mkv;\
+*.mk3d;\
+*.mka;\
+*.mks;\
+*.webm;\
+*.mp4;\
+*.m4v;\
+*.mov;\
+*.avi;\
+*.wmv;\
+*.mpg;\
+*.mpeg;\
+*.ts;\
+*.m2ts;\
+*.mts
 
 Icon=g-tmce
 
@@ -25,5 +39,4 @@ Name=Open with G-TMCE Extract
 Name[tr]=G-TMCE Extract ile Aç
 
 Icon=g-tmce
-
 Exec=g-tmce %F

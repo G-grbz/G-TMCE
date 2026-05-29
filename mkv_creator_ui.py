@@ -220,6 +220,7 @@ UI_TEXT = {
         "path_extract_folder": "Extraction folder",
         "dialog_template_title": "Select MKVToolNix config",
         "filetype_all": "All files",
+        "filetype_video": "Video files",
         "filetype_matroska": "Matroska video",
         "dialog_config_error": "Config error",
         "dialog_track_folder_title": "Select track folder",
@@ -281,7 +282,10 @@ UI_TEXT = {
         "log_mkv_items_found": "MKV items found: {count}",
         "error_scan_extract_first": "Scan the MKV first to list available items.",
         "log_mkvextract_command": "mkvextract command:",
+        "log_ffmpeg_extract_command": "ffmpeg extract command:",
         "error_mkvextract_exit": "mkvextract exited with error code: {code}",
+        "error_ffmpeg_extract_exit": "ffmpeg exited with error code: {code}",
+        "error_extract_non_matroska_metadata": "Attachments, chapters, and tags can only be extracted from Matroska/WebM files. Deselect them or use an MKV/WebM source.",
         "log_mkvextract_warnings": "mkvextract completed with warnings.",
         "log_tracks_extracted": "Tracks extracted: {path}",
         "log_folder_set_for_mux": "Track folder updated for muxing.",
@@ -423,6 +427,7 @@ UI_TEXT = {
         "path_extract_folder": "Çıkarma klasörü",
         "dialog_template_title": "MKVToolNix config seç",
         "filetype_all": "Tüm dosyalar",
+        "filetype_video": "Video dosyaları",
         "filetype_matroska": "Matroska video",
         "dialog_config_error": "Config hatası",
         "dialog_track_folder_title": "Parça klasörü seç",
@@ -484,7 +489,10 @@ UI_TEXT = {
         "log_mkv_items_found": "MKV parça sayısı: {count}",
         "error_scan_extract_first": "Önce MKV Tara ile parçaları listele.",
         "log_mkvextract_command": "mkvextract komutu:",
+        "log_ffmpeg_extract_command": "ffmpeg çıkarma komutu:",
         "error_mkvextract_exit": "mkvextract hata kodu ile bitti: {code}",
+        "error_ffmpeg_extract_exit": "ffmpeg hata kodu ile bitti: {code}",
+        "error_extract_non_matroska_metadata": "Ekler, chapter ve tag yalnızca Matroska/WebM dosyalarından çıkarılabilir. Bunları seçme veya MKV/WebM kaynak kullan.",
         "log_mkvextract_warnings": "mkvextract uyarılarla tamamlandı.",
         "log_tracks_extracted": "Parçalar çıkarıldı: {path}",
         "log_folder_set_for_mux": "Parça klasörü birleştirme için güncellendi.",
@@ -594,6 +602,16 @@ def run_dialog_command(args: list[str]) -> str:
     return (process.stdout or "").strip()
 
 
+def kdialog_filter_string(filetypes: tuple[tuple[str, str], ...]) -> str:
+    """Return a filter string in the format expected by KDE/kdialog."""
+    filters: list[str] = []
+    for label, pattern in filetypes:
+        clean_pattern = str(pattern or "*").strip() or "*"
+        clean_label = str(label or clean_pattern).strip() or clean_pattern
+        filters.append(f"{clean_pattern}|{clean_label}")
+    return "\n".join(filters)
+
+
 def native_open_file(
     title: str,
     initialdir: str | Path | None = None,
@@ -608,12 +626,7 @@ def native_open_file(
     if tool == "kdialog":
         args = ["kdialog", "--title", title, "--getopenfilename", initialdir_text]
         if filetypes:
-            patterns = []
-            for label, pattern in filetypes:
-                if pattern != "*":
-                    patterns.append(f"{label} ({pattern})")
-            if patterns:
-                args.append(" ".join(patterns))
+            args.append(kdialog_filter_string(filetypes))
         return run_dialog_command(args)
 
     if tool == "zenity":
@@ -671,12 +684,7 @@ def native_save_file(
     if tool == "kdialog":
         args = ["kdialog", "--title", title, "--getsavefilename", initialdir_text]
         if filetypes:
-            patterns = []
-            for label, pattern in filetypes:
-                if pattern != "*":
-                    patterns.append(f"{label} ({pattern})")
-            if patterns:
-                args.append(" ".join(patterns))
+            args.append(kdialog_filter_string(filetypes))
         path = run_dialog_command(args)
 
     elif tool == "zenity":
@@ -713,6 +721,37 @@ VIDEO_EXTENSIONS = {
     ".m2v",
     ".ivf",
 }
+VIDEO_CONTAINER_EXTENSIONS = {
+    ".mkv",
+    ".mk3d",
+    ".mka",
+    ".webm",
+    ".mp4",
+    ".m4v",
+    ".mov",
+    ".qt",
+    ".avi",
+    ".wmv",
+    ".asf",
+    ".ts",
+    ".m2ts",
+    ".mts",
+    ".m2t",
+    ".mpg",
+    ".mpeg",
+    ".mpe",
+    ".vob",
+    ".flv",
+    ".f4v",
+    ".ogv",
+    ".ogg",
+    ".rm",
+    ".rmvb",
+    ".divx",
+    ".xvid",
+}
+VIDEO_FILE_PATTERNS = " ".join(f"*{ext}" for ext in sorted(VIDEO_CONTAINER_EXTENSIONS))
+MATROSKA_EXTRACT_EXTENSIONS = {".mkv", ".mk3d", ".mka", ".webm"}
 AUDIO_EXTENSIONS = {
     ".aac",
     ".ac3",
@@ -1345,7 +1384,7 @@ def ffmpeg_asset_name() -> str:
 
     if system == "windows":
         if arch in {"x86_64", "amd64", "amd6464"}:
-            return "ffmpeg-master-latest-win64-gpl-shared.zip"
+            return "ffmpeg-master-latest-win64-gpl.zip"
         raise unsupported_third_party("FFmpeg")
 
     if system == "linux":
@@ -4424,15 +4463,15 @@ def track_output_extension(track: dict[str, Any]) -> str:
     track_type = str(track.get("type") or "")
 
     if track_type == "video":
-        if "AVC" in codec_id or "H.264" in codec or "H264" in codec:
+        if "AVC" in codec_id or "H.264" in codec_id or "H264" in codec_id or "h.264" in codec or "h264" in codec or "avc" in codec:
             return "h264"
-        if "HEVC" in codec_id or "H.265" in codec or "H265" in codec:
+        if "HEVC" in codec_id or "H.265" in codec_id or "H265" in codec_id or "h.265" in codec or "h265" in codec or "hevc" in codec:
             return "h265"
         if "AV1" in codec_id or "av1" in codec:
             return "ivf"
         if "VP9" in codec_id or "vp9" in codec:
             return "ivf"
-        if "MPEG2" in codec_id or "mpeg-2" in codec:
+        if "MPEG2" in codec_id or "MPEG-2" in codec_id or "mpeg-2" in codec or "mpeg2" in codec:
             return "m2v"
         return "video"
 
@@ -4570,10 +4609,11 @@ def make_numbered_track_name(
     return candidate
 
 
-def build_extract_items(identify_payload: dict[str, Any]) -> list[ExtractItem]:
+def build_extract_items(identify_payload: dict[str, Any], source: Path | None = None) -> list[ExtractItem]:
     items: list[ExtractItem] = []
     counters: dict[tuple[str, str], int] = {}
     used_names: set[str] = set()
+    use_mkvextract = source is None or source_uses_mkvextract(source)
 
     for track in identify_payload.get("tracks", []):
         track_id = int(track.get("id"))
@@ -4620,31 +4660,32 @@ def build_extract_items(identify_payload: dict[str, Any]) -> list[ExtractItem]:
             )
         )
 
-    for attachment in identify_payload.get("attachments", []):
-        attachment_id = int(attachment.get("id"))
-        properties = attachment.get("properties", {})
-        name = str(
-            properties.get("file_name")
-            or attachment.get("file_name")
-            or attachment.get("name")
-            or f"attachment.{attachment_id}.bin"
-        )
-        output_name = dedupe_plain_filename(name, used_names)
-        content_type = str(properties.get("content_type") or attachment.get("content_type") or "")
-        label = ui_text(
-            "extract_label_attachment",
-            attachment_id=attachment_id,
-            description=content_type or output_name,
-        )
-        items.append(
-            ExtractItem(
-                key=f"attachment:{attachment_id}",
-                kind="attachment",
-                item_id=attachment_id,
-                label=label,
-                output_name=output_name,
+    if use_mkvextract:
+        for attachment in identify_payload.get("attachments", []):
+            attachment_id = int(attachment.get("id"))
+            properties = attachment.get("properties", {})
+            name = str(
+                properties.get("file_name")
+                or attachment.get("file_name")
+                or attachment.get("name")
+                or f"attachment.{attachment_id}.bin"
             )
-        )
+            output_name = dedupe_plain_filename(name, used_names)
+            content_type = str(properties.get("content_type") or attachment.get("content_type") or "")
+            label = ui_text(
+                "extract_label_attachment",
+                attachment_id=attachment_id,
+                description=content_type or output_name,
+            )
+            items.append(
+                ExtractItem(
+                    key=f"attachment:{attachment_id}",
+                    kind="attachment",
+                    item_id=attachment_id,
+                    label=label,
+                    output_name=output_name,
+                )
+            )
 
     if identify_payload.get("chapters"):
         output_name = dedupe_plain_filename("chapters.txt", used_names)
@@ -4653,19 +4694,19 @@ def build_extract_items(identify_payload: dict[str, Any]) -> list[ExtractItem]:
                 key="chapters",
                 kind="chapters",
                 item_id=None,
-                label=ui_text("extract_label_chapters"),
+                label=ui_text("extract_label_chapters") if use_mkvextract else "Chapters | ffmetadata",
                 output_name=output_name,
             )
         )
 
     if identify_payload.get("global_tags") or identify_payload.get("track_tags"):
-        output_name = dedupe_plain_filename("tags.xml", used_names)
+        output_name = dedupe_plain_filename("tags.xml" if use_mkvextract else "metadata.txt", used_names)
         items.append(
             ExtractItem(
                 key="tags",
                 kind="tags",
                 item_id=None,
-                label=ui_text("extract_label_tags"),
+                label=ui_text("extract_label_tags") if use_mkvextract else "Metadata | ffmetadata",
                 output_name=output_name,
             )
         )
@@ -4723,6 +4764,154 @@ def build_mkvextract_args(
             args.extend(["tags", str(output_dir / item.output_name)])
 
     return args
+
+
+def source_uses_mkvextract(source: Path) -> bool:
+    return source.suffix.lower() in MATROSKA_EXTRACT_EXTENSIONS
+
+
+def ffmpeg_extract_extension(item: ExtractItem) -> str:
+    """Return a real filename extension that ffmpeg can infer as an output format."""
+    ext = item.extension.lower().lstrip(".")
+    if ext and ext not in {"video", "audio", "track", "bin"}:
+        return ext
+
+    label = item.label.lower()
+    output = item.output_name.lower()
+    probe = f"{label} {output}"
+
+    if ext == "video" or "| video |" in probe:
+        if "avc" in probe or "h.264" in probe or "h264" in probe:
+            return "h264"
+        if "hevc" in probe or "h.265" in probe or "h265" in probe:
+            return "h265"
+        if "mpeg-2" in probe or "mpeg2" in probe:
+            return "m2v"
+        if "av1" in probe or "vp9" in probe:
+            return "mkv"
+        return "mkv"
+
+    if ext == "audio" or "| audio |" in probe:
+        if "aac" in probe:
+            return "aac"
+        if "e-ac-3" in probe or "eac3" in probe:
+            return "eac3"
+        if "ac-3" in probe or "ac3" in probe:
+            return "ac3"
+        if "dts" in probe:
+            return "dts"
+        if "flac" in probe:
+            return "flac"
+        if "opus" in probe:
+            return "opus"
+        if "mp3" in probe:
+            return "mp3"
+        if "pcm" in probe or "wav" in probe:
+            return "wav"
+        return "mka"
+
+    return ext or "bin"
+
+
+def ffmpeg_extract_output_path(output_dir: Path, item: ExtractItem, used_paths: set[str]) -> Path:
+    extension = ffmpeg_extract_extension(item)
+    original = Path(item.output_name)
+    stem = original.stem or "track"
+
+    if original.suffix.lower().lstrip(".") == extension:
+        candidate = output_dir / original.name
+    else:
+        candidate = output_dir / f"{stem}.{extension}"
+
+    counter = 2
+    while str(candidate).lower() in used_paths:
+        candidate = output_dir / f"{stem}.{counter}.{extension}"
+        counter += 1
+    used_paths.add(str(candidate).lower())
+    return candidate
+
+
+def ffmpeg_video_bsf_for_extension(extension: str) -> str:
+    ext = extension.lower().lstrip(".")
+    if ext == "h264":
+        return "h264_mp4toannexb"
+    if ext in {"h265", "hevc"}:
+        return "hevc_mp4toannexb"
+    return ""
+
+
+def build_ffmpeg_extract_args(
+    source: Path,
+    output_dir: Path,
+    items: list[ExtractItem],
+) -> list[str]:
+    ffmpeg = ffmpeg_path()
+    selected = [item for item in items if item.selected]
+    if not selected:
+        raise UserVisibleError(ui_text("error_extract_none_selected"))
+
+    unsupported_items = [item for item in selected if item.kind not in {"track", "chapters", "tags"}]
+    if unsupported_items:
+        raise UserVisibleError(ui_text("error_extract_non_matroska_metadata"))
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    args = [ffmpeg, "-hide_banner", "-y", "-i", str(source)]
+
+    used_paths: set[str] = set()
+    for item in selected:
+        if item.kind != "track" or item.item_id is None:
+            continue
+        output_path = ffmpeg_extract_output_path(output_dir, item, used_paths)
+        output_extension = output_path.suffix.lower().lstrip(".")
+        args.extend(["-map", f"0:{item.item_id}", "-c", "copy"])
+        bsf = ffmpeg_video_bsf_for_extension(output_extension)
+        if bsf:
+            args.extend(["-bsf:v", bsf])
+        args.append(str(output_path))
+
+    for item in selected:
+        if item.kind == "chapters":
+            output_path = output_dir / item.output_name
+            args.extend([
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "0",
+                "-f",
+                "ffmetadata",
+                str(output_path),
+            ])
+        elif item.kind == "tags":
+            output_path = output_dir / item.output_name
+            args.extend([
+                "-map_metadata",
+                "0",
+                "-map_chapters",
+                "-1",
+                "-f",
+                "ffmetadata",
+                str(output_path),
+            ])
+
+    return args
+
+
+def build_extract_command(
+    source: Path,
+    output_dir: Path,
+    items: list[ExtractItem],
+) -> tuple[list[str], str, str]:
+    if source_uses_mkvextract(source):
+        return (
+            build_mkvextract_args(source, output_dir, items),
+            "log_mkvextract_command",
+            "error_mkvextract_exit",
+        )
+    return (
+        build_ffmpeg_extract_args(source, output_dir, items),
+        "log_ffmpeg_extract_command",
+        "error_ffmpeg_extract_exit",
+    )
 
 
 class MkvCreatorApp(tk.Tk):
@@ -5564,22 +5753,21 @@ class MkvCreatorApp(tk.Tk):
 
     def browse_extract_source(self) -> None:
         initial_dir = self.extract_source_initial_dir()
+        video_filetypes = (
+            (self.tr("filetype_video"), VIDEO_FILE_PATTERNS),
+            (self.tr("filetype_matroska"), "*.mkv *.mk3d *.mka *.webm"),
+            (self.tr("filetype_all"), "*"),
+        )
         path = native_open_file(
             title=self.tr("dialog_source_mkv_title"),
             initialdir=initial_dir,
-            filetypes=(
-                (self.tr("filetype_matroska"), "*.mkv"),
-                (self.tr("filetype_all"), "*"),
-            ),
+            filetypes=video_filetypes,
         )
         if path is None:
             path = filedialog.askopenfilename(
                 title=self.tr("dialog_source_mkv_title"),
                 initialdir=initial_dir,
-                filetypes=(
-                    (self.tr("filetype_matroska"), "*.mkv"),
-                    (self.tr("filetype_all"), "*"),
-                ),
+                filetypes=video_filetypes,
             )
 
         if not path:
@@ -6585,7 +6773,7 @@ class MkvCreatorApp(tk.Tk):
 
         def work() -> None:
             payload = identify_mkv(source)
-            items = build_extract_items(payload)
+            items = build_extract_items(payload, source)
             self.log_queue.put(("set_extract_items", items))
             self.log_queue.put(("set_extract_dir", str(output_dir)))
             fps = first_video_fps_from_items(items)
@@ -6627,8 +6815,8 @@ class MkvCreatorApp(tk.Tk):
             return
 
         def work() -> None:
-            args = build_mkvextract_args(source, output_dir, items)
-            self.queue_log(self.tr("log_mkvextract_command"))
+            args, command_log_key, exit_error_key = build_extract_command(source, output_dir, items)
+            self.queue_log(self.tr(command_log_key))
             self.queue_log(command_preview(args))
             process = subprocess.Popen(
                 args,
@@ -6645,7 +6833,7 @@ class MkvCreatorApp(tk.Tk):
                 self.queue_log(line.rstrip())
             return_code = process.wait()
             if return_code > 1:
-                raise UserVisibleError(ui_text("error_mkvextract_exit", code=return_code))
+                raise UserVisibleError(ui_text(exit_error_key, code=return_code))
             if return_code == 1:
                 self.queue_log(self.tr("log_mkvextract_warnings"))
 

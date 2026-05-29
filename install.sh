@@ -302,7 +302,24 @@ StartupWMClass=G-TMCE
 Terminal=false
 StartupNotify=true
 
-MimeType=video/x-matroska;application/x-matroska;video/webm;
+MimeType=application/octet-stream;video/*;
+
+Patterns=\
+*.mkv;\
+*.mk3d;\
+*.mka;\
+*.mks;\
+*.webm;\
+*.mp4;\
+*.m4v;\
+*.mov;\
+*.avi;\
+*.wmv;\
+*.mpg;\
+*.mpeg;\
+*.ts;\
+*.m2ts;\
+*.mts
 
 Categories=AudioVideo;Video;Utility;
 
@@ -329,7 +346,24 @@ Name[tr]=G-TMCE Extract
 Comment=Extract tracks, subtitles, chapters, and attachments from MKV files
 Comment[tr]=MKV dosyalarından parça, altyazı, chapter ve ekleri çıkarır
 
-MimeType=video/x-matroska;application/x-matroska;video/webm;
+MimeType=application/octet-stream;video/*;
+
+Patterns=\
+*.mkv;\
+*.mk3d;\
+*.mka;\
+*.mks;\
+*.webm;\
+*.mp4;\
+*.m4v;\
+*.mov;\
+*.avi;\
+*.wmv;\
+*.mpg;\
+*.mpeg;\
+*.ts;\
+*.m2ts;\
+*.mts
 
 ServiceTypes=KonqPopupMenu/Plugin
 X-KDE-ServiceTypes=KonqPopupMenu/Plugin
