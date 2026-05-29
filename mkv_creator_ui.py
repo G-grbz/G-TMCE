@@ -16,10 +16,12 @@ import subprocess
 import sys
 import tarfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -37,24 +39,52 @@ except ImportError:
     ImageTk = None
 
 
-APP_DIR = Path(__file__).resolve().parent
-DEFAULT_TEMPLATE = APP_DIR / "mkv.mtxcfg"
+def app_runtime_dir() -> Path:
+    """Return a writable app folder."""
+    if getattr(sys, "frozen", False):
+        appimage_path = os.environ.get("APPIMAGE")
+        if appimage_path:
+            return Path(appimage_path).resolve().parent
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def bundled_resource_path(name: str) -> Path:
+    """Prefer a file beside the EXE/script, fall back to PyInstaller bundle data."""
+    external = APP_DIR / name
+    if external.exists():
+        return external
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        bundled = Path(bundle_dir) / name
+        if bundled.exists():
+            return bundled
+    return external
+
+
+APP_DIR = app_runtime_dir()
+DEFAULT_TEMPLATE = bundled_resource_path("mkv.mtxcfg")
 APP_NAME = "G-TMCE"
-LOGO_PATH = APP_DIR / "logo.png"
-SETTINGS_PATH = (
-    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    / "mkv-creator-ui"
-    / "settings.json"
-)
+LOGO_PATH = bundled_resource_path("logo.png")
+def app_config_dir() -> Path:
+    """Return the per-user config directory without changing the Linux path layout."""
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        return base / "g-tmce"
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "g-tmce"
+
+
+SETTINGS_PATH = app_config_dir() / "settings.json"
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/original"
-THIRD_PARTY_DIR = APP_DIR / "3rdParty"
+THIRD_PARTY_DIR = app_config_dir() / "3rdParty"
 THIRD_PARTY_BIN_DIR = THIRD_PARTY_DIR / "bin"
 THIRD_PARTY_DOWNLOADS_DIR = THIRD_PARTY_DIR / ".downloads"
 THIRD_PARTY_MKVTOOLNIX_APPDIR = THIRD_PARTY_BIN_DIR / "mkvtoolnix"
 THIRD_PARTY_MKVTOOLNIX_STAGING_DIR = THIRD_PARTY_DIR / ".mkvtoolnix-new"
 THIRD_PARTY_STATE_PATH = THIRD_PARTY_DIR / "installed.json"
 MKVTOOLNIX_APPIMAGE_INDEX_URL = "https://mkvtoolnix.download/appimage/"
+MKVTOOLNIX_DOWNLOADS_URL = "https://mkvtoolnix.download/downloads.html"
 FFMPEG_RELEASE_API_URL = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
 THIRD_PARTY_USER_AGENT = f"{APP_NAME}/1.0 Python/{sys.version_info.major}.{sys.version_info.minor}"
 
@@ -145,6 +175,9 @@ UI_TEXT = {
         "button_update_third_party": "Update Tools",
         "label_image_language": "Artwork language",
         "label_tag_language": "Tag language",
+        "label_tmdb_media_type": "TMDB type",
+        "media_type_movie": "Movie",
+        "media_type_tv": "TV",
         "button_find_id": "Find ID",
         "label_mkv_title": "MKV title",
         "label_default_tracks": "Default tracks",
@@ -180,6 +213,7 @@ UI_TEXT = {
         "button_download_assets": "Download Artwork/Tags",
         "button_write_config": "Write Config",
         "button_create_mkv": "Create MKV",
+        "button_cancel_job": "Cancel Job",
         "button_show_log": "Show Log",
         "section_extract": "MKV Extract",
         "path_source_mkv": "Source MKV",
@@ -202,7 +236,7 @@ UI_TEXT = {
         "error_track_folder_not_selected": "Track folder is not selected.",
         "error_track_folder_not_found": "Track folder not found: {path}",
         "log_output_default_used": "Output path was empty; using the default: {path}",
-        "error_tmdb_media_type": "TMDB type must be movie or tv.",
+        "error_tmdb_media_type": "TMDB type must be Movie or TV.",
         "error_tmdb_api_empty": "TMDB API key is required.",
         "error_tmdb_id_empty": "TMDB ID is required.",
         "error_tmdb_id_numeric": "TMDB ID must be numeric.",
@@ -228,6 +262,8 @@ UI_TEXT = {
         "log_mkvmerge_warnings": "mkvmerge completed with warnings.",
         "log_mkv_created": "MKV created: {path}",
         "status_creating_mkv": "Creating MKV...",
+        "status_cancelling": "Cancelling...",
+        "log_operation_cancelled": "Operation cancelled.",
         "button_scan_mkv": "Scan MKV",
         "button_toggle_selection": "Toggle Selection",
         "button_select_all": "Select All",
@@ -342,6 +378,9 @@ UI_TEXT = {
         "button_update_third_party": "Araçları Güncelle",
         "label_image_language": "Görsel dili",
         "label_tag_language": "Tag dili",
+        "label_tmdb_media_type": "TMDB türü",
+        "media_type_movie": "Film",
+        "media_type_tv": "Dizi",
         "button_find_id": "ID Bul",
         "label_mkv_title": "MKV başlığı",
         "label_default_tracks": "Varsayılan iz",
@@ -377,6 +416,7 @@ UI_TEXT = {
         "button_download_assets": "Görsel/Tag İndir",
         "button_write_config": "Config Yaz",
         "button_create_mkv": "MKV Oluştur",
+        "button_cancel_job": "İşi İptal Et",
         "button_show_log": "Günlüğü Göster",
         "section_extract": "MKV Extract",
         "path_source_mkv": "Kaynak MKV",
@@ -399,7 +439,7 @@ UI_TEXT = {
         "error_track_folder_not_selected": "Parça klasörü seçilmedi.",
         "error_track_folder_not_found": "Parça klasörü bulunamadı: {path}",
         "log_output_default_used": "Çıktı yolu boştu, varsayılan kullanılıyor: {path}",
-        "error_tmdb_media_type": "TMDB türü movie veya tv olmalı.",
+        "error_tmdb_media_type": "TMDB türü Film veya Dizi olmalı.",
         "error_tmdb_api_empty": "TMDB API key boş.",
         "error_tmdb_id_empty": "TMDB ID boş.",
         "error_tmdb_id_numeric": "TMDB ID sayısal olmalı.",
@@ -425,6 +465,8 @@ UI_TEXT = {
         "log_mkvmerge_warnings": "mkvmerge uyarılarla tamamlandı.",
         "log_mkv_created": "MKV oluşturuldu: {path}",
         "status_creating_mkv": "MKV oluşturuluyor...",
+        "status_cancelling": "İptal ediliyor...",
+        "log_operation_cancelled": "İş iptal edildi.",
         "button_scan_mkv": "MKV Tara",
         "button_toggle_selection": "Seçimi Değiştir",
         "button_select_all": "Tümünü Seç",
@@ -491,6 +533,175 @@ def ui_text(key: str, **values: Any) -> str:
     if template is None:
         template = UI_TEXT[DEFAULT_UI_LANGUAGE].get(key, key)
     return template.format(**values) if values else template
+
+
+TMDB_MEDIA_TYPES = ("movie", "tv")
+
+
+def normalise_tmdb_media_type(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in TMDB_MEDIA_TYPES:
+        return raw
+    return "movie"
+
+def native_file_dialog_available() -> str | None:
+    """Return preferred native Linux file dialog command."""
+    if os.name != "posix":
+        return None
+
+    desktop = (
+        os.environ.get("XDG_CURRENT_DESKTOP", "")
+        + " "
+        + os.environ.get("DESKTOP_SESSION", "")
+    ).lower()
+
+    if "kde" in desktop and shutil.which("kdialog"):
+        return "kdialog"
+
+    if shutil.which("zenity"):
+        return "zenity"
+
+    if shutil.which("kdialog"):
+        return "kdialog"
+
+    return None
+
+
+def dialog_initial_dir(value: str | Path | None) -> str:
+    path = Path(value).expanduser() if value else Path.home()
+    if path.is_file():
+        path = path.parent
+    if not path.exists():
+        path = Path.home()
+    return str(path)
+
+
+def run_dialog_command(args: list[str]) -> str:
+    try:
+        process = subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+
+    if process.returncode != 0:
+        return ""
+
+    return (process.stdout or "").strip()
+
+
+def native_open_file(
+    title: str,
+    initialdir: str | Path | None = None,
+    filetypes: tuple[tuple[str, str], ...] = (),
+) -> str | None:
+    tool = native_file_dialog_available()
+    if tool is None:
+        return None
+
+    initialdir_text = dialog_initial_dir(initialdir)
+
+    if tool == "kdialog":
+        args = ["kdialog", "--title", title, "--getopenfilename", initialdir_text]
+        if filetypes:
+            patterns = []
+            for label, pattern in filetypes:
+                if pattern != "*":
+                    patterns.append(f"{label} ({pattern})")
+            if patterns:
+                args.append(" ".join(patterns))
+        return run_dialog_command(args)
+
+    if tool == "zenity":
+        args = ["zenity", "--file-selection", "--title", title, "--filename", initialdir_text + "/"]
+        for label, pattern in filetypes:
+            if pattern != "*":
+                args.extend(["--file-filter", f"{label} | {pattern}"])
+        return run_dialog_command(args)
+
+    return ""
+
+
+def native_select_dir(title: str, initialdir: str | Path | None = None) -> str | None:
+    tool = native_file_dialog_available()
+    if tool is None:
+        return None
+
+    initialdir_text = dialog_initial_dir(initialdir)
+
+    if tool == "kdialog":
+        return run_dialog_command([
+            "kdialog",
+            "--title",
+            title,
+            "--getexistingdirectory",
+            initialdir_text,
+        ])
+
+    if tool == "zenity":
+        return run_dialog_command([
+            "zenity",
+            "--file-selection",
+            "--directory",
+            "--title",
+            title,
+            "--filename",
+            initialdir_text + "/",
+        ])
+
+    return ""
+
+
+def native_save_file(
+    title: str,
+    initialdir: str | Path | None = None,
+    defaultextension: str = "",
+    filetypes: tuple[tuple[str, str], ...] = (),
+) -> str | None:
+    tool = native_file_dialog_available()
+    if tool is None:
+        return None
+
+    initialdir_text = dialog_initial_dir(initialdir)
+
+    if tool == "kdialog":
+        args = ["kdialog", "--title", title, "--getsavefilename", initialdir_text]
+        if filetypes:
+            patterns = []
+            for label, pattern in filetypes:
+                if pattern != "*":
+                    patterns.append(f"{label} ({pattern})")
+            if patterns:
+                args.append(" ".join(patterns))
+        path = run_dialog_command(args)
+
+    elif tool == "zenity":
+        args = [
+            "zenity",
+            "--file-selection",
+            "--save",
+            "--confirm-overwrite",
+            "--title",
+            title,
+            "--filename",
+            initialdir_text + "/",
+        ]
+        for label, pattern in filetypes:
+            if pattern != "*":
+                args.extend(["--file-filter", f"{label} | {pattern}"])
+        path = run_dialog_command(args)
+
+    else:
+        return None
+
+    if path and defaultextension and not Path(path).suffix:
+        path += defaultextension
+
+    return path
 
 SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt", ".sup", ".sub"}
 VIDEO_EXTENSIONS = {
@@ -871,6 +1082,10 @@ class UserVisibleError(RuntimeError):
     """An expected problem that should be shown without a traceback."""
 
 
+class OperationCancelled(UserVisibleError):
+    """Raised when the user cancels the current background operation."""
+
+
 @dataclass
 class TrackItem:
     entry: dict[str, Any]
@@ -988,10 +1203,10 @@ THIRD_PARTY_GROUP_TOOLS = {
     "ffmpeg": ("ffmpeg", "ffprobe"),
 }
 THIRD_PARTY_EXECUTABLE_NAMES = {
-    "mkvmerge": "mkvmerge",
-    "mkvextract": "mkvextract",
-    "ffmpeg": "ffmpeg",
-    "ffprobe": "ffprobe",
+    "mkvmerge": "mkvmerge.exe" if os.name == "nt" else "mkvmerge",
+    "mkvextract": "mkvextract.exe" if os.name == "nt" else "mkvextract",
+    "ffmpeg": "ffmpeg.exe" if os.name == "nt" else "ffmpeg",
+    "ffprobe": "ffprobe.exe" if os.name == "nt" else "ffprobe",
 }
 THIRD_PARTY_READY_GROUPS: set[str] = set()
 THIRD_PARTY_LOCK = threading.Lock()
@@ -1056,48 +1271,91 @@ def unsupported_third_party(name: str) -> UserVisibleError:
 
 
 def latest_mkvtoolnix_release() -> dict[str, str]:
-    if platform_name() != "linux" or platform_arch() not in {"x86_64", "amd64"}:
-        raise unsupported_third_party("MKVToolNix")
+    system = platform_name()
+    arch = platform_arch()
 
-    try:
-        html = read_third_party_text(MKVTOOLNIX_APPIMAGE_INDEX_URL)
-    except (OSError, urllib.error.URLError, TimeoutError) as exc:
-        raise UserVisibleError(
-            ui_text("error_third_party_latest_failed", name="MKVToolNix", reason=error_reason(exc))
-        ) from exc
+    if system == "linux":
+        if arch not in {"x86_64", "amd64"}:
+            raise unsupported_third_party("MKVToolNix")
 
-    releases: dict[str, str] = {}
-    pattern = r"(MKVToolNix_GUI-([0-9]+(?:\.[0-9]+){1,2})-x86_64\.AppImage)(?!\.zsync)"
-    for filename, version in re.findall(pattern, html):
-        releases[version] = filename
-    if not releases:
-        raise UserVisibleError(
-            ui_text(
-                "error_third_party_latest_failed",
-                name="MKVToolNix",
-                reason="no AppImage asset found",
+        try:
+            html = read_third_party_text(MKVTOOLNIX_APPIMAGE_INDEX_URL)
+        except (OSError, urllib.error.URLError, TimeoutError) as exc:
+            raise UserVisibleError(
+                ui_text("error_third_party_latest_failed", name="MKVToolNix", reason=error_reason(exc))
+            ) from exc
+
+        releases: dict[str, str] = {}
+        pattern = r"(MKVToolNix_GUI-([0-9]+(?:\.[0-9]+){1,2})-x86_64\.AppImage)(?!\.zsync)"
+        for filename, version in re.findall(pattern, html):
+            releases[version] = filename
+        if not releases:
+            raise UserVisibleError(
+                ui_text(
+                    "error_third_party_latest_failed",
+                    name="MKVToolNix",
+                    reason="no AppImage asset found",
+                )
             )
-        )
 
-    version = max(releases, key=version_key)
-    filename = releases[version]
-    return {
-        "version": version,
-        "asset_name": filename,
-        "download_url": urllib.parse.urljoin(MKVTOOLNIX_APPIMAGE_INDEX_URL, filename),
-    }
+        version = max(releases, key=version_key)
+        filename = releases[version]
+        return {
+            "version": version,
+            "asset_name": filename,
+            "download_url": urllib.parse.urljoin(MKVTOOLNIX_APPIMAGE_INDEX_URL, filename),
+        }
 
+    if system == "windows":
+        if arch not in {"x86_64", "amd64", "amd6464"}:
+            raise unsupported_third_party("MKVToolNix")
+
+        try:
+            html = read_third_party_text(MKVTOOLNIX_DOWNLOADS_URL)
+        except (OSError, urllib.error.URLError, TimeoutError) as exc:
+            raise UserVisibleError(
+                ui_text("error_third_party_latest_failed", name="MKVToolNix", reason=error_reason(exc))
+            ) from exc
+
+        version_match = re.search(r"current version\s+v?([0-9]+(?:\.[0-9]+){1,2})", html, re.IGNORECASE)
+        if not version_match:
+            version_match = re.search(r"/windows/releases/([0-9]+(?:\.[0-9]+){1,2})/", html, re.IGNORECASE)
+        if not version_match:
+            raise UserVisibleError(
+                ui_text(
+                    "error_third_party_latest_failed",
+                    name="MKVToolNix",
+                    reason="no Windows release version found",
+                )
+            )
+
+        version = version_match.group(1)
+        filename = f"mkvtoolnix-64-bit-{version}.zip"
+        return {
+            "version": version,
+            "asset_name": filename,
+            "download_url": f"https://mkvtoolnix.download/windows/releases/{version}/{filename}",
+        }
+
+    raise unsupported_third_party("MKVToolNix")
 
 def ffmpeg_asset_name() -> str:
-    if platform_name() != "linux":
-        raise unsupported_third_party("FFmpeg")
+    system = platform_name()
     arch = platform_arch()
-    if arch in {"x86_64", "amd64"}:
-        return "ffmpeg-master-latest-linux64-gpl.tar.xz"
-    if arch in {"aarch64", "arm64"}:
-        return "ffmpeg-master-latest-linuxarm64-gpl.tar.xz"
-    raise unsupported_third_party("FFmpeg")
 
+    if system == "windows":
+        if arch in {"x86_64", "amd64", "amd6464"}:
+            return "ffmpeg-master-latest-win64-gpl-shared.zip"
+        raise unsupported_third_party("FFmpeg")
+
+    if system == "linux":
+        if arch in {"x86_64", "amd64"}:
+            return "ffmpeg-master-latest-linux64-gpl.tar.xz"
+        if arch in {"aarch64", "arm64"}:
+            return "ffmpeg-master-latest-linuxarm64-gpl.tar.xz"
+        raise unsupported_third_party("FFmpeg")
+
+    raise unsupported_third_party("FFmpeg")
 
 def latest_ffmpeg_release() -> dict[str, str]:
     asset_name = ffmpeg_asset_name()
@@ -1193,6 +1451,8 @@ def make_fresh_directory(path: Path) -> None:
 
 
 def mark_executable(path: Path) -> None:
+    if os.name == "nt":
+        return
     path.chmod(path.stat().st_mode | 0o755)
 
 
@@ -1232,7 +1492,7 @@ def download_third_party_file(name: str, url: str, filename: str, digest: str = 
 
 def install_third_party_tool(tool_name: str, source: Path) -> None:
     THIRD_PARTY_BIN_DIR.mkdir(parents=True, exist_ok=True)
-    destination = THIRD_PARTY_BIN_DIR / tool_name
+    destination = THIRD_PARTY_BIN_DIR / THIRD_PARTY_EXECUTABLE_NAMES.get(tool_name, tool_name)
     temporary = destination.with_name(f".{tool_name}.new")
     remove_path(temporary)
     try:
@@ -1292,7 +1552,7 @@ def extract_mkvtoolnix_appimage(source: Path) -> None:
             cwd=str(THIRD_PARTY_MKVTOOLNIX_STAGING_DIR),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            **subprocess_common_kwargs(),
             check=False,
         )
 
@@ -1356,6 +1616,7 @@ def cleanup_third_party_workdirs() -> None:
         THIRD_PARTY_DOWNLOADS_DIR,
         THIRD_PARTY_MKVTOOLNIX_STAGING_DIR,
         THIRD_PARTY_DIR / ".ffmpeg-new",
+        THIRD_PARTY_DIR / ".mkvtoolnix-win-new",
         THIRD_PARTY_DIR / "mkvtoolnix",
         THIRD_PARTY_DIR / "ffmpeg",
     ):
@@ -1363,16 +1624,45 @@ def cleanup_third_party_workdirs() -> None:
 
 
 def third_party_group_installed(group: str) -> bool:
-    if group == "mkvtoolnix" and not mkvtoolnix_appdir_ready():
+    if platform_name() == "linux" and group == "mkvtoolnix" and not mkvtoolnix_appdir_ready():
         return False
-    return all(
-        (THIRD_PARTY_BIN_DIR / tool).exists()
-        and os.access(THIRD_PARTY_BIN_DIR / tool, os.X_OK)
+
+    tool_paths = [
+        THIRD_PARTY_BIN_DIR / THIRD_PARTY_EXECUTABLE_NAMES.get(tool, tool)
         for tool in THIRD_PARTY_GROUP_TOOLS[group]
-    )
+    ]
+    if not all(path.exists() for path in tool_paths):
+        return False
+
+    # Windows MKVToolNix is not portable if only the exe files are present.
+    # The CLI tools can exist but silently fail before producing JSON when the
+    # runtime DLLs beside them are missing. Treat that as not installed so the
+    # whole tool folder is downloaded/copied again.
+    if os.name == "nt" and group == "mkvtoolnix":
+        if not any(THIRD_PARTY_BIN_DIR.glob("*.dll")):
+            return False
+        probe = THIRD_PARTY_BIN_DIR / THIRD_PARTY_EXECUTABLE_NAMES["mkvmerge"]
+        try:
+            process = subprocess.run(
+                [str(probe), "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                **subprocess_common_kwargs(),
+                check=False,
+                env=third_party_subprocess_env(),
+            )
+        except OSError:
+            return False
+        if process.returncode != 0 or not ((process.stdout or process.stderr or "").strip()):
+            return False
+
+    return True
 
 
 def install_mkvtoolnix(latest: dict[str, str]) -> dict[str, str]:
+    if platform_name() == "windows":
+        return install_mkvtoolnix_windows_zip(latest)
+
     filename = latest["asset_name"]
     downloaded = download_third_party_file(
         "MKVToolNix",
@@ -1409,6 +1699,94 @@ def safe_extract_tar(archive: tarfile.TarFile, destination: Path) -> None:
     archive.extractall(destination)
 
 
+
+def safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
+    root = destination.resolve()
+    for member in archive.infolist():
+        member_path = (destination / member.filename).resolve()
+        if member_path != root and root not in member_path.parents:
+            raise ValueError(f"unsafe archive member: {member.filename}")
+    archive.extractall(destination)
+
+
+def install_mkvtoolnix_windows_zip(latest: dict[str, str]) -> dict[str, str]:
+    filename = latest["asset_name"]
+    downloaded = download_third_party_file(
+        "MKVToolNix",
+        latest["download_url"],
+        filename,
+    )
+    staging = THIRD_PARTY_DIR / ".mkvtoolnix-win-new"
+    extract_root = staging / "extract"
+    try:
+        make_fresh_directory(staging)
+        extract_root.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(downloaded) as archive:
+            safe_extract_zip(archive, extract_root)
+
+        candidates = list(extract_root.rglob("mkvmerge.exe"))
+        if not candidates:
+            raise FileNotFoundError("mkvmerge.exe")
+        bin_root = candidates[0].parent
+
+        # Windows MKVToolNix executables need nearby DLL/runtime files.
+        # Copy only required executables + DLLs instead of the whole folder.
+        THIRD_PARTY_BIN_DIR.mkdir(parents=True, exist_ok=True)
+
+        required_files = {
+            "mkvmerge.exe",
+            "mkvextract.exe",
+        }
+
+        required_patterns = (
+            "*.dll",
+        )
+
+        selected_files: list[Path] = []
+
+        for source_file in bin_root.iterdir():
+            if not source_file.is_file():
+                continue
+
+            lower_name = source_file.name.lower()
+
+            if lower_name in required_files:
+                selected_files.append(source_file)
+                continue
+
+            if any(source_file.match(pattern) for pattern in required_patterns):
+                selected_files.append(source_file)
+
+        for source_file in selected_files:
+            destination = THIRD_PARTY_BIN_DIR / source_file.name
+            temporary = destination.with_name(f".{source_file.name}.new")
+
+            remove_path(temporary)
+            shutil.copy2(source_file, temporary)
+
+            remove_path(destination)
+            temporary.rename(destination)
+
+        for tool in ("mkvmerge", "mkvextract"):
+            candidate = THIRD_PARTY_BIN_DIR / THIRD_PARTY_EXECUTABLE_NAMES[tool]
+            if not candidate.exists():
+                raise FileNotFoundError(candidate)
+
+        cleanup_third_party_workdirs()
+        return {
+            "version": latest["version"],
+            "asset_name": filename,
+            "download_url": latest["download_url"],
+        }
+    except (OSError, RuntimeError, zipfile.BadZipFile, ValueError) as exc:
+        remove_path(staging)
+        remove_path(downloaded)
+        cleanup_third_party_workdirs()
+        raise UserVisibleError(
+            ui_text("error_third_party_install_failed", name="MKVToolNix", reason=error_reason(exc))
+        ) from exc
+
+
 def install_ffmpeg(latest: dict[str, str]) -> dict[str, str]:
     filename = latest["asset_name"]
     downloaded = download_third_party_file(
@@ -1422,32 +1800,47 @@ def install_ffmpeg(latest: dict[str, str]) -> dict[str, str]:
     try:
         make_fresh_directory(staging)
         extract_root.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(downloaded, "r:*") as archive:
-            safe_extract_tar(archive, extract_root)
+
+        if filename.lower().endswith(".zip"):
+            with zipfile.ZipFile(downloaded) as archive:
+                safe_extract_zip(archive, extract_root)
+        else:
+            with tarfile.open(downloaded, "r:*") as archive:
+                safe_extract_tar(archive, extract_root)
+
         roots = [path for path in extract_root.iterdir() if path.is_dir()]
         extracted_root = roots[0] if len(roots) == 1 else extract_root
+
         for tool in ("ffmpeg", "ffprobe"):
-            candidate = extracted_root / "bin" / tool
+            executable = THIRD_PARTY_EXECUTABLE_NAMES[tool]
+            candidate = extracted_root / "bin" / executable
+            if not candidate.exists():
+                matches = list(extracted_root.rglob(executable))
+                candidate = matches[0] if matches else candidate
             if not candidate.exists():
                 raise FileNotFoundError(candidate)
             mark_executable(candidate)
 
         for tool in ("ffmpeg", "ffprobe"):
-            install_third_party_tool(tool, extracted_root / "bin" / tool)
+            executable = THIRD_PARTY_EXECUTABLE_NAMES[tool]
+            candidate = extracted_root / "bin" / executable
+            if not candidate.exists():
+                candidate = list(extracted_root.rglob(executable))[0]
+            install_third_party_tool(tool, candidate)
+
         cleanup_third_party_workdirs()
         return {
             "version": latest["version"],
             "asset_name": filename,
             "download_url": latest["download_url"],
         }
-    except (OSError, RuntimeError, tarfile.TarError, ValueError) as exc:
+    except (OSError, RuntimeError, tarfile.TarError, zipfile.BadZipFile, ValueError) as exc:
         remove_path(staging)
         remove_path(downloaded)
         cleanup_third_party_workdirs()
         raise UserVisibleError(
             ui_text("error_third_party_install_failed", name="FFmpeg", reason=error_reason(exc))
         ) from exc
-
 
 def latest_third_party_release(group: str) -> dict[str, str]:
     if group == "mkvtoolnix":
@@ -1548,7 +1941,7 @@ def ensure_third_party_group(group: str, force_check: bool = False) -> dict[str,
 
 def installed_third_party_tool_path(tool_name: str) -> str | None:
     tool_path = THIRD_PARTY_BIN_DIR / THIRD_PARTY_EXECUTABLE_NAMES.get(tool_name, tool_name)
-    if tool_path.exists() and os.access(tool_path, os.X_OK):
+    if tool_path.exists():
         return str(tool_path)
     return None
 
@@ -1561,8 +1954,7 @@ def third_party_tool_path(
     if not auto_install:
         path = installed_third_party_tool_path(tool_name)
         if path:
-            executable_name = THIRD_PARTY_EXECUTABLE_NAMES.get(tool_name, tool_name)
-            return tool_name if executable_name != tool_name else path
+            return path
         if not required:
             return None
         raise UserVisibleError(ui_text("error_third_party_missing", name=tool_name))
@@ -1578,8 +1970,7 @@ def third_party_tool_path(
 
     tool_path = installed_third_party_tool_path(tool_name)
     if tool_path:
-        executable_name = THIRD_PARTY_EXECUTABLE_NAMES.get(tool_name, tool_name)
-        return tool_name if executable_name != tool_name else tool_path
+        return tool_path
     if required:
         raise UserVisibleError(ui_text("error_third_party_missing", name=tool_name))
     return None
@@ -1588,7 +1979,16 @@ def third_party_tool_path(
 def third_party_subprocess_executable(args: list[str]) -> str | None:
     if not args:
         return None
-    tool_name = Path(str(args[0])).name
+    # On Windows, passing both args[0] and subprocess.run(executable=...) can
+    # make CreateProcess build a command line that starts but returns no stdout
+    # for some CLI tools. The absolute path is already in args[0], so let
+    # subprocess use it directly. Linux keeps the old helper behavior for
+    # AppImage/wrapper compatibility.
+    if os.name == "nt":
+        return None
+    tool_name = Path(str(args[0])).name.lower()
+    if tool_name.endswith(".exe"):
+        tool_name = tool_name[:-4]
     if tool_name not in THIRD_PARTY_TOOL_GROUPS:
         return None
     return installed_third_party_tool_path(tool_name)
@@ -1599,6 +1999,89 @@ def third_party_subprocess_env() -> dict[str, str]:
     env["PATH"] = str(THIRD_PARTY_BIN_DIR) + os.pathsep + env.get("PATH", "")
     env.pop("APPIMAGE_EXTRACT_AND_RUN", None)
     return env
+
+
+def subprocess_text_kwargs() -> dict[str, Any]:
+    """Use UTF-8 tolerant text decoding for tool output on every platform."""
+    return {
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+
+
+def subprocess_window_kwargs() -> dict[str, Any]:
+    """Prevent console windows from flashing when Windows GUI code runs CLI tools."""
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
+
+
+def subprocess_common_kwargs() -> dict[str, Any]:
+    return {
+        **subprocess_text_kwargs(),
+        **subprocess_window_kwargs(),
+    }
+
+
+def terminate_process(process: subprocess.Popen[Any], timeout: float = 3.0) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=timeout)
+    except OSError:
+        pass
+
+
+def run_cancellable_capture(
+    args: list[str],
+    *,
+    stdout: int | None = subprocess.PIPE,
+    stderr: int | None = subprocess.PIPE,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    executable: str | None = None,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        args,
+        stdout=stdout,
+        stderr=stderr,
+        cwd=cwd,
+        env=env,
+        executable=executable,
+        **subprocess_common_kwargs(),
+    )
+    if register_process is not None:
+        register_process(process)
+    try:
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                terminate_process(process)
+                raise OperationCancelled(ui_text("log_operation_cancelled"))
+            time.sleep(0.1)
+        stdout_value, stderr_value = process.communicate()
+        return subprocess.CompletedProcess(
+            args,
+            process.returncode,
+            stdout_value or "",
+            stderr_value or "",
+        )
+    finally:
+        if unregister_process is not None:
+            unregister_process(process)
 
 
 def title_from_details(details: dict[str, Any]) -> str:
@@ -2570,19 +3053,25 @@ def format_chapter_timestamp(total_seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
 
 
-def detect_item_duration_seconds(item: TrackItem) -> float:
+def detect_item_duration_seconds(
+    item: TrackItem,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> float:
     mkvmerge = third_party_tool_path("mkvmerge", required=False)
     if not mkvmerge:
         return 0.0
     args = [mkvmerge, "--identification-format", "json", "--identify", str(item.path)]
-    process = subprocess.run(
+    process = run_cancellable_capture(
         args,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        check=False,
         env=third_party_subprocess_env(),
         executable=third_party_subprocess_executable(args),
+        cancel_event=cancel_event,
+        register_process=register_process,
+        unregister_process=unregister_process,
     )
     if process.returncode > 1:
         return 0.0
@@ -2599,13 +3088,23 @@ def detect_item_duration_seconds(item: TrackItem) -> float:
     return max(durations, default=0.0)
 
 
-def detect_media_duration_seconds(items: list[TrackItem]) -> float:
+def detect_media_duration_seconds(
+    items: list[TrackItem],
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> float:
     ordered = sorted(
         items,
         key=lambda item: 0 if is_video_entry(item.entry) else 1,
     )
     for item in ordered:
-        duration = detect_item_duration_seconds(item)
+        duration = detect_item_duration_seconds(
+            item,
+            cancel_event=cancel_event,
+            register_process=register_process,
+            unregister_process=unregister_process,
+        )
         if duration > 0:
             return duration
     return 0.0
@@ -2656,6 +3155,9 @@ def resolve_chapter_path(
     media_dir: Path,
     items: list[TrackItem],
     options: ChapterOptions | None,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
 ) -> tuple[Path | None, list[str]]:
     global_config = config.get("global", {})
     chapters_name = basename_from_config_path(str(global_config.get("chapters", "chapters.txt")))
@@ -2667,7 +3169,18 @@ def resolve_chapter_path(
         return chapters_path, []
 
     if options is not None and options.enabled:
-        duration_seconds = detect_media_duration_seconds(items)
+        # Bitiş dakikası elle girildiyse büyük video dosyasını mkvmerge --identify ile tarama.
+        # Bu ilk mux öncesi uzun beklemeyi engeller.
+        if str(options.end_minutes or "").strip():
+            duration_seconds = 0.0
+        else:
+            duration_seconds = detect_media_duration_seconds(
+                items,
+                cancel_event=cancel_event,
+                register_process=register_process,
+                unregister_process=unregister_process,
+            )
+
         return write_auto_chapters_file(chapters_path, options, duration_seconds), []
 
     return None, [chapters_name]
@@ -2702,7 +3215,12 @@ def build_mkvmerge_args(
     audio_language_order: str = "",
     subtitle_language_order: str = "",
     tag_language: str = "",
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
 ) -> tuple[list[str], list[str]]:
+    if cancel_event is not None and cancel_event.is_set():
+        raise OperationCancelled(ui_text("log_operation_cancelled"))
     _unknown_language = normalise_language(tag_language) if tag_language else MUX_UNKNOWN_LANGUAGE
     mkvmerge = third_party_tool_path("mkvmerge")
     if not mkvmerge:
@@ -2711,6 +3229,8 @@ def build_mkvmerge_args(
     items, missing_optional, _ = discover_track_items(
         config, media_dir, include_extra_subtitles, _unknown_language
     )
+    if cancel_event is not None and cancel_event.is_set():
+        raise OperationCancelled(ui_text("log_operation_cancelled"))
     if not items:
         raise UserVisibleError(ui_text("error_mux_no_files"))
     apply_video_fps_override(items, video_fps)
@@ -2723,6 +3243,8 @@ def build_mkvmerge_args(
 
     attachments, missing_attachments = discover_attachments(config, media_dir)
     missing_optional.extend(missing_attachments)
+    if cancel_event is not None and cancel_event.is_set():
+        raise OperationCancelled(ui_text("log_operation_cancelled"))
 
     args = [mkvmerge, "--output", str(output_path)]
     if title:
@@ -2740,6 +3262,9 @@ def build_mkvmerge_args(
         media_dir,
         items,
         chapter_options,
+        cancel_event=cancel_event,
+        register_process=register_process,
+        unregister_process=unregister_process,
     )
     if chapters_path is not None:
         chapter_language = (
@@ -3458,7 +3983,7 @@ def audio_probe_defaults(path: Path) -> dict[str, str]:
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            **subprocess_common_kwargs(),
             check=False,
             env=third_party_subprocess_env(),
             executable=third_party_subprocess_executable(args),
@@ -3622,7 +4147,7 @@ def run_logged_process(args: list[str], log: Callable[[str], None]) -> None:
         args,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        **subprocess_common_kwargs(),
         check=False,
         env=third_party_subprocess_env(),
         executable=third_party_subprocess_executable(args),
@@ -3736,29 +4261,91 @@ def identify_mkv(source: Path) -> dict[str, Any]:
     if not source.exists() or not source.is_file():
         raise UserVisibleError(ui_text("error_mkv_source_not_found", source=source))
 
-    args = [mkvmerge, "--identification-format", "json", "--identify", str(source)]
-    process = subprocess.run(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-        env=third_party_subprocess_env(),
-        executable=third_party_subprocess_executable(args),
-    )
-    if process.returncode > 1:
-        message = process.stderr.strip() or process.stdout.strip()
-        raise UserVisibleError(
-            ui_text("error_mkv_read_failed", message=message or process.returncode)
-        )
-    try:
-        payload = json.loads(process.stdout)
-    except json.JSONDecodeError as exc:
-        raise UserVisibleError(ui_text("error_mkv_json_parse_failed", error=exc)) from exc
-    if not payload.get("container", {}).get("recognized"):
-        raise UserVisibleError(ui_text("error_mkv_not_recognized"))
-    return payload
+    command_variants = [
+        [mkvmerge, "--identify", "--identification-format", "json", str(source)],
+        [mkvmerge, "--identification-format", "json", "--identify", str(source)],
+        [mkvmerge, "-J", str(source)],
+    ]
+    attempts: list[str] = []
+    env = third_party_subprocess_env()
+    cwd = str(Path(mkvmerge).parent) if os.name == "nt" else None
 
+    def parse_payload(raw: str, command: str) -> dict[str, Any] | None:
+        text_value = (raw or "").strip().lstrip("\ufeff")
+        if not text_value:
+            return None
+        try:
+            payload = json.loads(text_value)
+        except json.JSONDecodeError as exc:
+            attempts.append(f"json_error={exc}; command={command}; output_head={text_value[:160]!r}")
+            return None
+        if not payload.get("container", {}).get("recognized"):
+            raise UserVisibleError(ui_text("error_mkv_not_recognized"))
+        return payload
+
+    for args in command_variants:
+        process = subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **subprocess_common_kwargs(),
+            check=False,
+            env=env,
+            cwd=cwd,
+            executable=third_party_subprocess_executable(args),
+        )
+
+        stdout = process.stdout or ""
+        stderr = (process.stderr or "").strip()
+        command = " ".join(shlex.quote(str(part)) for part in args)
+        attempts.append(
+            f"pipe: returncode={process.returncode}; stdout_len={len(stdout.strip())}; "
+            f"stderr={stderr or '-'}; command={command}"
+        )
+
+        if process.returncode <= 1:
+            payload = parse_payload(stdout, command)
+            if payload is not None:
+                return payload
+
+    # Some Windows builds can return 0 but emit nothing when stdout is captured
+    # through PIPE. Retry with normal cmd.exe redirection to a temporary file.
+    if os.name == "nt":
+        import tempfile
+
+        for args in command_variants:
+            with tempfile.TemporaryDirectory(prefix="gtmce-mkvmerge-") as tmpdir:
+                out_path = Path(tmpdir) / "identify.json"
+                err_path = Path(tmpdir) / "identify.err"
+                quoted = " ".join(subprocess.list2cmdline([str(part)]) for part in args)
+                shell_command = f'{quoted} > {subprocess.list2cmdline([str(out_path)])} 2> {subprocess.list2cmdline([str(err_path)])}'
+                process = subprocess.run(
+                    shell_command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    **subprocess_common_kwargs(),
+                    check=False,
+                    env=env,
+                    cwd=cwd,
+                )
+                stdout_file = out_path.read_text(encoding="utf-8-sig", errors="replace") if out_path.exists() else ""
+                stderr_file = err_path.read_text(encoding="utf-8-sig", errors="replace").strip() if err_path.exists() else ""
+                attempts.append(
+                    f"redirect: returncode={process.returncode}; file_len={len(stdout_file.strip())}; "
+                    f"stderr={stderr_file or (process.stderr or '').strip() or '-'}; command={shell_command}"
+                )
+                if process.returncode <= 1:
+                    payload = parse_payload(stdout_file, shell_command)
+                    if payload is not None:
+                        return payload
+
+    raise UserVisibleError(
+        ui_text(
+            "error_mkv_read_failed",
+            message="mkvmerge produced no usable JSON output; " + " | ".join(attempts),
+        )
+    )
 
 def clean_output_component(value: str, fallback: str) -> str:
     cleaned = re.sub(r'[\\/:*?"<>|]+', "_", value)
@@ -4159,6 +4746,10 @@ class MkvCreatorApp(tk.Tk):
         self.log_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.log_lines: list[str] = []
         self.worker: threading.Thread | None = None
+        self.current_operation: str | None = None
+        self.cancel_event = threading.Event()
+        self.active_processes: set[subprocess.Popen[Any]] = set()
+        self.active_processes_lock = threading.Lock()
         self.last_mkv_dir = self.saved_preferences.get("last_mkv_dir", "")
         self.logo_source_image: Any = None
         self.logo_icon_image: Any = None
@@ -4175,7 +4766,10 @@ class MkvCreatorApp(tk.Tk):
             value=os.environ.get("TMDB_API_KEY", self.saved_preferences.get("api_key", ""))
         )
         self.tmdb_id_var = tk.StringVar()
-        self.media_type_var = tk.StringVar(value=self.saved_preferences.get("media_type", "movie"))
+        self.media_type_var = tk.StringVar(
+            value=normalise_tmdb_media_type(self.saved_preferences.get("media_type", "movie"))
+        )
+        self.media_type_display_var = tk.StringVar()
         self.language_var = tk.StringVar(value=self.saved_preferences.get("image_language", "en"))
         self.tag_language_var = tk.StringVar(
             value=self.saved_preferences.get(
@@ -4224,11 +4818,13 @@ class MkvCreatorApp(tk.Tk):
         self.extract_all_button: ttk.Button | None = None
         self.extract_button: ttk.Button | None = None
         self.third_party_button: ttk.Button | None = None
+        self.media_type_combobox: ttk.Combobox | None = None
         self.progress_bar: ttk.Progressbar | None = None
         self.log_window: tk.Toplevel | None = None
         self.log_window_text: ScrolledText | None = None
 
         self._build_ui()
+        self.refresh_tmdb_media_type_display()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self._drain_log_queue)
         if initial_extract_source is not None:
@@ -4283,6 +4879,34 @@ class MkvCreatorApp(tk.Tk):
         tree.heading(column, text=self.tr(key))
         self.localized_tree_headings.append((tree, column, key))
 
+    def tmdb_media_type_labels(self) -> tuple[str, ...]:
+        return tuple(self.tr(f"media_type_{media_type}") for media_type in TMDB_MEDIA_TYPES)
+
+    def tmdb_media_type_display(self, media_type: str | None) -> str:
+        return self.tr(f"media_type_{normalise_tmdb_media_type(media_type)}")
+
+    def tmdb_media_type_from_display(self, display_value: str | None) -> str:
+        display = str(display_value or "").strip()
+        for media_type in TMDB_MEDIA_TYPES:
+            if display == self.tr(f"media_type_{media_type}"):
+                return media_type
+        return ""
+
+    def refresh_tmdb_media_type_display(self) -> None:
+        media_type = normalise_tmdb_media_type(self.media_type_var.get())
+        self.media_type_var.set(media_type)
+        if self.media_type_combobox is not None:
+            self.media_type_combobox.configure(values=self.tmdb_media_type_labels())
+        self.media_type_display_var.set(self.tmdb_media_type_display(media_type))
+
+    def on_tmdb_media_type_selected(self, _event: tk.Event | None = None) -> None:
+        media_type = self.tmdb_media_type_from_display(self.media_type_display_var.get())
+        if not media_type:
+            return
+        self.media_type_var.set(media_type)
+        self.refresh_tmdb_media_type_display()
+        self.save_preferences()
+
     def make_section(
         self,
         parent: ttk.Frame,
@@ -4313,6 +4937,7 @@ class MkvCreatorApp(tk.Tk):
     def refresh_localized_text(self) -> None:
         set_active_ui_language(self.ui_language_var.get())
         self.ui_language_display_var.set(UI_LANGUAGE_NAMES[self.ui_language_var.get()])
+        self.refresh_tmdb_media_type_display()
 
         for widget, option, key in list(self.localized_widgets):
             try:
@@ -4603,26 +5228,32 @@ class MkvCreatorApp(tk.Tk):
         tmdb_row.columnconfigure(0, weight=1)
         ttk.Label(form, text="TMDB").grid(row=row, column=0, sticky="w", pady=5)
         ttk.Entry(tmdb_row, textvariable=self.tmdb_id_var).grid(row=0, column=0, sticky="ew")
-        ttk.Combobox(
+        self.localize_widget(
+            ttk.Label(tmdb_row),
+            "label_tmdb_media_type",
+        ).grid(row=0, column=1, padx=(8, 4))
+        self.media_type_combobox = ttk.Combobox(
             tmdb_row,
-            textvariable=self.media_type_var,
-            values=("movie", "tv"),
+            textvariable=self.media_type_display_var,
+            values=self.tmdb_media_type_labels(),
             width=8,
             state="readonly",
-        ).grid(row=0, column=1, padx=(8, 0))
+        )
+        self.media_type_combobox.grid(row=0, column=2)
+        self.media_type_combobox.bind("<<ComboboxSelected>>", self.on_tmdb_media_type_selected)
         self.localize_widget(
             ttk.Label(tmdb_row),
             "label_image_language",
-        ).grid(row=0, column=2, padx=(12, 4))
-        ttk.Entry(tmdb_row, textvariable=self.language_var, width=7).grid(row=0, column=3)
+        ).grid(row=0, column=3, padx=(12, 4))
+        ttk.Entry(tmdb_row, textvariable=self.language_var, width=7).grid(row=0, column=4)
         self.localize_widget(
             ttk.Label(tmdb_row),
             "label_tag_language",
-        ).grid(row=0, column=4, padx=(12, 4))
-        ttk.Entry(tmdb_row, textvariable=self.tag_language_var, width=7).grid(row=0, column=5)
+        ).grid(row=0, column=5, padx=(12, 4))
+        ttk.Entry(tmdb_row, textvariable=self.tag_language_var, width=7).grid(row=0, column=6)
         self.find_tmdb_button = ttk.Button(tmdb_row, command=self.start_find_tmdb_id)
         self.localize_widget(self.find_tmdb_button, "button_find_id")
-        self.find_tmdb_button.grid(row=0, column=6, padx=(8, 0))
+        self.find_tmdb_button.grid(row=0, column=7, padx=(8, 0))
         row += 1
 
         self.localize_widget(
@@ -4827,7 +5458,7 @@ class MkvCreatorApp(tk.Tk):
                 {
                     "ui_language": self.ui_language_var.get(),
                     "api_key": self.api_key_var.get().strip(),
-                    "media_type": self.media_type_var.get().strip() or "movie",
+                    "media_type": normalise_tmdb_media_type(self.media_type_var.get()),
                     "image_language": self.language_var.get().strip() or "en",
                     "tag_language": self.tag_language_var.get().strip()
                     or self.language_var.get().strip()
@@ -4851,7 +5482,7 @@ class MkvCreatorApp(tk.Tk):
         self.destroy()
 
     def browse_template(self) -> None:
-        path = filedialog.askopenfilename(
+        path = native_open_file(
             title=self.tr("dialog_template_title"),
             initialdir=str(APP_DIR),
             filetypes=(
@@ -4859,6 +5490,16 @@ class MkvCreatorApp(tk.Tk):
                 (self.tr("filetype_all"), "*"),
             ),
         )
+        if path is None:
+            path = filedialog.askopenfilename(
+                title=self.tr("dialog_template_title"),
+                initialdir=str(APP_DIR),
+                filetypes=(
+                    ("MKVToolNix config", "*.mtxcfg"),
+                    (self.tr("filetype_all"), "*"),
+                ),
+            )
+
         if path:
             self.template_var.set(path)
             try:
@@ -4870,7 +5511,17 @@ class MkvCreatorApp(tk.Tk):
                 messagebox.showerror(self.tr("dialog_config_error"), str(exc))
 
     def browse_folder(self) -> None:
-        path = filedialog.askdirectory(title=self.tr("dialog_track_folder_title"))
+        initial_dir = self.folder_var.get().strip() or self.last_mkv_dir or str(APP_DIR)
+        path = native_select_dir(
+            title=self.tr("dialog_track_folder_title"),
+            initialdir=initial_dir,
+        )
+        if path is None:
+            path = filedialog.askdirectory(
+                title=self.tr("dialog_track_folder_title"),
+                initialdir=initial_dir,
+            )
+
         if path:
             self.folder_var.set(path)
             self._set_default_output()
@@ -4886,7 +5537,8 @@ class MkvCreatorApp(tk.Tk):
             self.last_mkv_dir,
             APP_DIR,
         )
-        path = filedialog.asksaveasfilename(
+
+        path = native_save_file(
             title=self.tr("dialog_output_mkv_title"),
             initialdir=initial_dir,
             defaultextension=".mkv",
@@ -4895,21 +5547,44 @@ class MkvCreatorApp(tk.Tk):
                 (self.tr("filetype_all"), "*"),
             ),
         )
+        if path is None:
+            path = filedialog.asksaveasfilename(
+                title=self.tr("dialog_output_mkv_title"),
+                initialdir=initial_dir,
+                defaultextension=".mkv",
+                filetypes=(
+                    (self.tr("filetype_matroska"), "*.mkv"),
+                    (self.tr("filetype_all"), "*"),
+                ),
+            )
+
         if path:
             self.output_var.set(path)
             self.remember_mkv_dir(Path(path))
 
     def browse_extract_source(self) -> None:
-        path = filedialog.askopenfilename(
+        initial_dir = self.extract_source_initial_dir()
+        path = native_open_file(
             title=self.tr("dialog_source_mkv_title"),
-            initialdir=self.extract_source_initial_dir(),
+            initialdir=initial_dir,
             filetypes=(
                 (self.tr("filetype_matroska"), "*.mkv"),
                 (self.tr("filetype_all"), "*"),
             ),
         )
+        if path is None:
+            path = filedialog.askopenfilename(
+                title=self.tr("dialog_source_mkv_title"),
+                initialdir=initial_dir,
+                filetypes=(
+                    (self.tr("filetype_matroska"), "*.mkv"),
+                    (self.tr("filetype_all"), "*"),
+                ),
+            )
+
         if not path:
             return
+
         self.set_extract_source(Path(path), scan=True)
 
     def browse_extract_output_dir(self) -> None:
@@ -4917,10 +5592,17 @@ class MkvCreatorApp(tk.Tk):
         if not initial_dir:
             source_raw = self.extract_source_var.get().strip()
             initial_dir = str(Path(source_raw).expanduser().parent) if source_raw else str(APP_DIR)
-        path = filedialog.askdirectory(
+
+        path = native_select_dir(
             title=self.tr("dialog_extract_folder_title"),
             initialdir=initial_dir,
         )
+        if path is None:
+            path = filedialog.askdirectory(
+                title=self.tr("dialog_extract_folder_title"),
+                initialdir=initial_dir,
+            )
+
         if path:
             self.extract_output_dir_var.set(path)
 
@@ -4982,7 +5664,9 @@ class MkvCreatorApp(tk.Tk):
         output_raw = self.output_var.get().strip()
         api_key = self.api_key_var.get().strip()
         tmdb_id = self.tmdb_id_var.get().strip()
-        media_type = self.media_type_var.get().strip() or "movie"
+        media_type = self.tmdb_media_type_from_display(self.media_type_display_var.get())
+        if not media_type:
+            media_type = self.media_type_var.get().strip()
         image_language = self.language_var.get().strip() or "en"
         tag_language = self.tag_language_var.get().strip() or image_language
         mkv_title = self.title_var.get().strip()
@@ -5470,6 +6154,14 @@ class MkvCreatorApp(tk.Tk):
         self.run_background(work, self.tr("status_writing_config"))
 
     def start_mux(self) -> None:
+        if (
+            self.worker is not None
+            and self.worker.is_alive()
+            and self.current_operation == "mux"
+        ):
+            self.cancel_current_operation()
+            return
+
         try:
             settings = self.collect_settings(require_tmdb=self.download_before_mux_var.get())
             self.save_preferences()
@@ -5477,12 +6169,13 @@ class MkvCreatorApp(tk.Tk):
             messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
             return
 
+        overwrite_existing = False
         if settings.output_path.exists():
-            overwrite = messagebox.askyesno(
+            overwrite_existing = messagebox.askyesno(
                 self.tr("dialog_overwrite_title"),
                 self.tr("dialog_overwrite_message", name=settings.output_path.name),
             )
-            if not overwrite:
+            if not overwrite_existing:
                 return
 
         def work() -> None:
@@ -5501,13 +6194,19 @@ class MkvCreatorApp(tk.Tk):
                             name=settings.output_path.name,
                         )
                     )
-                    if settings.output_path.exists():
-                        raise UserVisibleError(
-                            ui_text(
-                                "error_output_exists_choose",
-                                name=settings.output_path.name,
-                            )
+
+            if settings.output_path.exists():
+                if not overwrite_existing:
+                    raise UserVisibleError(
+                        ui_text(
+                            "error_output_exists_choose",
+                            name=settings.output_path.name,
                         )
+                    )
+                try:
+                    settings.output_path.unlink()
+                except OSError as exc:
+                    raise UserVisibleError(f"{settings.output_path.name} silinemedi: {exc}") from exc
 
             args, missing_optional = build_mkvmerge_args(
                 config,
@@ -5520,7 +6219,13 @@ class MkvCreatorApp(tk.Tk):
                 settings.audio_language_order,
                 settings.subtitle_language_order,
                 settings.tag_language,
+                cancel_event=self.cancel_event,
+                register_process=self.register_active_process,
+                unregister_process=self.unregister_active_process,
             )
+
+            self.check_cancelled()
+
             generated = write_generated_config(
                 config,
                 settings.media_dir,
@@ -5549,22 +6254,32 @@ class MkvCreatorApp(tk.Tk):
                 cwd=str(settings.media_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                **subprocess_common_kwargs(),
                 bufsize=1,
                 env=third_party_subprocess_env(),
                 executable=third_party_subprocess_executable(args),
             )
-            assert process.stdout is not None
-            for line in process.stdout:
-                self.queue_log(line.rstrip())
-            return_code = process.wait()
+            self.register_active_process(process)
+            try:
+                assert process.stdout is not None
+                for line in process.stdout:
+                    if self.cancel_event.is_set():
+                        terminate_process(process)
+                        break
+                    self.queue_log(line.rstrip())
+                if self.cancel_event.is_set():
+                    terminate_process(process)
+                    raise OperationCancelled(self.tr("log_operation_cancelled"))
+                return_code = process.wait()
+            finally:
+                self.unregister_active_process(process)
             if return_code > 1:
                 raise UserVisibleError(ui_text("error_mkvmerge_exit", code=return_code))
             if return_code == 1:
                 self.queue_log(self.tr("log_mkvmerge_warnings"))
             self.queue_log(self.tr("log_mkv_created", path=settings.output_path))
 
-        self.run_background(work, self.tr("status_creating_mkv"))
+        self.run_background(work, self.tr("status_creating_mkv"), operation="mux")
 
     def close_extract_window(self) -> None:
         if self.extract_window is not None:
@@ -5920,7 +6635,7 @@ class MkvCreatorApp(tk.Tk):
                 cwd=str(output_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                **subprocess_common_kwargs(),
                 bufsize=1,
                 env=third_party_subprocess_env(),
                 executable=third_party_subprocess_executable(args),
@@ -5944,7 +6659,35 @@ class MkvCreatorApp(tk.Tk):
 
         self.run_background(work, self.tr("status_extracting_tracks"))
 
-    def run_background(self, work: Callable[[], Any], status: str | None = None) -> bool:
+    def register_active_process(self, process: subprocess.Popen[Any]) -> None:
+        with self.active_processes_lock:
+            self.active_processes.add(process)
+
+    def unregister_active_process(self, process: subprocess.Popen[Any]) -> None:
+        with self.active_processes_lock:
+            self.active_processes.discard(process)
+
+    def check_cancelled(self) -> None:
+        if self.cancel_event.is_set():
+            raise OperationCancelled(self.tr("log_operation_cancelled"))
+
+    def cancel_current_operation(self) -> None:
+        if self.cancel_event.is_set():
+            return
+        self.cancel_event.set()
+        self.progress_status_var.set(self.tr("status_cancelling"))
+        self.queue_log(self.tr("status_cancelling"))
+        with self.active_processes_lock:
+            processes = list(self.active_processes)
+        for process in processes:
+            terminate_process(process)
+
+    def run_background(
+        self,
+        work: Callable[[], Any],
+        status: str | None = None,
+        operation: str | None = None,
+    ) -> bool:
         if self.worker and self.worker.is_alive():
             messagebox.showinfo(
                 self.tr("dialog_in_progress_title"),
@@ -5952,16 +6695,22 @@ class MkvCreatorApp(tk.Tk):
             )
             return False
 
+        self.cancel_event.clear()
+        self.current_operation = operation
         self.set_busy(True, status or self.tr("status_processing"))
 
         def wrapped() -> None:
             try:
                 work()
+            except OperationCancelled:
+                self.queue_log(self.tr("log_operation_cancelled"))
             except UserVisibleError as exc:
                 self.queue_error(str(exc))
             except Exception as exc:
                 self.queue_error(ui_text("error_unexpected", error=exc))
             finally:
+                self.cancel_event.clear()
+                self.current_operation = None
                 self.log_queue.put(("busy", False))
 
         self.worker = threading.Thread(target=wrapped, daemon=True)
@@ -5975,7 +6724,6 @@ class MkvCreatorApp(tk.Tk):
             self.find_tmdb_button,
             self.download_button,
             self.config_button,
-            self.mux_button,
             self.extract_scan_button,
             self.extract_toggle_button,
             self.extract_all_button,
@@ -5985,6 +6733,11 @@ class MkvCreatorApp(tk.Tk):
         for button in buttons:
             if button is not None:
                 button.configure(state=state)
+        if self.mux_button is not None:
+            if busy and self.current_operation == "mux":
+                self.mux_button.configure(state="normal", text=self.tr("button_cancel_job"))
+            else:
+                self.mux_button.configure(state=state, text=self.tr("button_create_mkv"))
         if busy:
             self.start_progress(status or self.tr("status_processing"))
         else:

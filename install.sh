@@ -76,6 +76,8 @@ check_dependencies() {
   if is_debian_like; then
     local packages=(
       "python3"
+      "zenity"
+      "kdialog"
       "python3-tk"
       "python3-pil"
       "desktop-file-utils"
@@ -103,6 +105,8 @@ check_dependencies() {
   elif is_fedora_like; then
     local packages=(
       "python3"
+      "zenity"
+      "kdialog"
       "python3-tkinter"
       "python3-pillow"
       "desktop-file-utils"
@@ -129,6 +133,8 @@ check_dependencies() {
   elif is_arch_like; then
     local packages=(
       "python"
+      "zenity"
+      "kdialog"
       "tk"
       "python-pillow"
       "desktop-file-utils"
@@ -155,6 +161,8 @@ check_dependencies() {
   elif is_opensuse_like; then
     local packages=(
       "python3"
+      "zenity"
+      "kdialog"
       "python3-tk"
       "python3-Pillow"
       "desktop-file-utils"
@@ -353,6 +361,38 @@ update_caches() {
   command -v kbuildsycoca5 >/dev/null 2>&1 && kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
 }
 
+uninstall_application() {
+  require_root
+
+  echo "[1/3] Removing G-TMCE files..."
+
+  rm -rf "$INSTALL_DIR"
+  rm -f "$BIN_LINK"
+  rm -f "$APP_DESKTOP_DIR/${APP_ID}.desktop"
+  rm -f "$PIXMAP_DIR/${APP_ID}.png"
+
+  for size in 16 24 32 48 64 128 256 512; do
+    rm -f "/usr/share/icons/hicolor/${size}x${size}/apps/${APP_ID}.png"
+  done
+
+  for dir in "${KDE_SERVICE_DIRS[@]}"; do
+    rm -f "$dir/${APP_ID}-extract.desktop"
+  done
+
+  echo "[2/3] Updating desktop integration caches..."
+  update_caches
+
+  echo "[3/3] Done."
+  echo
+  echo "G-TMCE was uninstalled successfully."
+  echo
+  echo "User config was kept:"
+  echo "- ~/.config/g-tmce"
+  echo
+  echo "To remove user config too, run:"
+  echo "rm -rf ~/.config/g-tmce"
+}
+
 main() {
   require_root
   check_dependencies
@@ -375,4 +415,18 @@ main() {
   echo "4. Open G-TMCE from the application menu and pin it again."
 }
 
-main "$@"
+case "${1:-install}" in
+  install)
+    main
+    ;;
+  uninstall|remove)
+    uninstall_application
+    ;;
+  *)
+    echo "Usage:"
+    echo "  sudo ./install.sh"
+    echo "  sudo ./install.sh install"
+    echo "  sudo ./install.sh uninstall"
+    exit 1
+    ;;
+esac
