@@ -1,6 +1,6 @@
 # G-TMCE
 
-G-TMCE is a small Linux Tkinter application for extracting and creating MKV files.
+G-TMCE is a Tkinter application for extracting and creating MKV files, available on Linux and Windows.
 
 It generates a `tags.xml` using the TMDB API, enriches MKV files with titles and visuals, and ensures MKV files are always created with a consistent structure.
 
@@ -65,6 +65,10 @@ It generates a `tags.xml` using the TMDB API, enriches MKV files with titles and
 * Linux x86_64
 * Linux aarch64
 
+### Windows
+
+* Windows x86_64 (via pre-built EXE or PyInstaller)
+
 ---
 
 # Installation
@@ -96,6 +100,42 @@ Supported distributions:
 * Fedora
 * Arch Linux
 * openSUSE
+
+---
+
+# Release
+
+You can download a pre-built executable or AppImage from the [Releases](../../releases) page, or build one yourself using the instructions below.
+
+> **Windows support has been added.** A pre-built `.exe` is available for download on the Releases page.
+
+## Building from Source
+
+### Windows EXE
+
+```powershell
+py -3 -m pip install --upgrade pillow pyinstaller
+py -3 build_windows_exe.py
+```
+
+Output path:
+
+```text
+dist\G-TMCE.exe
+```
+
+### AppImage
+
+```bash
+chmod +x build_appimage.sh
+./build_appimage.sh
+```
+
+Output path:
+
+```text
+G-TMCE-x86_64.AppImage
+```
 
 ---
 
