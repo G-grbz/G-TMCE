@@ -5,6 +5,7 @@ import copy
 import hashlib
 import io
 import json
+import math
 import mimetypes
 import os
 import platform
@@ -20,9 +21,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import webbrowser
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -63,9 +66,29 @@ def bundled_resource_path(name: str) -> Path:
 
 
 APP_DIR = app_runtime_dir()
-DEFAULT_TEMPLATE = bundled_resource_path("mkv.mtxcfg")
 APP_NAME = "G-TMCE"
+APP_REPOSITORY_URL = "https://github.com/G-grbz/G-TMCE"
+APP_RELEASE_API_URL = "https://api.github.com/repos/G-grbz/G-TMCE/releases/latest"
+APP_LATEST_RELEASE_URL = f"{APP_REPOSITORY_URL}/releases/latest"
+DEFAULT_APP_VERSION = "source"
+
+
+def read_app_version() -> str:
+    env_version = os.environ.get("G_TMCE_VERSION", "").strip()
+    if env_version:
+        return env_version
+    try:
+        version = bundled_resource_path("VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return DEFAULT_APP_VERSION
+    return version or DEFAULT_APP_VERSION
+
+
+DEFAULT_TEMPLATE = bundled_resource_path("mkv.mtxcfg")
+APP_VERSION = read_app_version()
 LOGO_PATH = bundled_resource_path("logo.png")
+
+
 def app_config_dir() -> Path:
     """Return the per-user config directory without changing the Linux path layout."""
     if os.name == "nt":
@@ -86,7 +109,7 @@ THIRD_PARTY_STATE_PATH = THIRD_PARTY_DIR / "installed.json"
 MKVTOOLNIX_APPIMAGE_INDEX_URL = "https://mkvtoolnix.download/appimage/"
 MKVTOOLNIX_DOWNLOADS_URL = "https://mkvtoolnix.download/downloads.html"
 FFMPEG_RELEASE_API_URL = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
-THIRD_PARTY_USER_AGENT = f"{APP_NAME}/1.0 Python/{sys.version_info.major}.{sys.version_info.minor}"
+THIRD_PARTY_USER_AGENT = f"{APP_NAME}/{APP_VERSION} Python/{sys.version_info.major}.{sys.version_info.minor}"
 
 UI_COLORS = {
     "window": "#f4f7fb",
@@ -173,6 +196,7 @@ UI_TEXT = {
         "button_browse": "Browse",
         "button_show": "Show",
         "button_update_third_party": "Update Tools",
+        "button_app_update_available": "Update Available",
         "label_image_language": "Artwork language",
         "label_tag_language": "Tag language",
         "label_tmdb_media_type": "TMDB type",
@@ -216,8 +240,12 @@ UI_TEXT = {
         "button_cancel_job": "Cancel Job",
         "button_show_log": "Show Log",
         "section_extract": "MKV Extract",
-        "path_source_mkv": "Source MKV",
+        "path_source_mkv": "Source MKV / folder",
         "path_extract_folder": "Extraction folder",
+        "button_browse_file": "File",
+        "button_browse_folder": "Folder",
+        "button_extract_folder": "Extract Folder",
+        "button_mux_extracted_folder": "Mux Extracted Folder",
         "dialog_template_title": "Select MKVToolNix config",
         "filetype_all": "All files",
         "filetype_video": "Video files",
@@ -225,7 +253,7 @@ UI_TEXT = {
         "dialog_config_error": "Config error",
         "dialog_track_folder_title": "Select track folder",
         "dialog_output_mkv_title": "Select output MKV",
-        "dialog_source_mkv_title": "Select source MKV",
+        "dialog_source_mkv_title": "Select source MKV / folder",
         "dialog_extract_folder_title": "Select extraction folder",
         "dialog_missing_info": "Missing information",
         "dialog_overwrite_title": "Overwrite file?",
@@ -239,9 +267,16 @@ UI_TEXT = {
         "log_output_default_used": "Output path was empty; using the default: {path}",
         "error_tmdb_media_type": "TMDB type must be Movie or TV.",
         "error_tmdb_api_empty": "TMDB API key is required.",
+        "error_tmdb_artwork_api_required": "To use the artwork/tag creation feature, you must have a valid TMDB API key. If you do not have an API key, clear the checkbox.",
         "error_tmdb_id_empty": "TMDB ID is required.",
         "error_tmdb_id_numeric": "TMDB ID must be numeric.",
         "error_source_mkv_not_selected": "Source MKV is not selected.",
+        "error_source_folder_not_selected": "Source folder is not selected.",
+        "error_source_folder_not_found": "Source folder not found: {source}",
+        "error_batch_no_video_files": "No video files were found in the source folder.",
+        "error_episode_number_missing": "Could not read season/episode from the file name: {name}",
+        "error_batch_tmdb_tv_required": "Folder batch with TMDB must use TV type.",
+        "error_batch_extract_dir_missing": "Extracted track folder not found: {path}",
         "log_tracks_found": "Tracks found: {count}",
         "log_extra_subtitle_suffix": " (additional subtitle)",
         "log_default_track_suffix": " | default",
@@ -262,7 +297,15 @@ UI_TEXT = {
         "error_mkvmerge_exit": "mkvmerge exited with error code: {code}",
         "log_mkvmerge_warnings": "mkvmerge completed with warnings.",
         "log_mkv_created": "MKV created: {path}",
+        "log_batch_episode": "Batch episode {index}/{count}: {name}",
+        "log_batch_extract_dir": "Episode tracks folder: {path}",
+        "log_batch_final_folder": "Final season folder: {path}",
+        "log_batch_moved": "Moved MKV: {path}",
+        "log_batch_extract_complete": "Folder extraction completed: {count} episode folders.",
+        "log_batch_mux_complete": "Folder mux completed: {count} MKV files.",
         "status_creating_mkv": "Creating MKV...",
+        "status_batch_extract_folder": "Extracting folder...",
+        "status_batch_mux_folder": "Muxing extracted folder...",
         "status_cancelling": "Cancelling...",
         "log_operation_cancelled": "Operation cancelled.",
         "button_scan_mkv": "Scan MKV",
@@ -270,6 +313,11 @@ UI_TEXT = {
         "button_select_all": "Select All",
         "button_clear_all": "Clear All",
         "button_extract_selected": "Extract Selected",
+        "context_cut": "Cut",
+        "context_copy": "Copy",
+        "context_paste": "Paste",
+        "context_delete": "Delete",
+        "context_select_all": "Select All",
         "heading_selected": "Use",
         "heading_track": "Track",
         "heading_output_name": "Output name",
@@ -292,6 +340,7 @@ UI_TEXT = {
         "status_scanning_mkv": "Scanning MKV...",
         "status_extracting_tracks": "Extracting tracks...",
         "status_updating_third_party": "Checking/downloading tools...",
+        "log_app_update_available": "Application update available: {version}",
         "log_third_party_checking": "Checking {name}...",
         "log_third_party_current": "{name} is already current: {version}",
         "log_third_party_updated": "{name} updated: {version}",
@@ -380,6 +429,7 @@ UI_TEXT = {
         "button_browse": "Seç",
         "button_show": "Göster",
         "button_update_third_party": "Araçları Güncelle",
+        "button_app_update_available": "Güncelleme Mevcut",
         "label_image_language": "Görsel dili",
         "label_tag_language": "Tag dili",
         "label_tmdb_media_type": "TMDB türü",
@@ -423,8 +473,12 @@ UI_TEXT = {
         "button_cancel_job": "İşi İptal Et",
         "button_show_log": "Günlüğü Göster",
         "section_extract": "MKV Extract",
-        "path_source_mkv": "Kaynak MKV",
+        "path_source_mkv": "Kaynak MKV / klasör",
         "path_extract_folder": "Çıkarma klasörü",
+        "button_browse_file": "Dosya",
+        "button_browse_folder": "Klasör",
+        "button_extract_folder": "Klasörü Çıkar",
+        "button_mux_extracted_folder": "Çıkan Klasörleri Birleştir",
         "dialog_template_title": "MKVToolNix config seç",
         "filetype_all": "Tüm dosyalar",
         "filetype_video": "Video dosyaları",
@@ -432,7 +486,7 @@ UI_TEXT = {
         "dialog_config_error": "Config hatası",
         "dialog_track_folder_title": "Parça klasörü seç",
         "dialog_output_mkv_title": "Çıktı MKV seç",
-        "dialog_source_mkv_title": "Kaynak MKV seç",
+        "dialog_source_mkv_title": "Kaynak MKV / klasör seç",
         "dialog_extract_folder_title": "Çıkarma klasörü seç",
         "dialog_missing_info": "Eksik bilgi",
         "dialog_overwrite_title": "Üzerine yazılsın mı?",
@@ -446,9 +500,16 @@ UI_TEXT = {
         "log_output_default_used": "Çıktı yolu boştu, varsayılan kullanılıyor: {path}",
         "error_tmdb_media_type": "TMDB türü Film veya Dizi olmalı.",
         "error_tmdb_api_empty": "TMDB API key boş.",
+        "error_tmdb_artwork_api_required": "Görsel/tag oluşturma özelliğini kullanmak için geçerli bir TMDB API anahtarınız olmalıdır. API anahtarınız yoksa onay kutusunun işaretini kaldırın.",
         "error_tmdb_id_empty": "TMDB ID boş.",
         "error_tmdb_id_numeric": "TMDB ID sayısal olmalı.",
         "error_source_mkv_not_selected": "Kaynak MKV seçilmedi.",
+        "error_source_folder_not_selected": "Kaynak klasör seçilmedi.",
+        "error_source_folder_not_found": "Kaynak klasör bulunamadı: {source}",
+        "error_batch_no_video_files": "Kaynak klasörde video dosyası bulunamadı.",
+        "error_episode_number_missing": "Dosya adından sezon/bölüm okunamadı: {name}",
+        "error_batch_tmdb_tv_required": "TMDB ile klasör toplu işleminde tür Dizi olmalı.",
+        "error_batch_extract_dir_missing": "Çıkarılmış parça klasörü bulunamadı: {path}",
         "log_tracks_found": "Bulunan parça sayısı: {count}",
         "log_extra_subtitle_suffix": " (ek altyazı)",
         "log_default_track_suffix": " | varsayılan",
@@ -469,7 +530,15 @@ UI_TEXT = {
         "error_mkvmerge_exit": "mkvmerge hata kodu ile bitti: {code}",
         "log_mkvmerge_warnings": "mkvmerge uyarılarla tamamlandı.",
         "log_mkv_created": "MKV oluşturuldu: {path}",
+        "log_batch_episode": "Toplu bölüm {index}/{count}: {name}",
+        "log_batch_extract_dir": "Bölüm parça klasörü: {path}",
+        "log_batch_final_folder": "Final sezon klasörü: {path}",
+        "log_batch_moved": "MKV taşındı: {path}",
+        "log_batch_extract_complete": "Klasör çıkarma tamamlandı: {count} bölüm klasörü.",
+        "log_batch_mux_complete": "Klasör birleştirme tamamlandı: {count} MKV.",
         "status_creating_mkv": "MKV oluşturuluyor...",
+        "status_batch_extract_folder": "Klasör çıkarılıyor...",
+        "status_batch_mux_folder": "Çıkan klasörler birleştiriliyor...",
         "status_cancelling": "İptal ediliyor...",
         "log_operation_cancelled": "İş iptal edildi.",
         "button_scan_mkv": "MKV Tara",
@@ -477,6 +546,11 @@ UI_TEXT = {
         "button_select_all": "Tümünü Seç",
         "button_clear_all": "Tümünü Bırak",
         "button_extract_selected": "Seçileni Çıkar",
+        "context_cut": "Kes",
+        "context_copy": "Kopyala",
+        "context_paste": "Yapıştır",
+        "context_delete": "Sil",
+        "context_select_all": "Tümünü Seç",
         "heading_selected": "Al",
         "heading_track": "Parça",
         "heading_output_name": "Çıktı adı",
@@ -499,6 +573,7 @@ UI_TEXT = {
         "status_scanning_mkv": "MKV taranıyor...",
         "status_extracting_tracks": "Parçalar çıkarılıyor...",
         "status_updating_third_party": "Araçlar denetleniyor/indiriliyor...",
+        "log_app_update_available": "Uygulama güncellemesi mevcut: {version}",
         "log_third_party_checking": "{name} denetleniyor...",
         "log_third_party_current": "{name} zaten güncel: {version}",
         "log_third_party_updated": "{name} güncellendi: {version}",
@@ -771,7 +846,9 @@ AUDIO_EXTENSIONS = {
 }
 TRACK_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | SUBTITLE_EXTENSIONS
 STANDARD_ATTACHMENT_NAMES = ("cover.jpg", "small_cover.jpg", "l2a.jpg", "l2p.png")
+FONT_ATTACHMENT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"}
 MUX_UNKNOWN_LANGUAGE = "und"
+DEFAULT_OUTPUT_NAME = "output.mkv"
 RELEASE_STOP_TOKENS = {
     "2160p",
     "1080p",
@@ -1167,6 +1244,19 @@ class AppSettings:
     chapter_end_minutes: str
 
 
+@dataclass(frozen=True)
+class EpisodeRef:
+    season: int
+    episode: int
+
+
+@dataclass(frozen=True)
+class BatchEpisodeTask:
+    source: Path
+    extract_dir: Path
+    episode_ref: EpisodeRef
+
+
 @dataclass
 class ChapterOptions:
     enabled: bool
@@ -1289,6 +1379,73 @@ def read_third_party_json(url: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("JSON response is not an object")
     return value
+
+
+def app_version_numbers(value: str) -> tuple[int, ...] | None:
+    match = re.search(r"\d+(?:[._-]\d+)*", str(value or ""))
+    if not match:
+        return None
+    parts = tuple(int(part) for part in re.findall(r"\d+", match.group(0)))
+    return parts or None
+
+
+def padded_version_numbers(parts: tuple[int, ...]) -> tuple[int, ...]:
+    size = max(4, len(parts))
+    return parts + (0,) * (size - len(parts))
+
+
+def app_version_is_newer(latest_version: str, current_version: str) -> bool | None:
+    latest = app_version_numbers(latest_version)
+    current = app_version_numbers(current_version)
+    if latest is None or current is None:
+        return None
+    return padded_version_numbers(latest) > padded_version_numbers(current)
+
+
+def parse_github_datetime(value: str) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def app_build_datetime() -> datetime | None:
+    path = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    except OSError:
+        return None
+
+
+def latest_app_release() -> dict[str, str]:
+    release = read_third_party_json(APP_RELEASE_API_URL)
+    version = str(release.get("tag_name") or "").strip()
+    if not version:
+        raise ValueError("release tag is missing")
+    return {
+        "version": version,
+        "url": str(release.get("html_url") or APP_LATEST_RELEASE_URL),
+        "published_at": str(release.get("published_at") or release.get("created_at") or ""),
+    }
+
+
+def app_release_is_newer(release: dict[str, str]) -> bool:
+    version_result = app_version_is_newer(str(release.get("version") or ""), APP_VERSION)
+    if version_result is not None:
+        return version_result
+
+    published_at = parse_github_datetime(str(release.get("published_at") or ""))
+    built_at = app_build_datetime()
+    if published_at is None or built_at is None:
+        return False
+    # Unversioned packaged builds are usually created before the GitHub release is published.
+    return published_at > built_at + timedelta(hours=24)
 
 
 def error_reason(exc: BaseException) -> str:
@@ -2143,6 +2300,179 @@ def tmdb_output_path(media_dir: Path, title: str) -> Path:
     return media_dir / f"{safe_filename_stem(title)}.mkv"
 
 
+def episode_code(ref: EpisodeRef) -> str:
+    return f"S{ref.season:02d}E{ref.episode:02d}"
+
+
+def tv_episode_output_title(
+    series_title: str,
+    episode_ref: EpisodeRef,
+    episode_title: str = "",
+) -> str:
+    parts = [series_title.strip() or "TV", episode_code(episode_ref)]
+    if episode_title.strip():
+        parts.append(episode_title.strip())
+    return " - ".join(parts)
+
+
+def batch_episode_series_title(source_dir: Path, source: Path) -> str:
+    title, _ = parse_release_name(source.stem)
+    if title:
+        return title
+    title, _ = parse_release_name(source_dir.name)
+    if title:
+        return title
+    return clean_release_title(source_dir.name or source.stem) or source.stem
+
+
+def batch_episode_preview_title(source_dir: Path, task: BatchEpisodeTask) -> str:
+    return tv_episode_output_title(
+        batch_episode_series_title(source_dir, task.source),
+        task.episode_ref,
+    )
+
+
+def batch_episode_output_path(source_dir: Path, task: BatchEpisodeTask) -> Path:
+    return task.extract_dir / f"{safe_filename_stem(batch_episode_preview_title(source_dir, task))}.mkv"
+
+
+def batch_mkv_title_for_episode(
+    user_title: str,
+    default_title: str,
+    first_default_title: str,
+    first_ref: EpisodeRef,
+    current_ref: EpisodeRef,
+) -> str:
+    title = user_title.strip()
+    if not title:
+        return default_title
+    if current_ref == first_ref:
+        return title
+
+    if first_default_title and title.startswith(first_default_title):
+        return default_title + title[len(first_default_title):]
+
+    first_code = episode_code(first_ref)
+    current_code = episode_code(current_ref)
+    return re.sub(re.escape(first_code), current_code, title, count=1, flags=re.IGNORECASE)
+
+
+def localized_season_label(season: int, language: str) -> str:
+    if normalise_language(language) == "tr":
+        return f"Sezon {season}"
+    return f"Season {season}"
+
+
+def season_folder_name(
+    series_title: str,
+    season_name: str,
+    season: int,
+    language: str,
+) -> str:
+    title = series_title.strip() or "TV"
+    name = season_name.strip() or localized_season_label(season, language)
+    return safe_filename_stem(f"{title} - {name}")
+
+
+def parse_episode_ref_from_text(value: str) -> EpisodeRef | None:
+    text = value.lower()
+    patterns = (
+        r"(?:^|[^a-z0-9])s(\d{1,2})[ ._\-]*e(\d{1,3})(?:$|[^a-z0-9])",
+        r"(?:^|[^a-z0-9])(\d{1,2})x(\d{1,3})(?:$|[^a-z0-9])",
+        (
+            r"(?:season|sezon)[ ._\-]*(\d{1,2}).{0,30}?"
+            r"(?:episode|ep|bolum|bölüm)[ ._\-]*(\d{1,3})"
+        ),
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            season = int(match.group(1))
+            episode = int(match.group(2))
+            if season >= 0 and episode > 0:
+                return EpisodeRef(season, episode)
+    return None
+
+
+def parse_season_number_from_text(value: str) -> int | None:
+    text = value.lower()
+    patterns = (
+        r"(?:^|[^a-z0-9])s(\d{1,2})(?:$|[^a-z0-9])",
+        r"(?:season|sezon)[ ._\-]*(\d{1,2})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def parse_episode_number_from_text(value: str) -> int | None:
+    text = value.lower()
+    patterns = (
+        r"(?:^|[^a-z0-9])e(\d{1,3})(?:$|[^a-z0-9])",
+        r"(?:episode|ep|bolum|bölüm)[ ._\-]*(\d{1,3})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            episode = int(match.group(1))
+            if episode > 0:
+                return episode
+    return None
+
+
+def episode_ref_from_path(path: Path, default_season: int | None = None) -> EpisodeRef | None:
+    for candidate in (path.stem, path.name):
+        parsed = parse_episode_ref_from_text(candidate)
+        if parsed is not None:
+            return parsed
+
+    season = default_season
+    if season is None:
+        for parent in (path.parent, path.parent.parent):
+            season = parse_season_number_from_text(parent.name)
+            if season is not None:
+                break
+
+    episode = parse_episode_number_from_text(path.stem)
+    if season is not None and episode is not None:
+        return EpisodeRef(season, episode)
+
+    return None
+
+
+def episode_ref_from_settings(settings: AppSettings) -> EpisodeRef | None:
+    if settings.media_type != "tv":
+        return None
+    for candidate in (settings.media_dir, settings.output_path):
+        parsed = episode_ref_from_path(candidate)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def natural_path_sort_key(path: Path) -> list[Any]:
+    parts: list[Any] = []
+    for token in re.split(r"(\d+)", path.name.lower()):
+        if token.isdigit():
+            parts.append(int(token))
+        elif token:
+            parts.append(token)
+    return parts
+
+
+def video_sources_in_folder(source_dir: Path) -> list[Path]:
+    return sorted(
+        (
+            path
+            for path in source_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in VIDEO_CONTAINER_EXTENSIONS
+        ),
+        key=natural_path_sort_key,
+    )
+
+
 def clean_release_title(value: str) -> str:
     cleaned = re.sub(r"[._+\-\[\]\(\)]+", " ", value)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
@@ -2164,6 +2494,55 @@ def parse_release_name(name: str) -> tuple[str, str]:
             break
         title_tokens.append(token)
     return clean_release_title(" ".join(title_tokens)), ""
+
+
+def strip_track_folder_suffix(name: str) -> str:
+    return re.sub(r"(?i)(?:[._\-\s]+)?tracks?$", "", name).strip(" ._-")
+
+
+def is_generic_track_folder_name(name: str) -> bool:
+    return clean_release_title(name).lower() in {"track", "tracks"}
+
+
+def release_output_name_candidates(media_dir: Path) -> list[str]:
+    result: list[str] = []
+    for raw in (media_dir.name, media_dir.parent.name):
+        for candidate in (strip_track_folder_suffix(raw), raw):
+            candidate = candidate.strip()
+            if not candidate or is_generic_track_folder_name(candidate):
+                continue
+            if candidate not in result:
+                result.append(candidate)
+    return result
+
+
+def release_output_title_from_folder(media_dir: Path) -> str:
+    fallback = ""
+    for candidate in release_output_name_candidates(media_dir):
+        title, year = parse_release_name(candidate)
+        if not title:
+            continue
+        output_title = f"{title} ({year})" if year else title
+        if year:
+            return output_title
+        if not fallback:
+            fallback = output_title
+    return fallback
+
+
+def default_output_name(config: dict[str, Any], media_dir: Path) -> str:
+    template_name = template_output_name(config)
+    if template_name.casefold() != DEFAULT_OUTPUT_NAME:
+        return template_name
+
+    release_title = release_output_title_from_folder(media_dir)
+    if release_title:
+        return f"{safe_filename_stem(release_title)}.mkv"
+    return DEFAULT_OUTPUT_NAME
+
+
+def default_output_path(config: dict[str, Any], media_dir: Path) -> Path:
+    return media_dir / default_output_name(config, media_dir)
 
 
 def release_name_candidates(settings: AppSettings) -> list[str]:
@@ -2291,8 +2670,8 @@ def base_template_config() -> dict[str, Any]:
         "global": {
             "chapterLanguage": "tr",
             "chapters": "chapters.txt",
-            "destination": "output.mkv",
-            "destinationAuto": "output.mkv",
+            "destination": DEFAULT_OUTPUT_NAME,
+            "destinationAuto": DEFAULT_OUTPUT_NAME,
             "globalTags": "",
             "title": "",
             "stopAfterVideoEnds": False,
@@ -2340,7 +2719,7 @@ def save_saved_preferences(preferences: dict[str, str]) -> None:
 
 
 def template_output_name(config: dict[str, Any]) -> str:
-    destination = config.get("global", {}).get("destination") or "output.mkv"
+    destination = config.get("global", {}).get("destination") or DEFAULT_OUTPUT_NAME
     return Path(destination).name
 
 
@@ -2828,6 +3207,41 @@ def make_track_entry_from_path(
     return make_minimal_track_entry(path, object_id_seed, unknown_language)
 
 
+def discover_auto_attachment_paths(media_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    used: set[str] = set()
+
+    for name in STANDARD_ATTACHMENT_NAMES:
+        path = media_dir / name
+        if path.exists() and path.is_file():
+            paths.append(path)
+            used.add(str(path.resolve()).lower())
+
+    for path in sorted(media_dir.rglob("*"), key=lambda item: str(item).lower()):
+        if not path.is_file() or path.suffix.lower() not in FONT_ATTACHMENT_EXTENSIONS:
+            continue
+        key = str(path.resolve()).lower()
+        if key in used:
+            continue
+        paths.append(path)
+        used.add(key)
+
+    return paths
+
+
+def attachment_mime_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    font_mimes = {
+        ".ttf": "font/ttf",
+        ".otf": "font/otf",
+        ".ttc": "font/collection",
+        ".otc": "font/collection",
+        ".woff": "font/woff",
+        ".woff2": "font/woff2",
+    }
+    return font_mimes.get(suffix) or guess_mime_type(path)
+
+
 def create_auto_template_config(media_dir: Path) -> dict[str, Any]:
     config = base_template_config()
     entries: list[dict[str, Any]] = []
@@ -2847,18 +3261,16 @@ def create_auto_template_config(media_dir: Path) -> dict[str, Any]:
     ]
 
     attachments = []
-    for name in STANDARD_ATTACHMENT_NAMES:
-        path = media_dir / name
-        if path.exists():
-            attachments.append(
-                {
-                    "MIMEType": guess_mime_type(path),
-                    "description": "",
-                    "fileName": str(path),
-                    "name": name,
-                    "style": 1,
-                }
-            )
+    for path in discover_auto_attachment_paths(media_dir):
+        attachments.append(
+            {
+                "MIMEType": attachment_mime_type(path),
+                "description": "",
+                "fileName": str(path),
+                "name": path.name,
+                "style": 1,
+            }
+        )
     input_section["attachments"] = rebuild_numbered_section(
         input_section["attachments"],
         attachments,
@@ -3038,7 +3450,7 @@ def required_attachments(config: dict[str, Any], media_dir: Path) -> list[dict[s
             {
                 "path": path,
                 "name": name,
-                "mime": attachment.get("MIMEType") or guess_mime_type(path),
+                "mime": attachment.get("MIMEType") or attachment_mime_type(path),
                 "description": attachment.get("description") or "",
             }
         )
@@ -3060,21 +3472,19 @@ def discover_attachments(
         else:
             missing.append(attachment["path"].name)
 
-    for name in STANDARD_ATTACHMENT_NAMES:
-        if name.lower() in used_names:
-            continue
-        path = media_dir / name
-        if not path.exists():
+    for path in discover_auto_attachment_paths(media_dir):
+        attachment_name = path.name
+        if attachment_name.lower() in used_names:
             continue
         result.append(
             {
                 "path": path,
-                "name": name,
-                "mime": guess_mime_type(path),
+                "name": attachment_name,
+                "mime": attachment_mime_type(path),
                 "description": "",
             }
         )
-        used_names.add(name.lower())
+        used_names.add(attachment_name.lower())
 
     return result, missing
 
@@ -3090,6 +3500,27 @@ def format_chapter_timestamp(total_seconds: float) -> str:
     minutes, remainder = divmod(remainder, 60_000)
     seconds, milliseconds = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
+def chapter_end_minutes_from_duration_seconds(duration_seconds: float) -> str:
+    if duration_seconds <= 0:
+        return ""
+    return str(max(1, int(math.ceil(duration_seconds / 60))))
+
+
+def duration_seconds_from_identify_payload(payload: dict[str, Any]) -> float:
+    durations = [
+        parse_duration_seconds(payload.get("container", {}).get("properties", {}).get("duration"))
+    ]
+    for track in payload.get("tracks", []):
+        durations.append(parse_duration_seconds(track.get("properties", {}).get("duration")))
+    return max(durations, default=0.0)
+
+
+def detect_chapter_end_minutes_for_source(source: Path) -> str:
+    return chapter_end_minutes_from_duration_seconds(
+        duration_seconds_from_identify_payload(identify_mkv(source))
+    )
 
 
 def detect_item_duration_seconds(
@@ -3119,12 +3550,7 @@ def detect_item_duration_seconds(
     except json.JSONDecodeError:
         return 0.0
 
-    durations = [
-        parse_duration_seconds(payload.get("container", {}).get("properties", {}).get("duration"))
-    ]
-    for track in payload.get("tracks", []):
-        durations.append(parse_duration_seconds(track.get("properties", {}).get("duration")))
-    return max(durations, default=0.0)
+    return duration_seconds_from_identify_payload(payload)
 
 
 def detect_media_duration_seconds(
@@ -3147,6 +3573,32 @@ def detect_media_duration_seconds(
         if duration > 0:
             return duration
     return 0.0
+
+
+def detect_chapter_end_minutes_for_media_dir(
+    config: dict[str, Any],
+    media_dir: Path,
+    include_extra_subtitles: bool,
+    tag_language: str = "",
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> str:
+    unknown_language = normalise_language(tag_language) if tag_language else MUX_UNKNOWN_LANGUAGE
+    items, _, _ = discover_track_items(
+        config,
+        media_dir,
+        include_extra_subtitles,
+        unknown_language,
+    )
+    return chapter_end_minutes_from_duration_seconds(
+        detect_media_duration_seconds(
+            items,
+            cancel_event=cancel_event,
+            register_process=register_process,
+            unregister_process=unregister_process,
+        )
+    )
 
 
 def write_auto_chapters_file(
@@ -3667,6 +4119,33 @@ def imdb_id_from_details(details: dict[str, Any]) -> str:
     return ""
 
 
+def tv_episode_title_from_details(details: dict[str, Any]) -> str:
+    return str(details.get("name") or "").strip()
+
+
+def tv_episode_air_date(details: dict[str, Any]) -> str:
+    return str(details.get("air_date") or "").strip()
+
+
+def tv_episode_crew_names(details: dict[str, Any], jobs: set[str]) -> list[str]:
+    crew_values: list[Any] = []
+    credits = details.get("credits")
+    if isinstance(credits, dict) and isinstance(credits.get("crew"), list):
+        crew_values.extend(credits["crew"])
+    if isinstance(details.get("crew"), list):
+        crew_values.extend(details["crew"])
+
+    names: list[str] = []
+    for member in crew_values:
+        if not isinstance(member, dict):
+            continue
+        job = str(member.get("job") or "").strip()
+        name = str(member.get("name") or "").strip()
+        if job in jobs and name and name not in names:
+            names.append(name)
+    return names
+
+
 def add_simple_tag(parent: ET.Element, name: str, value: Any, language: str) -> None:
     text = str(value or "").strip()
     if not text:
@@ -3742,6 +4221,68 @@ def write_tmdb_tags_file(
     return path
 
 
+def write_tmdb_episode_tags_file(
+    path: Path,
+    series_details: dict[str, Any],
+    episode_details: dict[str, Any],
+    tmdb_id: str,
+    episode_ref: EpisodeRef,
+    language: str,
+) -> Path:
+    root = ET.Element("Tags")
+    tag = ET.SubElement(root, "Tag")
+    ET.SubElement(tag, "Targets")
+
+    series_title = title_from_details(series_details)
+    episode_title = tv_episode_title_from_details(episode_details)
+    output_title = tv_episode_output_title(series_title, episode_ref, episode_title)
+    add_simple_tag(tag, "TITLE", output_title, language)
+    add_simple_tag(tag, "SERIES_TITLE", series_title, language)
+    add_simple_tag(tag, "EPISODE_TITLE", episode_title, language)
+    add_simple_tag(tag, "SEASON_NUMBER", episode_ref.season, language)
+    add_simple_tag(tag, "EPISODE_NUMBER", episode_ref.episode, language)
+    add_simple_tag(tag, "PART_NUMBER", episode_ref.episode, language)
+    add_simple_tag(tag, "SUMMARY", episode_details.get("overview"), language)
+    add_simple_tag(tag, "DATE_RELEASED", tv_episode_air_date(episode_details), language)
+    add_simple_tag(tag, "ORIGINAL_LANGUAGE", series_details.get("original_language"), language)
+    add_repeated_simple_tags(tag, "GENRE", names_from_list(series_details.get("genres")), language)
+    add_repeated_simple_tags(
+        tag,
+        "PRODUCTION_STUDIO",
+        names_from_list(series_details.get("production_companies")),
+        language,
+    )
+    add_repeated_simple_tags(
+        tag,
+        "DIRECTOR",
+        tv_episode_crew_names(episode_details, {"Director"}),
+        language,
+    )
+    add_repeated_simple_tags(
+        tag,
+        "WRITTEN_BY",
+        tv_episode_crew_names(
+            episode_details,
+            {"Writer", "Screenplay", "Story", "Teleplay"},
+        ),
+        language,
+    )
+    add_simple_tag(tag, "TMDB_ID", tmdb_id, language)
+    add_simple_tag(
+        tag,
+        "URL",
+        f"https://www.themoviedb.org/tv/{tmdb_id}/season/{episode_ref.season}/episode/{episode_ref.episode}",
+        language,
+    )
+    add_simple_tag(tag, "IMDB", imdb_id_from_details(episode_details), language)
+
+    ET.indent(root, space="  ")
+    tree = ET.ElementTree(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+    return path
+
+
 def ensure_tmdb_tags_file(
     settings: AppSettings,
     client: TMDBClient,
@@ -3749,9 +4290,10 @@ def ensure_tmdb_tags_file(
     tmdb_id: str,
     language: str,
     log: Callable[[str], None],
+    episode_ref: EpisodeRef | None = None,
 ) -> None:
     tags_path = settings.media_dir / "tags.xml"
-    if tags_path.exists():
+    if tags_path.exists() and episode_ref is None:
         log(ui_text("log_tags_exists"))
         return
 
@@ -3762,19 +4304,39 @@ def ensure_tmdb_tags_file(
             "append_to_response": "credits,external_ids",
         },
     )
-    write_tmdb_tags_file(tags_path, details, media_type, tmdb_id, language)
+    if media_type == "tv" and episode_ref is not None:
+        episode_details = client.get_json(
+            f"/tv/{tmdb_id}/season/{episode_ref.season}/episode/{episode_ref.episode}",
+            {
+                "language": detail_language(language),
+                "append_to_response": "credits,external_ids",
+            },
+        )
+        write_tmdb_episode_tags_file(
+            tags_path,
+            details,
+            episode_details,
+            tmdb_id,
+            episode_ref,
+            language,
+        )
+    else:
+        write_tmdb_tags_file(tags_path, details, media_type, tmdb_id, language)
     log(ui_text("log_tags_ready"))
 
 
 def download_tmdb_assets(
     settings: AppSettings,
     log: Callable[[str], None],
+    episode_ref: EpisodeRef | None = None,
 ) -> str:
     client = TMDBClient(settings.api_key)
     language = normalise_language(settings.image_language)
     tag_language = normalise_language(settings.tag_language)
     media_type = settings.media_type
     tmdb_id = settings.tmdb_id
+    if episode_ref is None:
+        episode_ref = episode_ref_from_settings(settings)
 
     details = client.get_json(
         f"/{media_type}/{tmdb_id}",
@@ -3828,7 +4390,26 @@ def download_tmdb_assets(
         ui_text("log_l2p_ready"),
     )
 
-    ensure_tmdb_tags_file(settings, client, media_type, tmdb_id, tag_language, log)
+    ensure_tmdb_tags_file(
+        settings,
+        client,
+        media_type,
+        tmdb_id,
+        tag_language,
+        log,
+        episode_ref=episode_ref if media_type == "tv" else None,
+    )
+
+    if media_type == "tv" and episode_ref is not None:
+        episode_details = client.get_json(
+            f"/tv/{tmdb_id}/season/{episode_ref.season}/episode/{episode_ref.episode}",
+            {"language": detail_language(language)},
+        )
+        return tv_episode_output_title(
+            title,
+            episode_ref,
+            tv_episode_title_from_details(episode_details),
+        )
 
     return title
 
@@ -3873,6 +4454,55 @@ def tmdb_title_for_language(settings: AppSettings, tmdb_id: str, language: str) 
         {"language": detail_language(normalise_language(language))},
     )
     return title_from_details(details)
+
+
+def tmdb_output_title_for_language(
+    settings: AppSettings,
+    tmdb_id: str,
+    language: str,
+    episode_ref: EpisodeRef | None = None,
+) -> str:
+    series_title = tmdb_title_for_language(settings, tmdb_id, language)
+    if settings.media_type != "tv":
+        return series_title
+    if episode_ref is None:
+        episode_ref = episode_ref_from_settings(settings)
+    if episode_ref is None:
+        return series_title
+
+    client = TMDBClient(settings.api_key)
+    episode_details = client.get_json(
+        f"/tv/{tmdb_id}/season/{episode_ref.season}/episode/{episode_ref.episode}",
+        {"language": detail_language(normalise_language(language))},
+    )
+    return tv_episode_output_title(
+        series_title,
+        episode_ref,
+        tv_episode_title_from_details(episode_details),
+    )
+
+
+def tmdb_season_folder_path(source_dir: Path, settings: AppSettings, season: int) -> Path:
+    language = normalise_language(settings.image_language)
+    if settings.download_before_mux and settings.media_type == "tv" and settings.api_key and settings.tmdb_id:
+        client = TMDBClient(settings.api_key)
+        series_details = client.get_json(
+            f"/tv/{settings.tmdb_id}",
+            {"language": detail_language(language)},
+        )
+        season_details = client.get_json(
+            f"/tv/{settings.tmdb_id}/season/{season}",
+            {"language": detail_language(language)},
+        )
+        folder_name = season_folder_name(
+            title_from_details(series_details),
+            str(season_details.get("name") or ""),
+            season,
+            language,
+        )
+    else:
+        folder_name = season_folder_name(source_dir.name, "", season, language)
+    return source_dir.parent / folder_name
 
 
 def command_preview(args: list[str]) -> str:
@@ -4935,6 +5565,8 @@ class MkvCreatorApp(tk.Tk):
         self.log_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.log_lines: list[str] = []
         self.worker: threading.Thread | None = None
+        self.app_update_thread: threading.Thread | None = None
+        self.app_update_url = APP_LATEST_RELEASE_URL
         self.current_operation: str | None = None
         self.cancel_event = threading.Event()
         self.active_processes: set[subprocess.Popen[Any]] = set()
@@ -4991,6 +5623,7 @@ class MkvCreatorApp(tk.Tk):
         self.chapter_end_var = tk.StringVar(
             value=self.saved_preferences.get("chapter_end_minutes", "")
         )
+        self.auto_chapter_end_value = self.chapter_end_var.get().strip()
         self.show_api_key_var = tk.BooleanVar(value=False)
         self.progress_var = tk.DoubleVar(value=0.0)
         self.progress_status_var = tk.StringVar(value=self.tr("status_ready"))
@@ -5006,16 +5639,24 @@ class MkvCreatorApp(tk.Tk):
         self.extract_toggle_button: ttk.Button | None = None
         self.extract_all_button: ttk.Button | None = None
         self.extract_button: ttk.Button | None = None
+        self.batch_extract_button: ttk.Button | None = None
+        self.batch_mux_button: ttk.Button | None = None
         self.third_party_button: ttk.Button | None = None
+        self.app_update_button: ttk.Button | None = None
+        self.download_before_mux_checkbutton: ttk.Checkbutton | None = None
         self.media_type_combobox: ttk.Combobox | None = None
         self.progress_bar: ttk.Progressbar | None = None
         self.log_window: tk.Toplevel | None = None
         self.log_window_text: ScrolledText | None = None
 
+        self.install_text_context_menu()
         self._build_ui()
+        self.api_key_var.trace_add("write", self.on_api_key_changed)
         self.refresh_tmdb_media_type_display()
+        self.update_download_before_mux_state()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self._drain_log_queue)
+        self.after(800, self.start_check_app_update)
         if initial_extract_source is not None:
             self.after(50, lambda: self.set_extract_source(initial_extract_source, scan=True))
 
@@ -5160,6 +5801,188 @@ class MkvCreatorApp(tk.Tk):
         if self.extract_tree is not None:
             for item in self.extract_items.values():
                 self.update_extract_tree_row(item)
+
+    def install_text_context_menu(self) -> None:
+        for bind_tag in ("Entry", "TEntry", "TCombobox", "Text"):
+            self.bind_class(bind_tag, "<Button-3>", self.show_text_context_menu, add="+")
+            self.bind_class(bind_tag, "<Control-Button-1>", self.show_text_context_menu, add="+")
+            self.bind_class(bind_tag, "<Menu>", self.show_text_context_menu_from_keyboard, add="+")
+            self.bind_class(bind_tag, "<Shift-F10>", self.show_text_context_menu_from_keyboard, add="+")
+
+    def is_text_context_widget(self, widget: tk.Widget) -> bool:
+        try:
+            return widget.winfo_class() in {"Entry", "TEntry", "TCombobox", "Text"}
+        except tk.TclError:
+            return False
+
+    def text_widget_states(self, widget: tk.Widget) -> set[str]:
+        states: set[str] = set()
+        try:
+            widget_state = widget.state()  # type: ignore[attr-defined]
+        except (AttributeError, tk.TclError):
+            widget_state = ()
+        if isinstance(widget_state, str):
+            states.add(widget_state)
+        else:
+            states.update(str(value) for value in widget_state)
+
+        try:
+            configured_state = str(widget.cget("state"))
+        except tk.TclError:
+            configured_state = ""
+        if configured_state:
+            states.add(configured_state)
+        return states
+
+    def text_widget_is_editable(self, widget: tk.Widget) -> bool:
+        return not ({"disabled", "readonly"} & self.text_widget_states(widget))
+
+    def text_widget_has_selection(self, widget: tk.Widget) -> bool:
+        try:
+            if widget.winfo_class() == "Text":
+                widget.index("sel.first")  # type: ignore[attr-defined]
+                widget.index("sel.last")  # type: ignore[attr-defined]
+                return True
+            return bool(widget.selection_present())  # type: ignore[attr-defined]
+        except (AttributeError, tk.TclError):
+            return False
+
+    def text_widget_has_text(self, widget: tk.Widget) -> bool:
+        try:
+            if widget.winfo_class() == "Text":
+                return bool(widget.compare("end-1c", ">", "1.0"))  # type: ignore[attr-defined]
+            return bool(widget.get())  # type: ignore[attr-defined]
+        except (AttributeError, tk.TclError):
+            return False
+
+    def clipboard_has_text(self) -> bool:
+        try:
+            self.clipboard_get()
+            return True
+        except tk.TclError:
+            return False
+
+    def position_text_context_cursor(self, widget: tk.Widget, event: tk.Event) -> None:
+        try:
+            widget.focus_set()
+        except tk.TclError:
+            return
+        if self.text_widget_has_selection(widget):
+            return
+        try:
+            if widget.winfo_class() == "Text":
+                widget.mark_set("insert", f"@{event.x},{event.y}")  # type: ignore[attr-defined]
+            else:
+                widget.icursor(widget.index(f"@{event.x}"))  # type: ignore[attr-defined]
+        except (AttributeError, tk.TclError):
+            pass
+
+    def show_text_context_menu(self, event: tk.Event) -> str | None:
+        widget = event.widget
+        if not isinstance(widget, tk.Widget) or not self.is_text_context_widget(widget):
+            return None
+        self.position_text_context_cursor(widget, event)
+        return self.popup_text_context_menu(widget, event.x_root, event.y_root)
+
+    def show_text_context_menu_from_keyboard(self, event: tk.Event) -> str | None:
+        widget = event.widget
+        if not isinstance(widget, tk.Widget) or not self.is_text_context_widget(widget):
+            return None
+        try:
+            widget.focus_set()
+            x_root = widget.winfo_rootx() + 8
+            y_root = widget.winfo_rooty() + min(widget.winfo_height(), 28)
+        except tk.TclError:
+            return None
+        return self.popup_text_context_menu(widget, x_root, y_root)
+
+    def popup_text_context_menu(self, widget: tk.Widget, x_root: int, y_root: int) -> str:
+        editable = self.text_widget_is_editable(widget)
+        has_selection = self.text_widget_has_selection(widget)
+        has_text = self.text_widget_has_text(widget)
+        has_clipboard = self.clipboard_has_text()
+
+        menu = tk.Menu(self, tearoff=False)
+        menu.add_command(
+            label=self.tr("context_cut"),
+            command=lambda: self.context_cut(widget),
+            state=tk.NORMAL if editable and has_selection else tk.DISABLED,
+        )
+        menu.add_command(
+            label=self.tr("context_copy"),
+            command=lambda: self.context_copy(widget),
+            state=tk.NORMAL if has_selection else tk.DISABLED,
+        )
+        menu.add_command(
+            label=self.tr("context_paste"),
+            command=lambda: self.context_paste(widget),
+            state=tk.NORMAL if editable and has_clipboard else tk.DISABLED,
+        )
+        menu.add_command(
+            label=self.tr("context_delete"),
+            command=lambda: self.context_delete(widget),
+            state=tk.NORMAL if editable and has_selection else tk.DISABLED,
+        )
+        menu.add_separator()
+        menu.add_command(
+            label=self.tr("context_select_all"),
+            command=lambda: self.context_select_all(widget),
+            state=tk.NORMAL if has_text else tk.DISABLED,
+        )
+        try:
+            menu.tk_popup(x_root, y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    def context_copy(self, widget: tk.Widget) -> None:
+        try:
+            selected_text = widget.selection_get()
+            self.clipboard_clear()
+            self.clipboard_append(selected_text)
+        except tk.TclError:
+            pass
+
+    def context_cut(self, widget: tk.Widget) -> None:
+        if not self.text_widget_is_editable(widget) or not self.text_widget_has_selection(widget):
+            return
+        self.context_copy(widget)
+        self.context_delete(widget)
+
+    def context_paste(self, widget: tk.Widget) -> None:
+        if not self.text_widget_is_editable(widget):
+            return
+        try:
+            pasted_text = self.clipboard_get()
+            if self.text_widget_has_selection(widget):
+                self.context_delete(widget)
+            widget.insert("insert", pasted_text)  # type: ignore[attr-defined]
+        except (AttributeError, tk.TclError):
+            pass
+
+    def context_delete(self, widget: tk.Widget) -> None:
+        if not self.text_widget_is_editable(widget) or not self.text_widget_has_selection(widget):
+            return
+        try:
+            if widget.winfo_class() == "Text":
+                widget.delete("sel.first", "sel.last")  # type: ignore[attr-defined]
+            else:
+                widget.delete("sel.first", "sel.last")  # type: ignore[attr-defined]
+        except (AttributeError, tk.TclError):
+            pass
+
+    def context_select_all(self, widget: tk.Widget) -> None:
+        try:
+            widget.focus_set()
+            if widget.winfo_class() == "Text":
+                widget.tag_add("sel", "1.0", "end-1c")  # type: ignore[attr-defined]
+                widget.mark_set("insert", "end-1c")  # type: ignore[attr-defined]
+                widget.see("insert")  # type: ignore[attr-defined]
+            else:
+                widget.selection_range(0, "end")  # type: ignore[attr-defined]
+                widget.icursor("end")  # type: ignore[attr-defined]
+        except (AttributeError, tk.TclError):
+            pass
 
     def configure_ui_theme(self) -> None:
         self.configure(background=UI_COLORS["window"])
@@ -5351,9 +6174,48 @@ class MkvCreatorApp(tk.Tk):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
-        outer = ttk.Frame(self, padding=18, style="Root.TFrame")
-        outer.grid(row=0, column=0, sticky="nsew")
+        viewport = ttk.Frame(self, style="Root.TFrame")
+        viewport.grid(row=0, column=0, sticky="nsew")
+        viewport.columnconfigure(0, weight=1)
+        viewport.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            viewport,
+            highlightthickness=0,
+            borderwidth=0,
+            background=UI_COLORS["window"],
+        )
+        scrollbar = ttk.Scrollbar(viewport, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        outer = ttk.Frame(canvas, padding=18, style="Root.TFrame")
+        outer_window = canvas.create_window((0, 0), window=outer, anchor="nw")
         outer.columnconfigure(0, weight=1)
+
+        outer.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(outer_window, width=event.width),
+        )
+
+        def on_main_mousewheel(event: tk.Event) -> str:
+            if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0:
+                canvas.yview_scroll(-3, "units")
+            else:
+                canvas.yview_scroll(3, "units")
+            return "break"
+
+        def bind_main_scroll(widget: tk.Widget) -> None:
+            widget.bind("<MouseWheel>", on_main_mousewheel, add="+")
+            widget.bind("<Button-4>", on_main_mousewheel, add="+")
+            widget.bind("<Button-5>", on_main_mousewheel, add="+")
+            for child in widget.winfo_children():
+                bind_main_scroll(child)
 
         header = ttk.Frame(outer, style="Root.TFrame")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
@@ -5388,6 +6250,14 @@ class MkvCreatorApp(tk.Tk):
         )
         self.localize_widget(self.third_party_button, "button_update_third_party")
         self.third_party_button.grid(row=0, column=4, sticky="e", padx=(8, 0))
+        self.app_update_button = ttk.Button(
+            header,
+            command=self.open_app_update_release,
+            style="Accent.TButton",
+        )
+        self.localize_widget(self.app_update_button, "button_app_update_available")
+        self.app_update_button.grid(row=0, column=5, sticky="e", padx=(8, 0))
+        self.app_update_button.grid_remove()
 
         form = self.make_section(outer, 1, "section_create_mkv")
 
@@ -5499,11 +6369,12 @@ class MkvCreatorApp(tk.Tk):
             ),
             "option_include_extra_subtitles",
         ).grid(row=0, column=0, sticky="w")
+        self.download_before_mux_checkbutton = ttk.Checkbutton(
+            options,
+            variable=self.download_before_mux_var,
+        )
         self.localize_widget(
-            ttk.Checkbutton(
-                options,
-                variable=self.download_before_mux_var,
-            ),
+            self.download_before_mux_checkbutton,
             "option_download_before_mux",
         ).grid(row=0, column=1, sticky="w", padx=(18, 0))
         row += 1
@@ -5588,7 +6459,7 @@ class MkvCreatorApp(tk.Tk):
 
         extract = self.make_section(outer, 4, "section_extract")
 
-        self._path_row(extract, 0, "path_source_mkv", self.extract_source_var, self.browse_extract_source)
+        self._extract_source_path_row(extract, 0)
         self._path_row(
             extract,
             1,
@@ -5596,6 +6467,27 @@ class MkvCreatorApp(tk.Tk):
             self.extract_output_dir_var,
             self.browse_extract_output_dir,
         )
+        batch_actions = ttk.Frame(extract)
+        batch_actions.grid(row=2, column=1, columnspan=2, sticky="ew", padx=8, pady=(5, 0))
+        batch_actions.columnconfigure(0, weight=1)
+        batch_actions.columnconfigure(1, weight=1)
+
+        self.batch_extract_button = ttk.Button(
+            batch_actions,
+            command=self.start_batch_extract_folder,
+        )
+        self.localize_widget(self.batch_extract_button, "button_extract_folder")
+        self.batch_extract_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        self.batch_mux_button = ttk.Button(
+            batch_actions,
+            command=self.start_batch_mux_folder,
+            style="Accent.TButton",
+        )
+        self.localize_widget(self.batch_mux_button, "button_mux_extracted_folder")
+        self.batch_mux_button.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        bind_main_scroll(outer)
 
     def make_log_text(self, parent: tk.Widget, height: int) -> ScrolledText:
         return ScrolledText(
@@ -5638,8 +6530,41 @@ class MkvCreatorApp(tk.Tk):
             "button_browse",
         ).grid(row=row, column=2, sticky="ew", pady=5)
 
+    def _extract_source_path_row(self, parent: ttk.Frame, row: int) -> None:
+        self.localize_widget(ttk.Label(parent), "path_source_mkv").grid(
+            row=row,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        source_row = ttk.Frame(parent)
+        source_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
+        source_row.columnconfigure(0, weight=1)
+        ttk.Entry(source_row, textvariable=self.extract_source_var).grid(row=0, column=0, sticky="ew")
+        self.localize_widget(
+            ttk.Button(source_row, command=self.browse_extract_source),
+            "button_browse_file",
+        ).grid(row=0, column=1, padx=(8, 0))
+        self.localize_widget(
+            ttk.Button(source_row, command=self.browse_extract_source_folder),
+            "button_browse_folder",
+        ).grid(row=0, column=2, padx=(8, 0))
+
     def toggle_api_key_visibility(self) -> None:
         self.api_key_entry.configure(show="" if self.show_api_key_var.get() else "*")
+
+    def on_api_key_changed(self, *_args: str) -> None:
+        self.update_download_before_mux_state()
+
+    def update_download_before_mux_state(self) -> None:
+        if self.download_before_mux_checkbutton is None:
+            return
+        has_api_key = bool(self.api_key_var.get().strip())
+        if not has_api_key:
+            self.download_before_mux_var.set(False)
+        self.download_before_mux_checkbutton.configure(
+            state="normal" if has_api_key else "disabled"
+        )
 
     def save_preferences(self) -> None:
         try:
@@ -5775,6 +6700,23 @@ class MkvCreatorApp(tk.Tk):
 
         self.set_extract_source(Path(path), scan=True)
 
+    def browse_extract_source_folder(self) -> None:
+        initial_dir = self.extract_source_initial_dir()
+        path = native_select_dir(
+            title=self.tr("dialog_source_mkv_title"),
+            initialdir=initial_dir,
+        )
+        if path is None:
+            path = filedialog.askdirectory(
+                title=self.tr("dialog_source_mkv_title"),
+                initialdir=initial_dir,
+            )
+
+        if not path:
+            return
+
+        self.set_extract_source(Path(path), scan=False)
+
     def browse_extract_output_dir(self) -> None:
         initial_dir = self.extract_output_dir_var.get().strip()
         if not initial_dir:
@@ -5824,25 +6766,29 @@ class MkvCreatorApp(tk.Tk):
         source = source.expanduser()
         self.extract_source_var.set(str(source))
         if not self.extract_output_dir_var.get().strip():
-            self.extract_output_dir_var.set(str(source.parent / f"{source.stem}_tracks"))
+            if source.is_dir():
+                self.extract_output_dir_var.set(str(source.parent / f"{source.name}_tracks"))
+            else:
+                self.extract_output_dir_var.set(str(source.parent / f"{source.stem}_tracks"))
         self.remember_mkv_dir(source)
-        if scan:
+        if scan and source.is_file():
             self.start_scan_extract()
 
     def _set_default_output(self) -> None:
         folder = self.folder_var.get().strip()
         if not folder or self.output_var.get().strip():
             return
+        media_dir = Path(folder).expanduser()
         template_raw = self.template_var.get().strip()
         try:
             if template_raw:
                 config = load_template_config(Path(template_raw).expanduser())
-                name = template_output_name(config)
             else:
-                name = "output.mkv"
+                config = base_template_config()
+            output_path = default_output_path(config, media_dir)
         except UserVisibleError:
-            name = "output.mkv"
-        self.output_var.set(str(Path(folder).expanduser() / name))
+            output_path = media_dir / default_output_name(base_template_config(), media_dir)
+        self.output_var.set(str(output_path))
 
     def collect_settings(self, *, require_tmdb: bool = False) -> AppSettings:
         template_raw = self.template_var.get().strip()
@@ -5877,7 +6823,7 @@ class MkvCreatorApp(tk.Tk):
             output_path = Path(output_raw).expanduser()
         else:
             config = load_or_create_template_config(template_path, media_dir)
-            output_path = media_dir / template_output_name(config)
+            output_path = default_output_path(config, media_dir)
             self.log_queue.put(
                 ("log", self.tr("log_output_default_used", path=output_path))
             )
@@ -5887,7 +6833,7 @@ class MkvCreatorApp(tk.Tk):
         normalize_video_fps(video_fps)
         if require_tmdb:
             if not api_key:
-                raise UserVisibleError(ui_text("error_tmdb_api_empty"))
+                raise UserVisibleError(ui_text("error_tmdb_artwork_api_required"))
             if not tmdb_id:
                 raise UserVisibleError(ui_text("error_tmdb_id_empty"))
             if not tmdb_id.isdigit():
@@ -5924,6 +6870,9 @@ class MkvCreatorApp(tk.Tk):
             end_minutes=settings.chapter_end_minutes,
         )
 
+    def chapter_end_needs_auto_detection(self, value: str) -> bool:
+        return not value.strip()
+
     def collect_extract_settings(self) -> tuple[Path, Path]:
         source_raw = self.extract_source_var.get().strip()
         if not source_raw:
@@ -5938,6 +6887,100 @@ class MkvCreatorApp(tk.Tk):
         output_dir = output_dir.resolve()
         self.extract_output_dir_var.set(str(output_dir))
         return source, output_dir
+
+    def collect_batch_folder_settings(
+        self,
+        *,
+        require_mux: bool,
+    ) -> tuple[AppSettings, Path, Path, list[BatchEpisodeTask]]:
+        source_raw = self.extract_source_var.get().strip()
+        if not source_raw:
+            raise UserVisibleError(ui_text("error_source_folder_not_selected"))
+        source_dir = Path(source_raw).expanduser()
+        if not source_dir.exists() or not source_dir.is_dir():
+            raise UserVisibleError(ui_text("error_source_folder_not_found", source=source_dir))
+        source_dir = source_dir.resolve()
+
+        sources = video_sources_in_folder(source_dir)
+        if not sources:
+            raise UserVisibleError(ui_text("error_batch_no_video_files"))
+
+        template_raw = self.template_var.get().strip()
+        template_path = Path(template_raw).expanduser() if template_raw else None
+        if require_mux and template_path is not None and not template_path.exists():
+            raise UserVisibleError(ui_text("error_template_missing", path=template_path))
+
+        media_type = self.tmdb_media_type_from_display(self.media_type_display_var.get())
+        if not media_type:
+            media_type = self.media_type_var.get().strip()
+        if media_type not in {"movie", "tv"}:
+            raise UserVisibleError(ui_text("error_tmdb_media_type"))
+
+        download_before_mux = self.download_before_mux_var.get()
+        api_key = self.api_key_var.get().strip()
+        tmdb_id = self.tmdb_id_var.get().strip()
+        if require_mux and download_before_mux:
+            if media_type != "tv":
+                raise UserVisibleError(ui_text("error_batch_tmdb_tv_required"))
+            if not api_key:
+                raise UserVisibleError(ui_text("error_tmdb_artwork_api_required"))
+            if tmdb_id and not tmdb_id.isdigit():
+                raise UserVisibleError(ui_text("error_tmdb_id_numeric"))
+
+        video_fps = self.video_fps_var.get().strip()
+        normalize_video_fps(video_fps)
+
+        output_raw = self.extract_output_dir_var.get().strip()
+        extract_root = (
+            Path(output_raw).expanduser()
+            if output_raw
+            else source_dir.parent / f"{source_dir.name}_tracks"
+        ).resolve()
+        self.extract_output_dir_var.set(str(extract_root))
+
+        default_season = parse_season_number_from_text(source_dir.name)
+        used_extract_dirs: set[str] = set()
+        tasks: list[BatchEpisodeTask] = []
+        for source in sources:
+            episode_ref = episode_ref_from_path(source, default_season)
+            if episode_ref is None:
+                raise UserVisibleError(ui_text("error_episode_number_missing", name=source.name))
+
+            base_name = safe_filename_stem(source.stem)
+            candidate = extract_root / f"{base_name}_tracks"
+            counter = 2
+            while str(candidate).lower() in used_extract_dirs:
+                candidate = extract_root / f"{base_name}_tracks_{counter}"
+                counter += 1
+            used_extract_dirs.add(str(candidate).lower())
+            if require_mux and not candidate.exists():
+                raise UserVisibleError(ui_text("error_batch_extract_dir_missing", path=candidate))
+            tasks.append(BatchEpisodeTask(source, candidate, episode_ref))
+
+        settings = AppSettings(
+            template_path=template_path,
+            media_dir=source_dir,
+            output_path=source_dir / "output.mkv",
+            api_key=api_key,
+            tmdb_id=tmdb_id,
+            media_type=media_type,
+            image_language=self.language_var.get().strip() or "en",
+            tag_language=self.tag_language_var.get().strip()
+            or self.language_var.get().strip()
+            or "en",
+            mkv_title=self.title_var.get().strip(),
+            video_fps=video_fps,
+            audio_language_order=self.audio_language_order_var.get().strip(),
+            subtitle_language_order=self.subtitle_language_order_var.get().strip(),
+            include_extra_subtitles=self.include_extra_subs_var.get(),
+            download_before_mux=download_before_mux,
+            auto_chapters=self.auto_chapters_var.get(),
+            chapter_interval_minutes=self.chapter_interval_var.get().strip(),
+            chapter_name=self.chapter_name_var.get().strip(),
+            chapter_start_number=self.chapter_start_var.get().strip(),
+            chapter_end_minutes=self.chapter_end_var.get().strip(),
+        )
+        return settings, source_dir, extract_root, tasks
 
     def open_audio_adjust_window(self) -> None:
         try:
@@ -6173,6 +7216,34 @@ class MkvCreatorApp(tk.Tk):
         if not started and self.audio_adjust_apply_button is not None:
             self.audio_adjust_apply_button.configure(state="normal")
 
+    def start_check_app_update(self) -> None:
+        if self.app_update_thread is not None and self.app_update_thread.is_alive():
+            return
+
+        def work() -> None:
+            try:
+                release = latest_app_release()
+                if app_release_is_newer(release):
+                    self.log_queue.put(("app_update_available", release))
+            except Exception:
+                return
+
+        self.app_update_thread = threading.Thread(target=work, daemon=True)
+        self.app_update_thread.start()
+
+    def show_app_update_available(self, release: dict[str, str]) -> None:
+        version = str(release.get("version") or "").strip() or "latest"
+        self.app_update_url = str(release.get("url") or APP_LATEST_RELEASE_URL)
+        if self.app_update_button is not None:
+            self.app_update_button.grid()
+        self.append_log(self.tr("log_app_update_available", version=version))
+
+    def open_app_update_release(self) -> None:
+        url = self.app_update_url or APP_LATEST_RELEASE_URL
+        if not webbrowser.open_new_tab(url):
+            if not webbrowser.open(url):
+                messagebox.showinfo(self.tr("button_app_update_available"), url)
+
     def start_update_third_party(self) -> None:
         groups = (
             ("mkvtoolnix", "MKVToolNix"),
@@ -6224,6 +7295,11 @@ class MkvCreatorApp(tk.Tk):
                 settings.audio_language_order,
                 settings.subtitle_language_order,
             )
+            chapter_end = chapter_end_minutes_from_duration_seconds(
+                detect_media_duration_seconds(items)
+            )
+            if chapter_end:
+                self.log_queue.put(("set_chapter_end_auto", chapter_end))
             self.queue_log(self.tr("log_tracks_found", count=len(items)))
             for item in ordered:
                 suffix = self.tr("log_extra_subtitle_suffix") if item.is_extra else ""
@@ -6272,14 +7348,25 @@ class MkvCreatorApp(tk.Tk):
                     return
                 raise
             self.log_queue.put(("set_tmdb_id", tmdb_id))
-            image_title = tmdb_title_for_language(settings, tmdb_id, settings.image_language)
+            episode_ref = episode_ref_from_settings(settings)
+            image_title = tmdb_output_title_for_language(
+                settings,
+                tmdb_id,
+                settings.image_language,
+                episode_ref,
+            )
             if image_title:
                 output_path = tmdb_output_path(settings.media_dir, image_title)
                 self.log_queue.put(("set_output", str(output_path)))
                 self.queue_log(
                     self.tr("log_output_from_artwork_language", name=output_path.name)
                 )
-            tag_title = tmdb_title_for_language(settings, tmdb_id, settings.tag_language)
+            tag_title = tmdb_output_title_for_language(
+                settings,
+                tmdb_id,
+                settings.tag_language,
+                episode_ref,
+            )
             if tag_title and (not auto or not settings.mkv_title):
                 self.log_queue.put(("set_title", tag_title))
                 self.queue_log(self.tr("log_title_from_tag_language", title=tag_title))
@@ -6318,12 +7405,26 @@ class MkvCreatorApp(tk.Tk):
     def start_write_config(self) -> None:
         try:
             settings = self.collect_settings()
+            auto_chapter_end = self.chapter_end_needs_auto_detection(settings.chapter_end_minutes)
         except UserVisibleError as exc:
             messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
             return
 
         def work() -> None:
             config = load_or_create_template_config(settings.template_path, settings.media_dir)
+            if settings.auto_chapters and auto_chapter_end:
+                chapter_end = detect_chapter_end_minutes_for_media_dir(
+                    config,
+                    settings.media_dir,
+                    settings.include_extra_subtitles,
+                    settings.tag_language,
+                    cancel_event=self.cancel_event,
+                    register_process=self.register_active_process,
+                    unregister_process=self.unregister_active_process,
+                )
+                if chapter_end:
+                    settings.chapter_end_minutes = chapter_end
+                    self.log_queue.put(("set_chapter_end_auto", chapter_end))
             settings.output_path.parent.mkdir(parents=True, exist_ok=True)
             generated = write_generated_config(
                 config,
@@ -6352,6 +7453,7 @@ class MkvCreatorApp(tk.Tk):
 
         try:
             settings = self.collect_settings(require_tmdb=self.download_before_mux_var.get())
+            auto_chapter_end = self.chapter_end_needs_auto_detection(settings.chapter_end_minutes)
             self.save_preferences()
         except UserVisibleError as exc:
             messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
@@ -6395,6 +7497,20 @@ class MkvCreatorApp(tk.Tk):
                     settings.output_path.unlink()
                 except OSError as exc:
                     raise UserVisibleError(f"{settings.output_path.name} silinemedi: {exc}") from exc
+
+            if settings.auto_chapters and auto_chapter_end:
+                chapter_end = detect_chapter_end_minutes_for_media_dir(
+                    config,
+                    settings.media_dir,
+                    settings.include_extra_subtitles,
+                    settings.tag_language,
+                    cancel_event=self.cancel_event,
+                    register_process=self.register_active_process,
+                    unregister_process=self.unregister_active_process,
+                )
+                if chapter_end:
+                    settings.chapter_end_minutes = chapter_end
+                    self.log_queue.put(("set_chapter_end_auto", chapter_end))
 
             args, missing_optional = build_mkvmerge_args(
                 config,
@@ -6763,6 +7879,305 @@ class MkvCreatorApp(tk.Tk):
         self.log_window = window
         self.log_window_text = text
 
+    def start_batch_extract_folder(self) -> None:
+        if (
+            self.worker is not None
+            and self.worker.is_alive()
+            and self.current_operation == "mux"
+        ):
+            self.cancel_current_operation()
+            return
+
+        try:
+            settings, source_dir, extract_root, tasks = self.collect_batch_folder_settings(
+                require_mux=False
+            )
+            self.save_preferences()
+        except UserVisibleError as exc:
+            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            return
+
+        def work() -> None:
+            extract_root.mkdir(parents=True, exist_ok=True)
+            first_fps = ""
+
+            for index, task in enumerate(tasks, start=1):
+                self.check_cancelled()
+                self.queue_log(
+                    self.tr(
+                        "log_batch_episode",
+                        index=index,
+                        count=len(tasks),
+                        name=task.source.name,
+                    )
+                )
+                self.queue_log(self.tr("log_batch_extract_dir", path=task.extract_dir))
+
+                payload = identify_mkv(task.source)
+                extract_items = build_extract_items(payload, task.source)
+                fps = settings.video_fps or first_video_fps_from_items(extract_items)
+                if index == 1:
+                    first_fps = fps
+                    chapter_end = chapter_end_minutes_from_duration_seconds(
+                        duration_seconds_from_identify_payload(payload)
+                    )
+                    if chapter_end:
+                        self.log_queue.put(("set_chapter_end_auto", chapter_end))
+                if fps and not settings.video_fps:
+                    self.queue_log(self.tr("log_video_fps_detected", fps=fps))
+
+                args, command_log_key, exit_error_key = build_extract_command(
+                    task.source,
+                    task.extract_dir,
+                    extract_items,
+                )
+                self.queue_log(self.tr(command_log_key))
+                self.queue_log(command_preview(args))
+                extract_warning_key = (
+                    "log_mkvextract_warnings"
+                    if command_log_key == "log_mkvextract_command"
+                    else None
+                )
+                self.run_cancellable_tool_process(
+                    args,
+                    task.extract_dir,
+                    exit_error_key,
+                    extract_warning_key,
+                )
+
+            first_task = tasks[0]
+            first_title = batch_episode_preview_title(source_dir, first_task)
+            self.log_queue.put(("set_folder", str(first_task.extract_dir)))
+            self.log_queue.put(
+                ("set_output", str(batch_episode_output_path(source_dir, first_task)))
+            )
+            self.log_queue.put(("set_title", first_title))
+            if first_fps:
+                self.log_queue.put(("set_video_fps", first_fps))
+            self.queue_log(self.tr("log_batch_extract_complete", count=len(tasks)))
+
+        self.run_background(
+            work,
+            self.tr("status_batch_extract_folder"),
+            operation="mux",
+        )
+
+    def start_batch_mux_folder(self) -> None:
+        if (
+            self.worker is not None
+            and self.worker.is_alive()
+            and self.current_operation == "mux"
+        ):
+            self.cancel_current_operation()
+            return
+
+        try:
+            settings, source_dir, _extract_root, tasks = self.collect_batch_folder_settings(
+                require_mux=True
+            )
+            auto_chapter_end = self.chapter_end_needs_auto_detection(settings.chapter_end_minutes)
+            self.save_preferences()
+        except UserVisibleError as exc:
+            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            return
+
+        def work() -> None:
+            if settings.download_before_mux and not settings.tmdb_id:
+                self.queue_log(self.tr("status_finding_tmdb"))
+                tmdb_id, title, found_year, query = find_tmdb_match_from_folder(settings)
+                settings.tmdb_id = tmdb_id
+                self.log_queue.put(("set_tmdb_id", tmdb_id))
+                year_text = f" ({found_year})" if found_year else ""
+                self.queue_log(
+                    self.tr(
+                        "log_tmdb_id_found",
+                        tmdb_id=tmdb_id,
+                        title=title or query,
+                        year_text=year_text,
+                    )
+                )
+
+            created_outputs: list[tuple[Path, EpisodeRef]] = []
+            first_ref = tasks[0].episode_ref
+            first_default_mux_title = ""
+            for index, task in enumerate(tasks, start=1):
+                self.check_cancelled()
+                self.queue_log(
+                    self.tr(
+                        "log_batch_episode",
+                        index=index,
+                        count=len(tasks),
+                        name=task.source.name,
+                    )
+                )
+                self.queue_log(self.tr("log_batch_extract_dir", path=task.extract_dir))
+
+                fps = settings.video_fps
+                if not fps:
+                    for track_path in discover_media_track_paths(task.extract_dir):
+                        fps = infer_video_fps_from_filename(track_path)
+                        if fps:
+                            break
+                if fps and not settings.video_fps:
+                    self.queue_log(self.tr("log_video_fps_detected", fps=fps))
+
+                episode_settings = copy.copy(settings)
+                episode_settings.media_dir = task.extract_dir
+                episode_settings.output_path = (
+                    task.extract_dir / f"{safe_filename_stem(task.source.stem)}.mkv"
+                )
+                episode_settings.video_fps = fps
+
+                default_mux_title = batch_episode_preview_title(source_dir, task)
+                if (
+                    episode_settings.api_key
+                    and episode_settings.tmdb_id
+                    and episode_settings.media_type == "tv"
+                ):
+                    default_mux_title = tmdb_output_title_for_language(
+                        episode_settings,
+                        episode_settings.tmdb_id,
+                        episode_settings.tag_language,
+                        task.episode_ref,
+                    )
+
+                if episode_settings.download_before_mux:
+                    output_title = download_tmdb_assets(
+                        episode_settings,
+                        self.queue_log,
+                        episode_ref=task.episode_ref,
+                    )
+                    if output_title:
+                        episode_settings.output_path = tmdb_output_path(
+                            episode_settings.media_dir,
+                            output_title,
+                        )
+                elif default_mux_title:
+                    episode_settings.output_path = tmdb_output_path(
+                        episode_settings.media_dir,
+                        default_mux_title,
+                    )
+                else:
+                    episode_settings.output_path = batch_episode_output_path(source_dir, task)
+
+                if index == 1:
+                    first_default_mux_title = default_mux_title
+                mux_title = batch_mkv_title_for_episode(
+                    settings.mkv_title,
+                    default_mux_title,
+                    first_default_mux_title,
+                    first_ref,
+                    task.episode_ref,
+                )
+
+                if episode_settings.output_path.exists():
+                    raise UserVisibleError(
+                        ui_text(
+                            "error_output_exists_choose",
+                            name=episode_settings.output_path.name,
+                        )
+                    )
+
+                config = load_or_create_template_config(
+                    episode_settings.template_path,
+                    episode_settings.media_dir,
+                )
+                if episode_settings.auto_chapters and auto_chapter_end:
+                    episode_settings.chapter_end_minutes = ""
+                    chapter_end = detect_chapter_end_minutes_for_source(task.source)
+                    if not chapter_end:
+                        chapter_end = detect_chapter_end_minutes_for_media_dir(
+                            config,
+                            episode_settings.media_dir,
+                            episode_settings.include_extra_subtitles,
+                            episode_settings.tag_language,
+                            cancel_event=self.cancel_event,
+                            register_process=self.register_active_process,
+                            unregister_process=self.unregister_active_process,
+                        )
+                    if chapter_end:
+                        episode_settings.chapter_end_minutes = chapter_end
+                        if index == 1:
+                            self.log_queue.put(("set_chapter_end_auto", chapter_end))
+                episode_settings.output_path.parent.mkdir(parents=True, exist_ok=True)
+                mux_args, missing_optional = build_mkvmerge_args(
+                    config,
+                    episode_settings.media_dir,
+                    episode_settings.output_path,
+                    mux_title,
+                    episode_settings.include_extra_subtitles,
+                    episode_settings.video_fps,
+                    self.chapter_options_from_settings(episode_settings),
+                    episode_settings.audio_language_order,
+                    episode_settings.subtitle_language_order,
+                    episode_settings.tag_language,
+                    cancel_event=self.cancel_event,
+                    register_process=self.register_active_process,
+                    unregister_process=self.unregister_active_process,
+                )
+
+                generated = write_generated_config(
+                    config,
+                    episode_settings.media_dir,
+                    episode_settings.output_path,
+                    mux_title,
+                    episode_settings.include_extra_subtitles,
+                    episode_settings.video_fps,
+                    self.chapter_options_from_settings(episode_settings),
+                    episode_settings.audio_language_order,
+                    episode_settings.subtitle_language_order,
+                    episode_settings.tag_language,
+                )
+                self.queue_log(self.tr("log_config_written", path=generated))
+                if missing_optional:
+                    self.queue_log(
+                        self.tr(
+                            "log_skipped_optional_tracks",
+                            items=", ".join(missing_optional),
+                        )
+                    )
+                self.queue_log(self.tr("log_mkvmerge_command"))
+                self.queue_log(command_preview(mux_args))
+                self.run_cancellable_tool_process(
+                    mux_args,
+                    episode_settings.media_dir,
+                    "error_mkvmerge_exit",
+                    "log_mkvmerge_warnings",
+                )
+                self.queue_log(self.tr("log_mkv_created", path=episode_settings.output_path))
+                created_outputs.append((episode_settings.output_path, task.episode_ref))
+
+            season_dirs: dict[int, Path] = {}
+            move_plan: list[tuple[Path, Path]] = []
+            used_targets: set[str] = set()
+            for output_path, episode_ref in created_outputs:
+                final_dir = season_dirs.get(episode_ref.season)
+                if final_dir is None:
+                    final_dir = tmdb_season_folder_path(source_dir, settings, episode_ref.season)
+                    season_dirs[episode_ref.season] = final_dir
+                target = final_dir / output_path.name
+                target_key = str(target).lower()
+                if target_key in used_targets or target.exists():
+                    raise UserVisibleError(ui_text("error_output_exists_choose", name=target.name))
+                used_targets.add(target_key)
+                move_plan.append((output_path, target))
+
+            for final_dir in season_dirs.values():
+                final_dir.mkdir(parents=True, exist_ok=True)
+                self.queue_log(self.tr("log_batch_final_folder", path=final_dir))
+
+            for output_path, target in move_plan:
+                shutil.move(str(output_path), str(target))
+                self.queue_log(self.tr("log_batch_moved", path=target))
+
+            self.queue_log(self.tr("log_batch_mux_complete", count=len(move_plan)))
+
+        self.run_background(
+            work,
+            self.tr("status_batch_mux_folder"),
+            operation="mux",
+        )
+
     def start_scan_extract(self) -> None:
         try:
             source, output_dir = self.collect_extract_settings()
@@ -6776,6 +8191,11 @@ class MkvCreatorApp(tk.Tk):
             items = build_extract_items(payload, source)
             self.log_queue.put(("set_extract_items", items))
             self.log_queue.put(("set_extract_dir", str(output_dir)))
+            chapter_end = chapter_end_minutes_from_duration_seconds(
+                duration_seconds_from_identify_payload(payload)
+            )
+            if chapter_end:
+                self.log_queue.put(("set_chapter_end_auto", chapter_end))
             fps = first_video_fps_from_items(items)
             if fps:
                 self.log_queue.put(("set_video_fps", fps))
@@ -6870,6 +8290,44 @@ class MkvCreatorApp(tk.Tk):
         for process in processes:
             terminate_process(process)
 
+    def run_cancellable_tool_process(
+        self,
+        args: list[str],
+        cwd: Path,
+        exit_error_key: str,
+        warning_key: str | None = None,
+    ) -> int:
+        process = subprocess.Popen(
+            args,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            **subprocess_common_kwargs(),
+            bufsize=1,
+            env=third_party_subprocess_env(),
+            executable=third_party_subprocess_executable(args),
+        )
+        self.register_active_process(process)
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                if self.cancel_event.is_set():
+                    terminate_process(process)
+                    break
+                self.queue_log(line.rstrip())
+            if self.cancel_event.is_set():
+                terminate_process(process)
+                raise OperationCancelled(self.tr("log_operation_cancelled"))
+            return_code = process.wait()
+        finally:
+            self.unregister_active_process(process)
+
+        if return_code > 1 or (return_code == 1 and not warning_key):
+            raise UserVisibleError(ui_text(exit_error_key, code=return_code))
+        if return_code == 1 and warning_key:
+            self.queue_log(self.tr(warning_key))
+        return return_code
+
     def run_background(
         self,
         work: Callable[[], Any],
@@ -6916,6 +8374,8 @@ class MkvCreatorApp(tk.Tk):
             self.extract_toggle_button,
             self.extract_all_button,
             self.extract_button,
+            self.batch_extract_button,
+            self.batch_mux_button,
             self.third_party_button,
         )
         for button in buttons:
@@ -7018,6 +8478,9 @@ class MkvCreatorApp(tk.Tk):
                             self.audio_adjust_apply_button.configure(state="normal")
                     except tk.TclError:
                         pass
+            elif kind == "app_update_available":
+                if isinstance(value, dict):
+                    self.show_app_update_available(value)
             elif kind == "close_audio_adjust":
                 self.close_audio_adjust_window()
             elif kind == "close_extract":
@@ -7028,6 +8491,9 @@ class MkvCreatorApp(tk.Tk):
                 self.tmdb_id_var.set(str(value))
             elif kind == "set_title":
                 self.title_var.set(str(value))
+            elif kind == "set_title_if_empty":
+                if not self.title_var.get().strip():
+                    self.title_var.set(str(value))
             elif kind == "set_folder":
                 self.folder_var.set(str(value))
                 self._set_default_output()
@@ -7035,6 +8501,11 @@ class MkvCreatorApp(tk.Tk):
                 self.extract_output_dir_var.set(str(value))
             elif kind == "set_video_fps":
                 self.video_fps_var.set(str(value))
+            elif kind == "set_chapter_end_auto":
+                current = self.chapter_end_var.get().strip()
+                if not current or current == self.auto_chapter_end_value:
+                    self.chapter_end_var.set(str(value))
+                    self.auto_chapter_end_value = str(value)
             elif kind == "set_extract_items":
                 self.set_extract_items(value)
         self.after(100, self._drain_log_queue)

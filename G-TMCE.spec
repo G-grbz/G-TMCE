@@ -5,7 +5,7 @@ a = Analysis(
     ['mkv_creator_ui.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('VERSION', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -21,6 +21,7 @@ set -Eeuo pipefail
 APP_NAME="G-TMCE"
 ENTRY_FILE="mkv_creator_ui.py"
 ICON_FILE="logo.png"
+VERSION_FILE="VERSION"
 DESKTOP_FILE="${APP_NAME}.desktop"
 APPDIR="${APP_NAME}.AppDir"
 DIST_DIR="dist"
@@ -79,10 +80,16 @@ validate_project() {
 build_binary() {
   log "Building ${APP_NAME} executable with PyInstaller..."
 
+  local add_data_args=()
+  if [[ -f "$VERSION_FILE" ]]; then
+    add_data_args+=(--add-data "${VERSION_FILE}:.")
+  fi
+
   python3 -m PyInstaller \
     --onefile \
     --windowed \
     --name "$APP_NAME" \
+    "${add_data_args[@]}" \
     "$ENTRY_FILE"
 
   [[ -x "${DIST_DIR}/${APP_NAME}" ]] || fail "PyInstaller output was not created: ${DIST_DIR}/${APP_NAME}"

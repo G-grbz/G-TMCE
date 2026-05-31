@@ -50,6 +50,10 @@ def main() -> int:
     if template.exists():
         command += ["--add-data", f"{template}{os.pathsep}."]
 
+    version_file = root / "VERSION"
+    if version_file.exists():
+        command += ["--add-data", f"{version_file}{os.pathsep}."]
+
     for item in hidden_imports:
         command += ["--hidden-import", item]
 

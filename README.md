@@ -250,6 +250,219 @@ If no config is provided, G-TMCE automatically generates a mux template using kn
 
 ---
 
+# Track Folder Naming Rules
+
+The selected track folder should contain one media track per file. Files extracted with G-TMCE are already named in the expected format.
+
+Media track files must be placed directly inside the selected track folder. Font attachments can be inside subfolders.
+
+Recommended naming style:
+
+```text
+<language>[.<flag>...][.<fps>].<extension>
+```
+
+Examples:
+
+```text
+und.23.976.h265
+en.eac3
+tr.ac3
+forced.en.srt
+sdh.tr.srt
+tr.ass
+```
+
+## Supported Track Extensions
+
+Video track files:
+
+```text
+.h264 .h265 .hevc .avc .m1v .m2v .ivf
+```
+
+Audio track files:
+
+```text
+.aac .ac3 .eac3 .ec3 .dts .dtshd .flac .m4a .mp2 .mp3 .ogg .opus .thd .truehd .wav
+```
+
+Subtitle track files:
+
+```text
+.srt .ass .ssa .vtt .sup .sub
+```
+
+## Language Tokens
+
+G-TMCE reads the language from filename tokens separated by dots, underscores, hyphens, or spaces.
+
+Use a clear two-letter language code whenever possible:
+
+```text
+en.eac3
+tr.srt
+ja.ass
+```
+
+Common aliases are also accepted:
+
+```text
+eng -> en
+tur -> tr
+jpn -> ja
+deu / ger -> de
+fre / fra -> fr
+spa -> es
+```
+
+If the filename contains:
+
+```text
+und
+```
+
+the track is treated as unknown and inherits the selected tag language during muxing.
+
+## Video FPS Tokens
+
+Video FPS can be detected from the video filename when it appears as its own token:
+
+```text
+und.23.976.h265
+und.24.h264
+und.24000/1001.h265
+```
+
+If the Video FPS field in the UI is filled, that value overrides the filename-detected FPS.
+
+## Forced and SDH Subtitles
+
+Forced subtitles are detected from these tokens:
+
+```text
+forced
+force
+forc
+```
+
+Examples:
+
+```text
+forced.en.srt
+en.forced.ass
+```
+
+Forced subtitle behavior:
+
+* Track name becomes `Forced`
+* Forced display flag is enabled
+
+SDH / hearing-impaired subtitles are detected from these tokens:
+
+```text
+sdh
+hi
+cc
+hearing
+```
+
+Examples:
+
+```text
+sdh.en.srt
+tr.cc.ass
+```
+
+SDH subtitle behavior:
+
+* Track name becomes `SDH`
+* Hearing-impaired flag is enabled
+
+If both forced and SDH tokens are present, the track name becomes:
+
+```text
+Forced SDH
+```
+
+## Audio Append Naming
+
+Split audio files can be appended automatically.
+
+The main file and numbered parts must share the same base name and extension:
+
+```text
+en.eac3
+en.1.eac3
+en.2.eac3
+```
+
+Rules:
+
+* `.1` must exist for append detection to start
+* `.2`, `.3`, etc. are appended in numeric order
+* Append parts are not added as separate tracks
+* Audio and video append is supported
+* Subtitle append is not supported
+
+## Additional Subtitle Files
+
+When `Include additional subtitles` is enabled, subtitle files found in the track folder are added even if they were not listed in the original template.
+
+When it is disabled, only subtitle entries already present in the template are used.
+
+## Attachments, Artwork, and Fonts
+
+These artwork files are attached automatically when they exist in the selected track folder:
+
+```text
+cover.jpg
+small_cover.jpg
+l2a.jpg
+l2p.png
+```
+
+Font files are attached automatically. They may be placed directly in the selected track folder or inside subfolders.
+
+Supported font extensions:
+
+```text
+.ttf .otf .ttc .otc .woff .woff2
+```
+
+Font attachment notes:
+
+* Keep the original font files used by `.ass` / `.ssa` subtitles
+* Avoid duplicate font filenames that differ only by letter case
+* Attachment names are written using the file name
+* If a custom template requires an attachment by name, the file must exist in the selected track folder
+
+## Practical Folder Example
+
+```text
+Movie.Name.2025_tracks/
+  und.23.976.h265
+  en.eac3
+  tr.ac3
+  forced.en.srt
+  tr.ass
+  cover.jpg
+  small_cover.jpg
+  fonts/
+    Arial.ttf
+    SomeSubtitleFont.otf
+```
+
+Important:
+
+* Use clear language tokens such as `en`, `tr`, `ja`, or `und`
+* Put metadata words like `forced` and `sdh` in separate filename tokens
+* Keep media track files at the top level of the selected track folder
+* Keep append parts beside the main file
+* Use extracted single-track files for predictable muxing
+
+---
+
 # TMDB Integration
 
 G-TMCE can automatically download:
