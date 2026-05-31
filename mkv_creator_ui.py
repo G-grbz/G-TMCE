@@ -168,7 +168,7 @@ UI_TEXT = {
         "error_image_download_failed": "Image download failed: {reason}",
         "error_tmdb_svg_logo": "TMDB returned an SVG for {name}; no PNG logo was available.",
         "error_pillow_image_convert": "Pillow must be installed to convert images.",
-        "error_pillow_small_cover": "Pillow must be installed to create small_cover.jpg.",
+        "error_pillow_small_cover": "Pillow must be installed to create small cover artwork.",
         "log_file_not_found_skipped": "{name} was not found; skipped.",
         "log_file_prepare_skipped": "{name} could not be prepared; skipped: {error}",
         "log_tags_exists": "tags.xml already exists; skipped.",
@@ -177,8 +177,10 @@ UI_TEXT = {
         "log_cover_ready": "cover.jpg is ready.",
         "log_small_cover_ready": "small_cover.jpg is ready.",
         "log_small_cover_skipped": "small_cover.jpg could not be prepared; skipped: {error}",
-        "log_l2a_ready": "l2a.jpg is ready.",
-        "log_l2p_ready": "l2p.png is ready.",
+        "log_cover_land_ready": "cover_land.jpg is ready.",
+        "log_small_cover_land_ready": "small_cover_land.jpg is ready.",
+        "log_small_cover_land_skipped": "small_cover_land.jpg could not be prepared; skipped: {error}",
+        "log_logo_ready": "logo.png is ready.",
         "error_folder_title_missing": "Could not derive a title from the folder name. Select the track folder manually.",
         "error_tmdb_no_result": "No TMDB result found for: {query}{year_text}",
         "error_tmdb_missing_id": "The TMDB result does not include an ID.",
@@ -401,7 +403,7 @@ UI_TEXT = {
         "error_image_download_failed": "Görsel indirilemedi: {reason}",
         "error_tmdb_svg_logo": "{name} için TMDB SVG döndürdü; PNG logo bulunamadı.",
         "error_pillow_image_convert": "Görsel dönüştürme için Pillow kurulu olmalı.",
-        "error_pillow_small_cover": "small_cover.jpg üretmek için Pillow kurulu olmalı.",
+        "error_pillow_small_cover": "Küçük kapak görseli üretmek için Pillow kurulu olmalı.",
         "log_file_not_found_skipped": "{name} bulunamadı, atlandı.",
         "log_file_prepare_skipped": "{name} hazırlanamadı, atlandı: {error}",
         "log_tags_exists": "tags.xml zaten var, atlandı.",
@@ -410,8 +412,10 @@ UI_TEXT = {
         "log_cover_ready": "cover.jpg hazır.",
         "log_small_cover_ready": "small_cover.jpg hazır.",
         "log_small_cover_skipped": "small_cover.jpg hazırlanamadı, atlandı: {error}",
-        "log_l2a_ready": "l2a.jpg hazır.",
-        "log_l2p_ready": "l2p.png hazır.",
+        "log_cover_land_ready": "cover_land.jpg hazır.",
+        "log_small_cover_land_ready": "small_cover_land.jpg hazır.",
+        "log_small_cover_land_skipped": "small_cover_land.jpg hazırlanamadı, atlandı: {error}",
+        "log_logo_ready": "logo.png hazır.",
         "error_folder_title_missing": "Klasör adından başlık çıkarılamadı. Parça klasörünü seç.",
         "error_tmdb_no_result": "TMDB sonucu bulunamadı: {query}{year_text}",
         "error_tmdb_missing_id": "TMDB sonucu ID içermiyor.",
@@ -845,7 +849,15 @@ AUDIO_EXTENSIONS = {
     ".wav",
 }
 TRACK_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | SUBTITLE_EXTENSIONS
-STANDARD_ATTACHMENT_NAMES = ("cover.jpg", "small_cover.jpg", "l2a.jpg", "l2p.png")
+STANDARD_ATTACHMENT_NAMES = (
+    "cover.jpg",
+    "small_cover.jpg",
+    "cover_land.jpg",
+    "small_cover_land.jpg",
+    "logo.png",
+)
+NORMAL_COVER_SMALLEST_SIDE = 600
+SMALL_COVER_SMALLEST_SIDE = 120
 FONT_ATTACHMENT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"}
 MUX_UNKNOWN_LANGUAGE = "und"
 DEFAULT_OUTPUT_NAME = "output.mkv"
@@ -4036,13 +4048,27 @@ def write_original_or_convert(data: bytes, file_path: str, destination: Path, im
             image.save(destination, image_format)
 
 
-def make_small_cover(source: Path, destination: Path) -> None:
+def resize_jpeg_cover_art(source: Path, destination: Path, smallest_side: int) -> None:
     if Image is None:
         raise UserVisibleError(ui_text("error_pillow_small_cover"))
     with Image.open(source) as image:
         image = ImageOps.exif_transpose(image).convert("RGB")
-        resized = image.resize((120, 180), Image.Resampling.LANCZOS)
-        resized.save(destination, "JPEG", quality=95)
+    width, height = image.size
+    scale = smallest_side / max(1, min(width, height))
+    resized_size = (
+        max(1, round(width * scale)),
+        max(1, round(height * scale)),
+    )
+    resized = image.resize(resized_size, Image.Resampling.LANCZOS)
+    resized.save(destination, "JPEG", quality=95)
+
+
+def make_small_cover(
+    source: Path,
+    destination: Path,
+    smallest_side: int = SMALL_COVER_SMALLEST_SIDE,
+) -> None:
+    resize_jpeg_cover_art(source, destination, smallest_side)
 
 
 def download_optional_tmdb_image(
@@ -4051,7 +4077,7 @@ def download_optional_tmdb_image(
     destination: Path,
     image_format: str,
     log: Callable[[str], None],
-    ready_message: str,
+    ready_message: str | None,
 ) -> bool:
     if image is None:
         log(ui_text("log_file_not_found_skipped", name=destination.name))
@@ -4065,7 +4091,8 @@ def download_optional_tmdb_image(
         log(ui_text("log_file_prepare_skipped", name=destination.name, error=exc))
         return False
 
-    log(ready_message)
+    if ready_message:
+        log(ready_message)
     return True
 
 
@@ -4075,6 +4102,16 @@ def detail_original_title(details: dict[str, Any]) -> str:
 
 def detail_release_date(details: dict[str, Any]) -> str:
     return str(details.get("release_date") or details.get("first_air_date") or "")
+
+
+def first_non_empty(*values: Any) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
 
 
 def names_from_list(values: Any) -> list[str]:
@@ -4234,16 +4271,32 @@ def write_tmdb_episode_tags_file(
     ET.SubElement(tag, "Targets")
 
     series_title = title_from_details(series_details)
+    series_original_title = detail_original_title(series_details)
     episode_title = tv_episode_title_from_details(episode_details)
     output_title = tv_episode_output_title(series_title, episode_ref, episode_title)
+    summary = first_non_empty(episode_details.get("overview"), series_details.get("overview"))
+    release_date = first_non_empty(tv_episode_air_date(episode_details), detail_release_date(series_details))
+    directors = tv_episode_crew_names(episode_details, {"Director"})
+    if not directors:
+        directors = crew_names(series_details, {"Director"})
+    writers = tv_episode_crew_names(
+        episode_details,
+        {"Writer", "Screenplay", "Story", "Teleplay"},
+    )
+    if not writers:
+        writers = crew_names(series_details, {"Writer", "Screenplay", "Story", "Teleplay"})
+
     add_simple_tag(tag, "TITLE", output_title, language)
     add_simple_tag(tag, "SERIES_TITLE", series_title, language)
+    if series_original_title and series_original_title != series_title:
+        add_simple_tag(tag, "ORIGINAL_TITLE", series_original_title, language)
     add_simple_tag(tag, "EPISODE_TITLE", episode_title, language)
     add_simple_tag(tag, "SEASON_NUMBER", episode_ref.season, language)
     add_simple_tag(tag, "EPISODE_NUMBER", episode_ref.episode, language)
     add_simple_tag(tag, "PART_NUMBER", episode_ref.episode, language)
-    add_simple_tag(tag, "SUMMARY", episode_details.get("overview"), language)
-    add_simple_tag(tag, "DATE_RELEASED", tv_episode_air_date(episode_details), language)
+    add_simple_tag(tag, "SUBTITLE", series_details.get("tagline"), language)
+    add_simple_tag(tag, "SUMMARY", summary, language)
+    add_simple_tag(tag, "DATE_RELEASED", release_date, language)
     add_simple_tag(tag, "ORIGINAL_LANGUAGE", series_details.get("original_language"), language)
     add_repeated_simple_tags(tag, "GENRE", names_from_list(series_details.get("genres")), language)
     add_repeated_simple_tags(
@@ -4252,21 +4305,12 @@ def write_tmdb_episode_tags_file(
         names_from_list(series_details.get("production_companies")),
         language,
     )
-    add_repeated_simple_tags(
-        tag,
-        "DIRECTOR",
-        tv_episode_crew_names(episode_details, {"Director"}),
-        language,
-    )
-    add_repeated_simple_tags(
-        tag,
-        "WRITTEN_BY",
-        tv_episode_crew_names(
-            episode_details,
-            {"Writer", "Screenplay", "Story", "Teleplay"},
-        ),
-        language,
-    )
+    add_repeated_simple_tags(tag, "CREATED_BY", names_from_list(series_details.get("created_by")), language)
+    add_repeated_simple_tags(tag, "DIRECTOR", directors, language)
+    add_repeated_simple_tags(tag, "WRITTEN_BY", writers, language)
+    add_simple_tag(tag, "NUMBER_OF_SEASONS", series_details.get("number_of_seasons"), language)
+    add_simple_tag(tag, "NUMBER_OF_EPISODES", series_details.get("number_of_episodes"), language)
+    add_simple_tag(tag, "STATUS", series_details.get("status"), language)
     add_simple_tag(tag, "TMDB_ID", tmdb_id, language)
     add_simple_tag(
         tag,
@@ -4274,7 +4318,12 @@ def write_tmdb_episode_tags_file(
         f"https://www.themoviedb.org/tv/{tmdb_id}/season/{episode_ref.season}/episode/{episode_ref.episode}",
         language,
     )
-    add_simple_tag(tag, "IMDB", imdb_id_from_details(episode_details), language)
+    add_simple_tag(
+        tag,
+        "IMDB",
+        first_non_empty(imdb_id_from_details(episode_details), imdb_id_from_details(series_details)),
+        language,
+    )
 
     ET.indent(root, space="  ")
     tree = ET.ElementTree(root)
@@ -4364,30 +4413,46 @@ def download_tmdb_assets(
         cover,
         "JPEG",
         log,
-        ui_text("log_cover_ready"),
+        None,
     ):
+        try:
+            resize_jpeg_cover_art(cover, cover, NORMAL_COVER_SMALLEST_SIDE)
+            log(ui_text("log_cover_ready"))
+        except UserVisibleError as exc:
+            log(ui_text("log_file_prepare_skipped", name=cover.name, error=exc))
         try:
             make_small_cover(cover, settings.media_dir / "small_cover.jpg")
             log(ui_text("log_small_cover_ready"))
         except UserVisibleError as exc:
             log(ui_text("log_small_cover_skipped", error=exc))
 
-    download_optional_tmdb_image(
+    cover_land = settings.media_dir / "cover_land.jpg"
+    if download_optional_tmdb_image(
         client,
         backdrop,
-        settings.media_dir / "l2a.jpg",
+        cover_land,
         "JPEG",
         log,
-        ui_text("log_l2a_ready"),
-    )
+        None,
+    ):
+        try:
+            resize_jpeg_cover_art(cover_land, cover_land, NORMAL_COVER_SMALLEST_SIDE)
+            log(ui_text("log_cover_land_ready"))
+        except UserVisibleError as exc:
+            log(ui_text("log_file_prepare_skipped", name=cover_land.name, error=exc))
+        try:
+            make_small_cover(cover_land, settings.media_dir / "small_cover_land.jpg")
+            log(ui_text("log_small_cover_land_ready"))
+        except UserVisibleError as exc:
+            log(ui_text("log_small_cover_land_skipped", error=exc))
 
     download_optional_tmdb_image(
         client,
         logo,
-        settings.media_dir / "l2p.png",
+        settings.media_dir / "logo.png",
         "PNG",
         log,
-        ui_text("log_l2p_ready"),
+        ui_text("log_logo_ready"),
     )
 
     ensure_tmdb_tags_file(
