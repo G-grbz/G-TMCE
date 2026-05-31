@@ -12,6 +12,7 @@ on:
         required: true
         type: boolean
         default: false
+
   push:
     tags:
       - "v*"
@@ -22,6 +23,10 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
 
     steps:
       - name: Checkout
@@ -50,14 +55,19 @@ jobs:
           if (Test-Path VERSION) {
             $version = (Get-Content VERSION | Select-Object -First 1).Trim()
           }
+
           if (-not $version) {
             $version = "${{ github.ref_name }}"
           }
+
           if (-not $version) {
             $version = "manual"
           }
+
           $exeName = "G-TMCE_${version}_win-x64.exe"
+
           Move-Item -Force "dist/G-TMCE.exe" "dist/$exeName"
+
           "EXE_NAME=$exeName" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload artifact
