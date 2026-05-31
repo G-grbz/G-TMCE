@@ -418,8 +418,9 @@ These artwork files are attached automatically when they exist in the selected t
 ```text
 cover.jpg
 small_cover.jpg
-l2a.jpg
-l2p.png
+cover_land.jpg
+small_cover_land.jpg
+logo.png
 ```
 
 Font files are attached automatically. They may be placed directly in the selected track folder or inside subfolders.
@@ -448,6 +449,9 @@ Movie.Name.2025_tracks/
   tr.ass
   cover.jpg
   small_cover.jpg
+  cover_land.jpg
+  small_cover_land.jpg
+  logo.png
   fonts/
     Arial.ttf
     SomeSubtitleFont.otf
@@ -469,8 +473,14 @@ G-TMCE can automatically download:
 
 * `cover.jpg`
 * `small_cover.jpg`
-* `l2a.jpg`
-* `l2p.png`
+* `cover_land.jpg`
+* `small_cover_land.jpg`
+* `logo.png`
+
+Cover artwork is normalized to Matroska cover-art sizes:
+
+* `cover.jpg` and `cover_land.jpg`: 600 px on the smallest side
+* `small_cover.jpg` and `small_cover_land.jpg`: 120 px on the smallest side
 
 It can also automatically generate:
 
