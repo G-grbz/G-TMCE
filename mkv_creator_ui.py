@@ -2946,6 +2946,21 @@ def reorder_track_type_by_language(
     ]
 
 
+def group_track_order_by_type(ordered: list[TrackItem]) -> list[TrackItem]:
+    type_rank = {
+        1: 0,  # video
+        0: 1,  # audio
+        2: 2,  # subtitle
+    }
+    return [
+        item
+        for _, item in sorted(
+            enumerate(ordered),
+            key=lambda pair: (type_rank.get(track_type_value(pair[1]), 3), pair[0]),
+        )
+    ]
+
+
 def apply_default_track_preferences(
     config: dict[str, Any],
     items: list[TrackItem],
@@ -2970,7 +2985,7 @@ def apply_default_track_preferences(
 
     ordered = reorder_track_type_by_language(ordered, 0, audio_order, selected_audio)
     ordered = reorder_track_type_by_language(ordered, 2, subtitle_order, selected_subtitle)
-    return ordered
+    return group_track_order_by_type(ordered)
 
 
 def next_object_id(config: dict[str, Any]) -> int:

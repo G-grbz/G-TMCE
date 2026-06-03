@@ -598,13 +598,17 @@ en,tr,jp
 Behavior:
 
 * First matching language becomes default
-* Matching audio tracks are moved to the top
+* Video tracks stay first
+* Audio tracks are grouped together after video tracks
+* Matching audio languages are moved to the top of the audio group
 
 ## Default Subtitle Selection
 
 If subtitle priority is empty:
 
 * No subtitle track becomes default
+
+Subtitle tracks are grouped together after audio tracks. When subtitle priority is set, matching subtitle languages are moved to the top of the subtitle group.
 
 Forced subtitles only become default if explicitly selected by language priority.
 
