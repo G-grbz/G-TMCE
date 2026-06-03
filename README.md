@@ -76,6 +76,40 @@ It generates a `tags.xml` using the TMDB API, enriches MKV files with titles and
 
 # Installation
 
+## Arch Linux (AUR)
+
+G-TMCE is available on the Arch User Repository as [`g-tmce`](https://aur.archlinux.org/packages/g-tmce).
+
+Using an AUR helper:
+
+```bash
+yay -S g-tmce
+```
+
+or:
+
+```bash
+paru -S g-tmce
+```
+
+Manual AUR installation:
+
+```bash
+git clone https://aur.archlinux.org/g-tmce.git
+cd g-tmce
+makepkg -si
+```
+
+The AUR package installs the `g-tmce` launcher command, desktop menu entry, application icon, and Dolphin/KDE service menu integration.
+
+Optional native file dialog helpers:
+
+```bash
+sudo pacman -S --needed kdialog zenity
+```
+
+---
+
 ## Clone Repository
 
 ```bash
