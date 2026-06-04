@@ -2,14 +2,58 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
+import importlib.util
+import site
 from pathlib import Path
 
 
 APP_NAME = "G-TMCE"
 ENTRY_FILE = "mkv_creator_ui.py"
+
+
+def ensure_python_package(module: str, package: str) -> None:
+    if importlib.util.find_spec(module) is not None:
+        return
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", package])
+    user_site = site.getusersitepackages()
+    if user_site and user_site not in sys.path:
+        site.addsitedir(user_site)
+    importlib.invalidate_caches()
+
+
+def create_windows_icon(root: Path) -> Path | None:
+    logo = root / "logo.png"
+    if not logo.exists():
+        return None
+
+    existing_icon = root / f"{APP_NAME}.ico"
+    if existing_icon.exists():
+        return existing_icon
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+
+    icon = root / "build" / f"{APP_NAME}.ico"
+    icon.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(logo) as source:
+        source.convert("RGBA").save(
+            icon,
+            format="ICO",
+            sizes=[
+                (16, 16),
+                (24, 24),
+                (32, 32),
+                (48, 48),
+                (64, 64),
+                (128, 128),
+                (256, 256),
+            ],
+        )
+    return icon
 
 
 def main() -> int:
@@ -20,12 +64,11 @@ def main() -> int:
         return 1
 
     python = sys.executable
-    try:
-        import PyInstaller  # noqa: F401
-    except ImportError:
-        subprocess.check_call([python, "-m", "pip", "install", "--upgrade", "pyinstaller"])
+    ensure_python_package("PyInstaller", "pyinstaller")
+    ensure_python_package("PIL", "Pillow")
+    ensure_python_package("tkinterdnd2", "tkinterdnd2")
 
-    hidden_imports = ["PIL", "PIL.Image", "PIL.ImageOps", "PIL.ImageTk"]
+    hidden_imports = ["PIL", "PIL.Image", "PIL.ImageOps", "PIL.ImageTk", "tkinterdnd2"]
     command = [
         python,
         "-m",
@@ -36,15 +79,17 @@ def main() -> int:
         "--windowed",
         "--name",
         APP_NAME,
+        "--collect-all",
+        "tkinterdnd2",
     ]
 
     logo = root / "logo.png"
     if logo.exists():
         command += ["--add-data", f"{logo}{os.pathsep}."]
-        # Windows icon dosyan varsa G-TMCE.ico olarak koyarsan otomatik kullanır.
-        icon = root / "G-TMCE.ico"
-        if icon.exists():
-            command += ["--icon", str(icon)]
+
+    icon = create_windows_icon(root)
+    if icon is not None:
+        command += ["--icon", str(icon)]
 
     template = root / "mkv.mtxcfg"
     if template.exists():

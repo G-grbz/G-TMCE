@@ -27,6 +27,8 @@ APPDIR="${APP_NAME}.AppDir"
 DIST_DIR="dist"
 BUILD_DIR="build"
 TOOLS_DIR=".build-tools"
+BUILD_VENV="${TOOLS_DIR}/python-venv"
+BUILD_PYTHON="${BUILD_VENV}/bin/python"
 APPIMAGETOOL="${TOOLS_DIR}/appimagetool-x86_64.AppImage"
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/latest/download/appimagetool-x86_64.AppImage"
 OUTPUT_PATTERN="${APP_NAME}-*.AppImage"
@@ -52,6 +54,39 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+python_module_exists() {
+  "$BUILD_PYTHON" - "$1" >/dev/null 2>&1 <<'PY'
+import importlib.util
+import sys
+
+module = sys.argv[1]
+sys.exit(0 if importlib.util.find_spec(module) else 1)
+PY
+}
+
+ensure_python_package() {
+  local module="$1"
+  local package="$2"
+
+  if python_module_exists "$module"; then
+    return
+  fi
+
+  warn "Python module ${module} is not installed."
+  log "Installing ${package} into build virtual environment..."
+  "$BUILD_PYTHON" -m pip install --upgrade "$package"
+}
+
+ensure_build_venv() {
+  if [[ -x "$BUILD_PYTHON" ]]; then
+    return
+  fi
+
+  log "Creating build virtual environment: ${BUILD_VENV}"
+  python3 -m venv "$BUILD_VENV" || fail "Could not create Python virtual environment. Install python-venv/python-virtualenv support for your distribution."
+  "$BUILD_PYTHON" -m pip install --upgrade pip
+}
+
 cleanup_old_outputs() {
   log "Cleaning previous build artifacts..."
   rm -rf "$APPDIR" "$BUILD_DIR"
@@ -70,11 +105,11 @@ validate_project() {
     fail "python3 is not installed or not available in PATH."
   fi
 
-  if ! python3 -m PyInstaller --version >/dev/null 2>&1; then
-    warn "PyInstaller is not installed for the current Python environment."
-    log "Installing PyInstaller with pip..."
-    python3 -m pip install --user pyinstaller
-  fi
+  ensure_build_venv
+
+  ensure_python_package "PyInstaller" "pyinstaller"
+  ensure_python_package "PIL" "Pillow>=10"
+  ensure_python_package "tkinterdnd2" "tkinterdnd2"
 }
 
 build_binary() {
@@ -85,10 +120,12 @@ build_binary() {
     add_data_args+=(--add-data "${VERSION_FILE}:.")
   fi
 
-  python3 -m PyInstaller \
+  "$BUILD_PYTHON" -m PyInstaller \
     --onefile \
     --windowed \
     --name "$APP_NAME" \
+    --hidden-import tkinterdnd2 \
+    --collect-all tkinterdnd2 \
     "${add_data_args[@]}" \
     "$ENTRY_FILE"
 

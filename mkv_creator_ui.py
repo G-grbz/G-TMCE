@@ -35,11 +35,19 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = ""
+    TkinterDnD = None
+
+try:
     from PIL import Image, ImageOps, ImageTk
 except ImportError:
     Image = None
     ImageOps = None
     ImageTk = None
+
+TK_ROOT_CLASS = TkinterDnD.Tk if TkinterDnD is not None else tk.Tk
 
 
 def app_runtime_dir() -> Path:
@@ -87,6 +95,10 @@ def read_app_version() -> str:
 DEFAULT_TEMPLATE = bundled_resource_path("mkv.mtxcfg")
 APP_VERSION = read_app_version()
 LOGO_PATH = bundled_resource_path("logo.png")
+MAIN_WINDOW_WIDTH = 1360
+MAIN_WINDOW_HEIGHT = 820
+MAIN_WINDOW_MIN_WIDTH = 1040
+MAIN_WINDOW_MIN_HEIGHT = 700
 
 
 def app_config_dir() -> Path:
@@ -134,6 +146,7 @@ UI_TEXT = {
         "status_ready": "Ready",
         "status_processing": "Processing...",
         "status_completed": "Completed.",
+        "status_progress_percent": "Progress: {percent}%",
         "error_prefix": "Error: {message}",
         "error_video_fps_positive": "Video FPS must be greater than zero.",
         "error_video_fps_fraction_positive": "Video FPS fraction must be greater than zero.",
@@ -148,6 +161,7 @@ UI_TEXT = {
         "track_type_audio": "audio",
         "track_type_video": "video",
         "track_type_subtitle": "subtitle",
+        "track_type_artwork": "artwork",
         "track_type_generic": "track",
         "error_unsupported_track_type": "Unsupported track type: {name}",
         "error_extra_subtitle_template_missing": "No subtitle template is available in the config for extra subtitles.",
@@ -169,8 +183,10 @@ UI_TEXT = {
         "error_tmdb_svg_logo": "TMDB returned an SVG for {name}; no PNG logo was available.",
         "error_pillow_image_convert": "Pillow must be installed to convert images.",
         "error_pillow_small_cover": "Pillow must be installed to create small cover artwork.",
+        "error_file_prepare_failed": "{name} could not be prepared: {error}",
         "log_file_not_found_skipped": "{name} was not found; skipped.",
         "log_file_prepare_skipped": "{name} could not be prepared; skipped: {error}",
+        "log_file_exists_skipped": "{name} already exists; skipped.",
         "log_tags_exists": "tags.xml already exists; skipped.",
         "log_tags_ready": "tags.xml is ready.",
         "log_tmdb_title": "TMDB title: {title}",
@@ -210,7 +226,9 @@ UI_TEXT = {
         "label_audio_order": "Audio priority",
         "label_subtitle_order": "Subtitle priority",
         "option_include_extra_subtitles": "Include additional subtitles",
+        "option_add_tracks_before_mux": "Add tracks before muxing",
         "option_download_before_mux": "Prepare artwork and tags before muxing",
+        "option_download_missing_mux_assets": "Fill missing artwork/tags from TMDB",
         "label_auto_chapters": "Automatic chapters",
         "option_create_if_missing": "Create if missing",
         "label_chapter_name": "Name",
@@ -219,8 +237,19 @@ UI_TEXT = {
         "label_chapter_end": "End (min)",
         "button_scan_tracks": "Adjust Audio",
         "window_audio_adjust_title": "Audio Adjust",
+        "window_mux_tracks_title": "Add Tracks",
         "audio_adjust_hint": "Select audio tracks. A + value creates silence in the selected output codec and prepends it; a - value cuts that many seconds from the beginning. Leave duration empty or 0 to only change codec/output settings. Volume 1x keeps the original level; 2x-5x boosts it.",
+        "mux_tracks_drop_hint": "Drag and drop files to add tracks, chapters, tags, or artwork",
+        "button_add_tracks": "Add Files",
+        "button_include_track": "Include",
+        "button_remove_track": "Remove",
+        "button_move_track_up": "Up",
+        "button_move_track_down": "Down",
+        "label_track_language": "Language",
+        "label_track_delay": "Delay (ms)",
+        "heading_audio_append": "Append",
         "heading_audio_file": "Audio file",
+        "heading_track_type": "Type",
         "heading_audio_delta": "Delta (s)",
         "heading_audio_codec": "Codec",
         "heading_audio_bitrate": "Bitrate",
@@ -233,12 +262,14 @@ UI_TEXT = {
         "error_audio_adjust_none": "Select at least one audio track and enter a duration or change codec/output settings.",
         "error_audio_adjust_numeric": "Duration value must be numeric, for example +0.967 or -0.967.",
         "error_audio_codec_unsupported": "Unsupported audio codec: {codec}",
+        "error_ffmpeg_exit": "ffmpeg exited with error code: {code}",
         "log_audio_adjust_ready": "Audio adjustment ready: {name}",
         "log_audio_adjust_command": "Audio ffmpeg command:",
         "status_adjusting_audio": "Adjusting audio...",
         "button_download_assets": "Download Artwork/Tags",
         "button_write_config": "Write Config",
         "button_create_mkv": "Create MKV",
+        "button_cancel": "Cancel",
         "button_cancel_job": "Cancel Job",
         "button_show_log": "Show Log",
         "section_extract": "MKV Extract",
@@ -254,6 +285,8 @@ UI_TEXT = {
         "filetype_matroska": "Matroska video",
         "dialog_config_error": "Config error",
         "dialog_track_folder_title": "Select track folder",
+        "dialog_add_track_files_title": "Select tracks",
+        "dialog_add_append_audio_title": "Select audio append files",
         "dialog_output_mkv_title": "Select output MKV",
         "dialog_source_mkv_title": "Select source MKV / folder",
         "dialog_extract_folder_title": "Select extraction folder",
@@ -266,6 +299,12 @@ UI_TEXT = {
         "error_template_missing": "Template config not found: {path}",
         "error_track_folder_not_selected": "Track folder is not selected.",
         "error_track_folder_not_found": "Track folder not found: {path}",
+        "error_track_file_not_found": "Track file not found: {path}",
+        "error_track_delay_format": "Track delay must be an integer millisecond value, for example 1000 or -1000.",
+        "error_append_audio_selected": "Select an audio track first.",
+        "error_append_audio_type": "Append files must be audio files with the same extension as {name}.",
+        "error_append_audio_self": "A track cannot be appended to itself.",
+        "error_unsupported_mux_asset_name": "Unsupported metadata/artwork file: {name}. Use chapters.txt, tags.xml, cover.jpg, small_cover.jpg, cover_land.jpg, small_cover_land.jpg, or logo.png.",
         "log_output_default_used": "Output path was empty; using the default: {path}",
         "error_tmdb_media_type": "TMDB type must be Movie or TV.",
         "error_tmdb_api_empty": "TMDB API key is required.",
@@ -280,6 +319,8 @@ UI_TEXT = {
         "error_batch_tmdb_tv_required": "Folder batch with TMDB must use TV type.",
         "error_batch_extract_dir_missing": "Extracted track folder not found: {path}",
         "log_tracks_found": "Tracks found: {count}",
+        "log_custom_tracks_ready": "Custom mux list ready: {count} items.",
+        "log_manual_asset_ready": "{name} was copied to the track folder.",
         "log_extra_subtitle_suffix": " (additional subtitle)",
         "log_default_track_suffix": " | default",
         "log_optional_tracks_missing": "Missing optional items: {items}",
@@ -297,6 +338,7 @@ UI_TEXT = {
         "log_skipped_optional_tracks": "Skipped optional items: {items}",
         "log_mkvmerge_command": "mkvmerge command:",
         "error_mkvmerge_exit": "mkvmerge exited with error code: {code}",
+        "error_output_delete_failed": "{name} could not be deleted: {error}",
         "log_mkvmerge_warnings": "mkvmerge completed with warnings.",
         "log_mkv_created": "MKV created: {path}",
         "log_batch_episode": "Batch episode {index}/{count}: {name}",
@@ -369,6 +411,7 @@ UI_TEXT = {
         "status_ready": "Hazır",
         "status_processing": "İşlem sürüyor...",
         "status_completed": "Tamamlandı.",
+        "status_progress_percent": "İlerleme: {percent}%",
         "error_prefix": "Hata: {message}",
         "error_video_fps_positive": "Video FPS sıfırdan büyük olmalı.",
         "error_video_fps_fraction_positive": "Video FPS kesri sıfırdan büyük olmalı.",
@@ -383,6 +426,7 @@ UI_TEXT = {
         "track_type_audio": "ses",
         "track_type_video": "video",
         "track_type_subtitle": "altyazı",
+        "track_type_artwork": "görsel",
         "track_type_generic": "parça",
         "error_unsupported_track_type": "Desteklenmeyen parça türü: {name}",
         "error_extra_subtitle_template_missing": "Ek altyazı için config içinde kopyalanacak altyazı şablonu yok.",
@@ -404,8 +448,10 @@ UI_TEXT = {
         "error_tmdb_svg_logo": "{name} için TMDB SVG döndürdü; PNG logo bulunamadı.",
         "error_pillow_image_convert": "Görsel dönüştürme için Pillow kurulu olmalı.",
         "error_pillow_small_cover": "Küçük kapak görseli üretmek için Pillow kurulu olmalı.",
+        "error_file_prepare_failed": "{name} hazırlanamadı: {error}",
         "log_file_not_found_skipped": "{name} bulunamadı, atlandı.",
         "log_file_prepare_skipped": "{name} hazırlanamadı, atlandı: {error}",
+        "log_file_exists_skipped": "{name} zaten var, atlandı.",
         "log_tags_exists": "tags.xml zaten var, atlandı.",
         "log_tags_ready": "tags.xml hazır.",
         "log_tmdb_title": "TMDB içerik: {title}",
@@ -445,7 +491,9 @@ UI_TEXT = {
         "label_audio_order": "Ses sırası",
         "label_subtitle_order": "Altyazı sırası",
         "option_include_extra_subtitles": "Fazla altyazıları ekle",
+        "option_add_tracks_before_mux": "MKV öncesi parça ekle",
         "option_download_before_mux": "MKV oluşturmadan önce görsel/tag hazırla",
+        "option_download_missing_mux_assets": "Eksik görsel/tag TMDB'den tamamla",
         "label_auto_chapters": "Otomatik chapter",
         "option_create_if_missing": "Yoksa oluştur",
         "label_chapter_name": "Ad",
@@ -454,8 +502,19 @@ UI_TEXT = {
         "label_chapter_end": "Bitiş dk",
         "button_scan_tracks": "Ses Ayarla",
         "window_audio_adjust_title": "Ses Ayarla",
+        "window_mux_tracks_title": "Parça Ekle",
         "audio_adjust_hint": "Ses parçalarını seç. + değer, girilen süre kadar seçili çıkış kodekinde sessizlik oluşturup parçanın başına ekler; - değer, seçili parçanın başından girilen süre kadar keser. Sadece kodek/çıkış ayarı değiştirmek için süreyi boş veya 0 bırak. Ses 1x orijinal seviyeyi korur; 2x-5x yükseltir.",
+        "mux_tracks_drop_hint": "Parça, chapter, tag veya görsel eklemek için dosyaları sürükle & bırak",
+        "button_add_tracks": "Dosya Ekle",
+        "button_include_track": "Ekle",
+        "button_remove_track": "Kaldır",
+        "button_move_track_up": "Yukarı",
+        "button_move_track_down": "Aşağı",
+        "label_track_language": "Dil",
+        "label_track_delay": "Delay (ms)",
+        "heading_audio_append": "İlave",
         "heading_audio_file": "Ses dosyası",
+        "heading_track_type": "Tür",
         "heading_audio_delta": "Süre (sn)",
         "heading_audio_codec": "Kodek",
         "heading_audio_bitrate": "Bitrate",
@@ -468,12 +527,14 @@ UI_TEXT = {
         "error_audio_adjust_none": "En az bir ses parçası seç ve süre gir ya da kodek/çıkış ayarını değiştir.",
         "error_audio_adjust_numeric": "Süre sayısal olmalı, örnek +0.967 veya -0.967.",
         "error_audio_codec_unsupported": "Desteklenmeyen ses kodeki: {codec}",
+        "error_ffmpeg_exit": "ffmpeg hata kodu ile bitti: {code}",
         "log_audio_adjust_ready": "Ses ayarı hazır: {name}",
         "log_audio_adjust_command": "Ses ffmpeg komutu:",
         "status_adjusting_audio": "Ses ayarlanıyor...",
         "button_download_assets": "Görsel/Tag İndir",
         "button_write_config": "Config Yaz",
         "button_create_mkv": "MKV Oluştur",
+        "button_cancel": "İptal",
         "button_cancel_job": "İşi İptal Et",
         "button_show_log": "Günlüğü Göster",
         "section_extract": "MKV Extract",
@@ -489,6 +550,8 @@ UI_TEXT = {
         "filetype_matroska": "Matroska video",
         "dialog_config_error": "Config hatası",
         "dialog_track_folder_title": "Parça klasörü seç",
+        "dialog_add_track_files_title": "Parça seç",
+        "dialog_add_append_audio_title": "İlave ses dosyalarını seç",
         "dialog_output_mkv_title": "Çıktı MKV seç",
         "dialog_source_mkv_title": "Kaynak MKV / klasör seç",
         "dialog_extract_folder_title": "Çıkarma klasörü seç",
@@ -501,6 +564,12 @@ UI_TEXT = {
         "error_template_missing": "Şablon config bulunamadı: {path}",
         "error_track_folder_not_selected": "Parça klasörü seçilmedi.",
         "error_track_folder_not_found": "Parça klasörü bulunamadı: {path}",
+        "error_track_file_not_found": "Parça dosyası bulunamadı: {path}",
+        "error_track_delay_format": "Parça delay değeri tam sayı milisaniye olmalı, örnek 1000 veya -1000.",
+        "error_append_audio_selected": "Önce bir ses parçası seç.",
+        "error_append_audio_type": "İlave dosyalar {name} ile aynı uzantıda ses dosyası olmalı.",
+        "error_append_audio_self": "Bir parça kendisine ilave edilemez.",
+        "error_unsupported_mux_asset_name": "Desteklenmeyen metadata/görsel dosyası: {name}. chapters.txt, tags.xml, cover.jpg, small_cover.jpg, cover_land.jpg, small_cover_land.jpg veya logo.png kullan.",
         "log_output_default_used": "Çıktı yolu boştu, varsayılan kullanılıyor: {path}",
         "error_tmdb_media_type": "TMDB türü Film veya Dizi olmalı.",
         "error_tmdb_api_empty": "TMDB API key boş.",
@@ -515,6 +584,8 @@ UI_TEXT = {
         "error_batch_tmdb_tv_required": "TMDB ile klasör toplu işleminde tür Dizi olmalı.",
         "error_batch_extract_dir_missing": "Çıkarılmış parça klasörü bulunamadı: {path}",
         "log_tracks_found": "Bulunan parça sayısı: {count}",
+        "log_custom_tracks_ready": "Özel mux listesi hazır: {count} öğe.",
+        "log_manual_asset_ready": "{name} parça klasörüne kopyalandı.",
         "log_extra_subtitle_suffix": " (ek altyazı)",
         "log_default_track_suffix": " | varsayılan",
         "log_optional_tracks_missing": "Eksik opsiyonel parçalar: {items}",
@@ -532,6 +603,7 @@ UI_TEXT = {
         "log_skipped_optional_tracks": "Atlanan opsiyonel parçalar: {items}",
         "log_mkvmerge_command": "mkvmerge komutu:",
         "error_mkvmerge_exit": "mkvmerge hata kodu ile bitti: {code}",
+        "error_output_delete_failed": "{name} silinemedi: {error}",
         "log_mkvmerge_warnings": "mkvmerge uyarılarla tamamlandı.",
         "log_mkv_created": "MKV oluşturuldu: {path}",
         "log_batch_episode": "Toplu bölüm {index}/{count}: {name}",
@@ -718,6 +790,54 @@ def native_open_file(
     return ""
 
 
+def native_open_files(
+    title: str,
+    initialdir: str | Path | None = None,
+    filetypes: tuple[tuple[str, str], ...] = (),
+) -> tuple[str, ...] | None:
+    tool = native_file_dialog_available()
+    if tool is None:
+        return None
+
+    initialdir_text = dialog_initial_dir(initialdir)
+
+    if tool == "kdialog":
+        args = [
+            "kdialog",
+            "--title",
+            title,
+            "--getopenfilename",
+            initialdir_text,
+        ]
+        if filetypes:
+            args.append(kdialog_filter_string(filetypes))
+        args.extend(["--multiple", "--separate-output"])
+        result = run_dialog_command(args)
+
+    elif tool == "zenity":
+        args = [
+            "zenity",
+            "--file-selection",
+            "--multiple",
+            "--separator=\n",
+            "--title",
+            title,
+            "--filename",
+            initialdir_text + "/",
+        ]
+        for label, pattern in filetypes:
+            if pattern != "*":
+                args.extend(["--file-filter", f"{label} | {pattern}"])
+        result = run_dialog_command(args)
+
+    else:
+        return None
+
+    if not result:
+        return ()
+    return tuple(path for path in result.splitlines() if path)
+
+
 def native_select_dir(title: str, initialdir: str | Path | None = None) -> str | None:
     tool = native_file_dialog_available()
     if tool is None:
@@ -804,6 +924,7 @@ VIDEO_CONTAINER_EXTENSIONS = {
     ".mkv",
     ".mk3d",
     ".mka",
+    ".mks",
     ".webm",
     ".mp4",
     ".m4v",
@@ -830,7 +951,10 @@ VIDEO_CONTAINER_EXTENSIONS = {
     ".xvid",
 }
 VIDEO_FILE_PATTERNS = " ".join(f"*{ext}" for ext in sorted(VIDEO_CONTAINER_EXTENSIONS))
-MATROSKA_EXTRACT_EXTENSIONS = {".mkv", ".mk3d", ".mka", ".webm"}
+MATROSKA_EXTRACT_EXTENSIONS = {".mkv", ".mk3d", ".mka", ".mks", ".webm"}
+WINDOWS_CONTEXT_MENU_VERB = "G-TMCEExtract"
+WINDOWS_CONTEXT_MENU_LABEL = "Open with G-TMCE Extract"
+WINDOWS_CONTEXT_MENU_EXTENSIONS = tuple(sorted(VIDEO_CONTAINER_EXTENSIONS))
 AUDIO_EXTENSIONS = {
     ".aac",
     ".ac3",
@@ -848,7 +972,159 @@ AUDIO_EXTENSIONS = {
     ".truehd",
     ".wav",
 }
+AUDIO_FILE_PATTERNS = " ".join(f"*{ext}" for ext in sorted(AUDIO_EXTENSIONS))
 TRACK_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | SUBTITLE_EXTENSIONS
+TRACK_FILE_PATTERNS = " ".join(f"*{ext}" for ext in sorted(TRACK_EXTENSIONS))
+
+
+def quote_windows_command_arg(value: Path | str) -> str:
+    return '"' + str(value).replace('"', r'\"') + '"'
+
+
+def app_command_for_file_argument() -> str:
+    if getattr(sys, "frozen", False):
+        return f'{quote_windows_command_arg(Path(sys.executable).resolve())} "%1"'
+    return (
+        f"{quote_windows_command_arg(Path(sys.executable).resolve())} "
+        f'{quote_windows_command_arg(Path(__file__).resolve())} "%1"'
+    )
+
+
+def windows_context_menu_icon_value() -> str:
+    if getattr(sys, "frozen", False):
+        return f"{quote_windows_command_arg(Path(sys.executable).resolve())},0"
+    if LOGO_PATH.exists():
+        return quote_windows_command_arg(LOGO_PATH)
+    return f"{quote_windows_command_arg(Path(sys.executable).resolve())},0"
+
+
+def notify_windows_file_association_changed() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+    except (AttributeError, OSError):
+        pass
+
+
+def install_windows_context_menu() -> list[str]:
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except ImportError as exc:
+        return [str(exc)]
+
+    command = app_command_for_file_argument()
+    icon = windows_context_menu_icon_value()
+    errors: list[str] = []
+    for extension in WINDOWS_CONTEXT_MENU_EXTENSIONS:
+        menu_key_path = (
+            fr"Software\Classes\SystemFileAssociations\{extension}"
+            fr"\shell\{WINDOWS_CONTEXT_MENU_VERB}"
+        )
+        command_key_path = menu_key_path + r"\command"
+        try:
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER,
+                menu_key_path,
+                0,
+                winreg.KEY_SET_VALUE,
+            ) as menu_key:
+                winreg.SetValueEx(menu_key, "", 0, winreg.REG_SZ, WINDOWS_CONTEXT_MENU_LABEL)
+                winreg.SetValueEx(menu_key, "MUIVerb", 0, winreg.REG_SZ, WINDOWS_CONTEXT_MENU_LABEL)
+                winreg.SetValueEx(menu_key, "Icon", 0, winreg.REG_SZ, icon)
+                winreg.SetValueEx(menu_key, "MultiSelectModel", 0, winreg.REG_SZ, "Single")
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER,
+                command_key_path,
+                0,
+                winreg.KEY_SET_VALUE,
+            ) as command_key:
+                winreg.SetValueEx(command_key, "", 0, winreg.REG_SZ, command)
+        except OSError as exc:
+            errors.append(f"{extension}: {exc}")
+
+    if not errors:
+        notify_windows_file_association_changed()
+    return errors
+
+
+def delete_windows_registry_tree(root: Any, key_path: str) -> None:
+    import winreg
+
+    try:
+        with winreg.OpenKey(root, key_path, 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
+            while True:
+                try:
+                    child_name = winreg.EnumKey(key, 0)
+                except OSError:
+                    break
+                delete_windows_registry_tree(root, key_path + "\\" + child_name)
+        winreg.DeleteKey(root, key_path)
+    except FileNotFoundError:
+        return
+
+
+def uninstall_windows_context_menu() -> list[str]:
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except ImportError as exc:
+        return [str(exc)]
+
+    errors: list[str] = []
+    for extension in WINDOWS_CONTEXT_MENU_EXTENSIONS:
+        menu_key_path = (
+            fr"Software\Classes\SystemFileAssociations\{extension}"
+            fr"\shell\{WINDOWS_CONTEXT_MENU_VERB}"
+        )
+        try:
+            delete_windows_registry_tree(winreg.HKEY_CURRENT_USER, menu_key_path)
+        except OSError as exc:
+            errors.append(f"{extension}: {exc}")
+
+    if not errors:
+        notify_windows_file_association_changed()
+    return errors
+
+
+def write_cli_line(message: str, *, error: bool = False) -> None:
+    stream = sys.stderr if error else sys.stdout
+    if stream is not None:
+        print(message, file=stream)
+
+
+def handle_windows_context_menu_cli(argv: list[str]) -> bool:
+    options = {value.lower() for value in argv[1:] if value.startswith("--")}
+    if "--install-context-menu" in options:
+        errors = install_windows_context_menu()
+        if errors:
+            write_cli_line("Windows context menu could not be installed:", error=True)
+            for error in errors:
+                write_cli_line(f"- {error}", error=True)
+        else:
+            write_cli_line("Windows context menu installed.")
+        return True
+    if "--uninstall-context-menu" in options:
+        errors = uninstall_windows_context_menu()
+        if errors:
+            write_cli_line("Windows context menu could not be removed:", error=True)
+            for error in errors:
+                write_cli_line(f"- {error}", error=True)
+        else:
+            write_cli_line("Windows context menu removed.")
+        return True
+    return False
+
+
+def is_supported_extract_source_path(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in VIDEO_CONTAINER_EXTENSIONS
+
+
 STANDARD_ATTACHMENT_NAMES = (
     "cover.jpg",
     "small_cover.jpg",
@@ -856,6 +1132,23 @@ STANDARD_ATTACHMENT_NAMES = (
     "small_cover_land.jpg",
     "logo.png",
 )
+ARTWORK_TARGET_NAME_ALIASES = {
+    "cover.jpg": "cover.jpg",
+    "cover.jpeg": "cover.jpg",
+    "small_cover.jpg": "small_cover.jpg",
+    "small_cover.jpeg": "small_cover.jpg",
+    "cover_land.jpg": "cover_land.jpg",
+    "cover_land.jpeg": "cover_land.jpg",
+    "small_cover_land.jpg": "small_cover_land.jpg",
+    "small_cover_land.jpeg": "small_cover_land.jpg",
+    "logo.png": "logo.png",
+}
+MUX_METADATA_FILE_PATTERNS = (
+    "chapters.txt tags.xml "
+    "cover.jpg cover.jpeg small_cover.jpg small_cover.jpeg "
+    "cover_land.jpg cover_land.jpeg small_cover_land.jpg small_cover_land.jpeg logo.png"
+)
+MUX_ADD_FILE_PATTERNS = f"{TRACK_FILE_PATTERNS} {MUX_METADATA_FILE_PATTERNS}"
 NORMAL_COVER_SMALLEST_SIDE = 600
 SMALL_COVER_SMALLEST_SIDE = 120
 FONT_ATTACHMENT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"}
@@ -891,6 +1184,18 @@ RELEASE_STOP_TOKENS = {
     "h265",
     "hevc",
     "avc",
+}
+SUBTITLE_DESCRIPTOR_TOKENS = {
+    "cc",
+    "caption",
+    "captions",
+    "closed",
+    "force",
+    "forced",
+    "forc",
+    "hearing",
+    "impaired",
+    "sdh",
 }
 LANG_ALIASES = {
     "eng": "en",
@@ -1231,6 +1536,37 @@ class TrackItem:
     def object_id(self) -> int | None:
         value = self.track.get("objectID")
         return int(value) if isinstance(value, int) else None
+
+
+@dataclass(frozen=True)
+class AdditionalMuxTrack:
+    path: Path
+    language: str
+    delay: str = ""
+    append_paths: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
+class AdditionalMuxAsset:
+    path: Path
+    kind: str
+    target_name: str
+
+
+@dataclass
+class MuxTrackWindowRow:
+    key: str
+    path: Path
+    kind: str
+    language: str
+    delay: str = ""
+    delay_supported: bool = False
+    append_paths: tuple[Path, ...] = ()
+    append_overridden: bool = False
+    asset_kind: str = ""
+    target_name: str = ""
+    manual: bool = False
+    included: bool = True
 
 
 @dataclass
@@ -2775,6 +3111,31 @@ def track_language_value(item: TrackItem) -> str:
     return LANG_ALIASES.get(value, value)
 
 
+def normalise_mux_language(language: str, fallback: str = MUX_UNKNOWN_LANGUAGE) -> str:
+    value = str(language or "").strip().lower()
+    if not value:
+        return fallback
+    if "-" in value:
+        value = value.split("-", 1)[0]
+    return LANG_ALIASES.get(value, value)
+
+
+def normalise_mux_delay(delay: str) -> str:
+    value = str(delay or "").strip()
+    if not value:
+        return ""
+    if not re.fullmatch(r"[+-]?\d+", value):
+        raise UserVisibleError(ui_text("error_track_delay_format"))
+    return str(int(value))
+
+
+def path_identity_key(path: Path) -> str:
+    try:
+        return str(path.expanduser().resolve()).lower()
+    except OSError:
+        return str(path.expanduser()).lower()
+
+
 def track_type_label(item: TrackItem) -> str:
     return {
         0: ui_text("track_type_audio"),
@@ -3004,9 +3365,20 @@ def next_object_id(config: dict[str, Any]) -> int:
     return max_id + 1
 
 
+def next_object_id_for_items(config: dict[str, Any], items: list[TrackItem]) -> int:
+    max_id = next_object_id(config) - 1
+    for item in items:
+        for value in (item.entry.get("objectID"), item.track.get("objectID")):
+            if isinstance(value, int):
+                max_id = max(max_id, value)
+    return max_id + 1
+
+
 def infer_language_from_filename(path: Path, unknown_language: str = "und") -> str:
     tokens = [token for token in re.split(r"[._\-\s]+", path.stem.lower()) if token]
     for token in tokens:
+        if token in SUBTITLE_DESCRIPTOR_TOKENS:
+            continue
         if token == "und":
             return unknown_language
         if token in LANG_ALIASES:
@@ -3025,6 +3397,22 @@ def media_kind_from_path(path: Path) -> str | None:
     if suffix in SUBTITLE_EXTENSIONS:
         return "subtitle"
     return None
+
+
+def mux_asset_info_from_path(path: Path) -> tuple[str, str] | None:
+    name = path.name.lower()
+    if name == "chapters.txt":
+        return "chapters", "chapters.txt"
+    if name == "tags.xml":
+        return "tags", "tags.xml"
+    target_name = ARTWORK_TARGET_NAME_ALIASES.get(name)
+    if target_name:
+        return "artwork", target_name
+    return None
+
+
+def is_supported_mux_add_path(path: Path) -> bool:
+    return media_kind_from_path(path) is not None or mux_asset_info_from_path(path) is not None
 
 
 def is_media_track_path(path: Path) -> bool:
@@ -3080,6 +3468,33 @@ def discover_media_track_paths_with_appends(
 
     root_paths = [path for path in paths if path.name.lower() not in append_names]
     return root_paths, append_paths_by_base, append_names
+
+
+def normalise_append_paths_for_track(base_path: Path, append_paths: tuple[Path, ...] | list[Path]) -> tuple[Path, ...]:
+    base_kind = media_kind_from_path(base_path)
+    if base_kind not in {"audio", "video"}:
+        return ()
+
+    base_suffix = base_path.suffix.lower()
+    base_key = path_identity_key(base_path)
+    result: list[Path] = []
+    seen: set[str] = set()
+    for raw_path in append_paths:
+        path = Path(raw_path).expanduser()
+        if path.exists():
+            path = path.resolve()
+        if not path.is_file():
+            raise UserVisibleError(ui_text("error_track_file_not_found", path=path))
+        key = path_identity_key(path)
+        if key == base_key:
+            raise UserVisibleError(ui_text("error_append_audio_self"))
+        if key in seen:
+            continue
+        if media_kind_from_path(path) != base_kind or path.suffix.lower() != base_suffix:
+            raise UserVisibleError(ui_text("error_append_audio_type", name=base_path.name))
+        result.append(path)
+        seen.add(key)
+    return tuple(result)
 
 
 def infer_video_fps_from_filename(path: Path) -> str:
@@ -3330,6 +3745,13 @@ def make_extra_subtitle_entry(
     return entry, object_id_seed + 2
 
 
+def assign_track_file_ids(items: list[TrackItem]) -> None:
+    file_id = 0
+    for item in items:
+        item.file_id = file_id
+        file_id += 1 + len(item.append_paths)
+
+
 def discover_track_items(
     config: dict[str, Any],
     media_dir: Path,
@@ -3381,12 +3803,146 @@ def discover_track_items(
         used_names.add(path.name.lower())
         used_names.update(part.name.lower() for part in append_paths)
 
-    file_id = 0
-    for item in items:
-        item.file_id = file_id
-        file_id += 1 + len(item.append_paths)
+    assign_track_file_ids(items)
 
     return items, missing_optional, missing_required
+
+
+def append_additional_mux_tracks(
+    config: dict[str, Any],
+    items: list[TrackItem],
+    additional_tracks: list[AdditionalMuxTrack],
+    unknown_language: str = MUX_UNKNOWN_LANGUAGE,
+) -> None:
+    seed = next_object_id_for_items(config, items)
+    for additional in additional_tracks:
+        path = additional.path.expanduser()
+        if path.exists():
+            path = path.resolve()
+        if not path.is_file():
+            raise UserVisibleError(ui_text("error_track_file_not_found", path=path))
+        entry, seed = make_track_entry_from_path(config, path, seed, unknown_language)
+        track = entry.setdefault("tracks", {}).setdefault("0", {})
+        track["language"] = normalise_mux_language(additional.language, unknown_language)
+        delay = normalise_mux_delay(additional.delay)
+        if delay and track.get("type") in (0, 2):
+            track["delay"] = delay
+        elif "delay" in track:
+            track.pop("delay", None)
+        append_paths = normalise_append_paths_for_track(path, list(additional.append_paths))
+        items.append(TrackItem(entry, path, None, is_extra=True, append_paths=append_paths))
+    assign_track_file_ids(items)
+
+
+def apply_mux_track_append_overrides(
+    items: list[TrackItem],
+    append_overrides: dict[str, tuple[Path, ...]],
+) -> None:
+    if not append_overrides:
+        return
+    for item in items:
+        append_paths = append_overrides.get(path_identity_key(item.path))
+        if append_paths is None:
+            continue
+        item.append_paths = normalise_append_paths_for_track(item.path, list(append_paths))
+
+
+def apply_mux_track_language_overrides(
+    items: list[TrackItem],
+    language_overrides: dict[str, str],
+    unknown_language: str = MUX_UNKNOWN_LANGUAGE,
+) -> None:
+    if not language_overrides:
+        return
+    for item in items:
+        language = language_overrides.get(path_identity_key(item.path))
+        if language is None:
+            continue
+        item.track["language"] = normalise_mux_language(language, unknown_language)
+
+
+def apply_mux_track_delay_overrides(
+    items: list[TrackItem],
+    delay_overrides: dict[str, str],
+) -> None:
+    if not delay_overrides:
+        return
+    for item in items:
+        delay = delay_overrides.get(path_identity_key(item.path))
+        if delay is None:
+            continue
+        if track_type_value(item) not in (0, 2):
+            item.track.pop("delay", None)
+            continue
+        normalised = normalise_mux_delay(delay)
+        if normalised:
+            item.track["delay"] = normalised
+        else:
+            item.track.pop("delay", None)
+
+
+def apply_custom_track_order(
+    ordered: list[TrackItem],
+    track_order_keys: list[str],
+) -> list[TrackItem]:
+    if not track_order_keys:
+        return ordered
+    buckets: dict[str, list[TrackItem]] = {}
+    for item in ordered:
+        buckets.setdefault(path_identity_key(item.path), []).append(item)
+
+    result: list[TrackItem] = []
+    seen_ids: set[int] = set()
+    for key in track_order_keys:
+        bucket = buckets.get(key)
+        if not bucket:
+            continue
+        item = bucket.pop(0)
+        result.append(item)
+        seen_ids.add(id(item))
+
+    result.extend(item for item in ordered if id(item) not in seen_ids)
+    return result
+
+
+def prepare_mux_track_items(
+    config: dict[str, Any],
+    media_dir: Path,
+    include_extra_subtitles: bool,
+    unknown_language: str = MUX_UNKNOWN_LANGUAGE,
+    additional_tracks: list[AdditionalMuxTrack] | None = None,
+    language_overrides: dict[str, str] | None = None,
+    delay_overrides: dict[str, str] | None = None,
+    append_overrides: dict[str, tuple[Path, ...]] | None = None,
+    excluded_track_keys: set[str] | None = None,
+) -> tuple[list[TrackItem], list[str]]:
+    items, missing_optional, _ = discover_track_items(
+        config,
+        media_dir,
+        include_extra_subtitles,
+        unknown_language,
+    )
+    append_additional_mux_tracks(
+        config,
+        items,
+        list(additional_tracks or []),
+        unknown_language,
+    )
+    apply_mux_track_append_overrides(items, dict(append_overrides or {}))
+    excluded = set(excluded_track_keys or set())
+    if excluded:
+        items = [item for item in items if path_identity_key(item.path) not in excluded]
+    apply_mux_track_language_overrides(
+        items,
+        dict(language_overrides or {}),
+        unknown_language,
+    )
+    apply_mux_track_delay_overrides(
+        items,
+        dict(delay_overrides or {}),
+    )
+    assign_track_file_ids(items)
+    return items, missing_optional
 
 
 def ordered_items(config: dict[str, Any], items: list[TrackItem]) -> list[TrackItem]:
@@ -3733,6 +4289,12 @@ def build_mkvmerge_args(
     audio_language_order: str = "",
     subtitle_language_order: str = "",
     tag_language: str = "",
+    additional_tracks: list[AdditionalMuxTrack] | None = None,
+    track_order_keys: list[str] | None = None,
+    language_overrides: dict[str, str] | None = None,
+    delay_overrides: dict[str, str] | None = None,
+    append_overrides: dict[str, tuple[Path, ...]] | None = None,
+    excluded_track_keys: set[str] | None = None,
     cancel_event: threading.Event | None = None,
     register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
     unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
@@ -3744,8 +4306,16 @@ def build_mkvmerge_args(
     if not mkvmerge:
         raise UserVisibleError(ui_text("error_mkvmerge_missing"))
 
-    items, missing_optional, _ = discover_track_items(
-        config, media_dir, include_extra_subtitles, _unknown_language
+    items, missing_optional = prepare_mux_track_items(
+        config,
+        media_dir,
+        include_extra_subtitles,
+        _unknown_language,
+        additional_tracks,
+        language_overrides,
+        delay_overrides,
+        append_overrides,
+        excluded_track_keys,
     )
     if cancel_event is not None and cancel_event.is_set():
         raise OperationCancelled(ui_text("log_operation_cancelled"))
@@ -3758,6 +4328,7 @@ def build_mkvmerge_args(
         audio_language_order,
         subtitle_language_order,
     )
+    ordered = apply_custom_track_order(ordered, list(track_order_keys or []))
 
     attachments, missing_attachments = discover_attachments(config, media_dir)
     missing_optional.extend(missing_attachments)
@@ -3846,9 +4417,25 @@ def write_generated_config(
     audio_language_order: str = "",
     subtitle_language_order: str = "",
     tag_language: str = "",
+    additional_tracks: list[AdditionalMuxTrack] | None = None,
+    track_order_keys: list[str] | None = None,
+    language_overrides: dict[str, str] | None = None,
+    delay_overrides: dict[str, str] | None = None,
+    append_overrides: dict[str, tuple[Path, ...]] | None = None,
+    excluded_track_keys: set[str] | None = None,
 ) -> Path:
     _unknown_language = normalise_language(tag_language) if tag_language else MUX_UNKNOWN_LANGUAGE
-    items, _, _ = discover_track_items(config, media_dir, include_extra_subtitles, _unknown_language)
+    items, _ = prepare_mux_track_items(
+        config,
+        media_dir,
+        include_extra_subtitles,
+        _unknown_language,
+        additional_tracks,
+        language_overrides,
+        delay_overrides,
+        append_overrides,
+        excluded_track_keys,
+    )
     apply_video_fps_override(items, video_fps)
     ordered = apply_default_track_preferences(
         config,
@@ -3856,6 +4443,7 @@ def write_generated_config(
         audio_language_order,
         subtitle_language_order,
     )
+    ordered = apply_custom_track_order(ordered, list(track_order_keys or []))
     generated = copy.deepcopy(config)
     generated.setdefault("global", {})
     generated["global"]["destination"] = str(output_path)
@@ -4094,6 +4682,9 @@ def download_optional_tmdb_image(
     log: Callable[[str], None],
     ready_message: str | None,
 ) -> bool:
+    if destination.exists():
+        log(ui_text("log_file_exists_skipped", name=destination.name))
+        return False
     if image is None:
         log(ui_text("log_file_not_found_skipped", name=destination.name))
         return False
@@ -4357,7 +4948,7 @@ def ensure_tmdb_tags_file(
     episode_ref: EpisodeRef | None = None,
 ) -> None:
     tags_path = settings.media_dir / "tags.xml"
-    if tags_path.exists() and episode_ref is None:
+    if tags_path.exists():
         log(ui_text("log_tags_exists"))
         return
 
@@ -4422,41 +5013,47 @@ def download_tmdb_assets(
     settings.media_dir.mkdir(parents=True, exist_ok=True)
 
     cover = settings.media_dir / "cover.jpg"
-    if download_optional_tmdb_image(
+    cover_downloaded = download_optional_tmdb_image(
         client,
         poster,
         cover,
         "JPEG",
         log,
         None,
-    ):
+    )
+    if cover_downloaded:
         try:
             resize_jpeg_cover_art(cover, cover, NORMAL_COVER_SMALLEST_SIDE)
             log(ui_text("log_cover_ready"))
         except UserVisibleError as exc:
             log(ui_text("log_file_prepare_skipped", name=cover.name, error=exc))
+    small_cover = settings.media_dir / "small_cover.jpg"
+    if cover.exists() and not small_cover.exists():
         try:
-            make_small_cover(cover, settings.media_dir / "small_cover.jpg")
+            make_small_cover(cover, small_cover)
             log(ui_text("log_small_cover_ready"))
         except UserVisibleError as exc:
             log(ui_text("log_small_cover_skipped", error=exc))
 
     cover_land = settings.media_dir / "cover_land.jpg"
-    if download_optional_tmdb_image(
+    cover_land_downloaded = download_optional_tmdb_image(
         client,
         backdrop,
         cover_land,
         "JPEG",
         log,
         None,
-    ):
+    )
+    if cover_land_downloaded:
         try:
             resize_jpeg_cover_art(cover_land, cover_land, NORMAL_COVER_SMALLEST_SIDE)
             log(ui_text("log_cover_land_ready"))
         except UserVisibleError as exc:
             log(ui_text("log_file_prepare_skipped", name=cover_land.name, error=exc))
+    small_cover_land = settings.media_dir / "small_cover_land.jpg"
+    if cover_land.exists() and not small_cover_land.exists():
         try:
-            make_small_cover(cover_land, settings.media_dir / "small_cover_land.jpg")
+            make_small_cover(cover_land, small_cover_land)
             log(ui_text("log_small_cover_land_ready"))
         except UserVisibleError as exc:
             log(ui_text("log_small_cover_land_skipped", error=exc))
@@ -4844,11 +5441,41 @@ def validate_audio_adjust_task(task: AudioAdjustTask) -> None:
         raise UserVisibleError(ui_text("error_audio_adjust_none"))
 
 
+def audio_bitrate_kbps(value: str) -> int | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([kmg]?)", raw)
+    if match is None:
+        return None
+    amount = float(match.group(1))
+    unit = match.group(2)
+    if unit == "m":
+        return round(amount * 1000)
+    if unit == "g":
+        return round(amount * 1_000_000)
+    if unit == "k":
+        return round(amount)
+    return round(amount / 1000)
+
+
+def audio_encoder_bitrate(task: AudioAdjustTask) -> str:
+    bitrate = task.bitrate.strip()
+    if task.codec == "dts":
+        kbps = audio_bitrate_kbps(bitrate)
+        if kbps is None or kbps < 768:
+            return "768k"
+    return bitrate
+
+
 def ffmpeg_audio_output_args(task: AudioAdjustTask) -> list[str]:
     encoder = FFMPEG_AUDIO_ENCODERS[task.codec]
     args = ["-c:a", encoder]
-    if task.codec != "wav" and task.bitrate.strip():
-        args.extend(["-b:a", task.bitrate.strip()])
+    if task.codec == "dts":
+        args.extend(["-strict", "-2"])
+    bitrate = audio_encoder_bitrate(task)
+    if task.codec != "wav" and bitrate:
+        args.extend(["-b:a", bitrate])
     if task.sample_rate.strip():
         args.extend(["-ar", task.sample_rate.strip()])
     if task.channel_layout.strip():
@@ -4892,43 +5519,219 @@ def ffmpeg_audio_filter_args(task: AudioAdjustTask) -> list[str]:
 def run_logged_process(args: list[str], log: Callable[[str], None]) -> None:
     log(ui_text("log_audio_adjust_command"))
     log(command_preview(args))
-    process = subprocess.run(
+    process = subprocess.Popen(
         args,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         **subprocess_common_kwargs(),
-        check=False,
         env=third_party_subprocess_env(),
         executable=third_party_subprocess_executable(args),
+        bufsize=1,
     )
-    if process.stdout.strip():
-        for line in process.stdout.splitlines():
+    assert process.stdout is not None
+    for line in process.stdout:
+        log(line.rstrip())
+    return_code = process.wait()
+    if return_code != 0:
+        raise UserVisibleError(ui_text("error_ffmpeg_exit", code=return_code))
+
+
+def run_cancellable_logged_process(
+    args: list[str],
+    log: Callable[[str], None],
+    *,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise OperationCancelled(ui_text("log_operation_cancelled"))
+    log(ui_text("log_audio_adjust_command"))
+    log(command_preview(args))
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        **subprocess_common_kwargs(),
+        env=third_party_subprocess_env(),
+        executable=third_party_subprocess_executable(args),
+        bufsize=1,
+    )
+    if register_process is not None:
+        register_process(process)
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            terminate_process(process)
+            raise OperationCancelled(ui_text("log_operation_cancelled"))
+        assert process.stdout is not None
+        for line in process.stdout:
+            if cancel_event is not None and cancel_event.is_set():
+                terminate_process(process)
+                break
             log(line.rstrip())
-    if process.returncode != 0:
-        raise UserVisibleError(f"ffmpeg exited with error code: {process.returncode}")
+        if cancel_event is not None and cancel_event.is_set():
+            terminate_process(process)
+            raise OperationCancelled(ui_text("log_operation_cancelled"))
+        return_code = process.wait()
+        if cancel_event is not None and cancel_event.is_set():
+            raise OperationCancelled(ui_text("log_operation_cancelled"))
+    finally:
+        if unregister_process is not None:
+            unregister_process(process)
+
+    if return_code != 0:
+        raise UserVisibleError(ui_text("error_ffmpeg_exit", code=return_code))
 
 
-def run_audio_adjust_task(task: AudioAdjustTask, log: Callable[[str], None]) -> Path:
+def cleanup_failed_audio_adjust(
+    original_path: Path,
+    restore_path: Path | None,
+    generated_paths: list[Path],
+    log: Callable[[str], None],
+) -> None:
+    seen: set[Path] = set()
+    for generated_path in generated_paths:
+        if restore_path is not None and generated_path == restore_path:
+            continue
+        if generated_path in seen:
+            continue
+        seen.add(generated_path)
+        if not generated_path.exists():
+            continue
+        try:
+            generated_path.unlink()
+        except OSError as exc:
+            log(ui_text("error_output_delete_failed", name=generated_path.name, error=exc))
+
+    if restore_path is None or not restore_path.exists():
+        return
+    if original_path.exists():
+        try:
+            original_path.unlink()
+        except OSError as exc:
+            log(ui_text("error_output_delete_failed", name=original_path.name, error=exc))
+            return
+    try:
+        restore_path.rename(original_path)
+    except OSError as exc:
+        log(ui_text("error_file_prepare_failed", name=original_path.name, error=exc))
+
+
+def run_audio_adjust_task(
+    task: AudioAdjustTask,
+    log: Callable[[str], None],
+    *,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> Path:
     validate_audio_adjust_task(task)
     ffmpeg = ffmpeg_path()
     output_suffix = AUDIO_OUTPUT_SUFFIXES.get(task.codec, task.path.suffix)
     target = task.path.with_suffix(output_suffix)
     needs_reencode = audio_adjust_requires_reencode(task)
+    restore_path: Path | None = None
+    generated_paths: list[Path] = []
 
     if target != task.path and target.exists():
         raise UserVisibleError(ui_text("error_output_exists_choose", name=target.name))
 
-    if task.delta_seconds > 0:
-        source_path = dedupe_sidecar_path(task.path, "source")
-        task.path.rename(source_path)
+    try:
+        if task.delta_seconds > 0:
+            source_path = dedupe_sidecar_path(task.path, "source")
+            task.path.rename(source_path)
+            restore_path = source_path
 
-        original_path = numbered_append_path(target)
-        if needs_reencode:
-            encode_original_args = [
+            original_path = numbered_append_path(target)
+            if needs_reencode:
+                generated_paths.append(original_path)
+                encode_original_args = [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(source_path),
+                    "-map",
+                    "0:a:0",
+                    "-vn",
+                    "-sn",
+                    "-dn",
+                    *ffmpeg_audio_filter_args(task),
+                    *ffmpeg_audio_output_args(task),
+                    str(original_path),
+                ]
+                run_cancellable_logged_process(
+                    encode_original_args,
+                    log,
+                    cancel_event=cancel_event,
+                    register_process=register_process,
+                    unregister_process=unregister_process,
+                )
+            else:
+                source_path.rename(original_path)
+                restore_path = original_path
+
+            generated_paths.append(target)
+            lavfi = f"anullsrc=channel_layout={task.channel_layout}:sample_rate={task.sample_rate}"
+            silence_args = [
+                ffmpeg,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                lavfi,
+                *ffmpeg_audio_output_args(task),
+                "-t",
+                f"{task.delta_seconds:.6f}".rstrip("0").rstrip("."),
+                str(target),
+            ]
+            run_cancellable_logged_process(
+                silence_args,
+                log,
+                cancel_event=cancel_event,
+                register_process=register_process,
+                unregister_process=unregister_process,
+            )
+        elif task.delta_seconds < 0:
+            backup_path = dedupe_sidecar_path(task.path, "source")
+            task.path.rename(backup_path)
+            restore_path = backup_path
+            generated_paths.append(target)
+            trim_args = [
+                ffmpeg,
+                "-y",
+                "-ss",
+                f"{abs(task.delta_seconds):.6f}".rstrip("0").rstrip("."),
+                "-i",
+                str(backup_path),
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-sn",
+                "-dn",
+            ]
+            if needs_reencode:
+                trim_args.extend(ffmpeg_audio_filter_args(task))
+                trim_args.extend(ffmpeg_audio_output_args(task))
+            else:
+                trim_args.extend(["-c:a", "copy"])
+            trim_args.append(str(target))
+            run_cancellable_logged_process(
+                trim_args,
+                log,
+                cancel_event=cancel_event,
+                register_process=register_process,
+                unregister_process=unregister_process,
+            )
+        else:
+            backup_path = dedupe_sidecar_path(task.path, "source")
+            task.path.rename(backup_path)
+            restore_path = backup_path
+            generated_paths.append(target)
+            encode_args = [
                 ffmpeg,
                 "-y",
                 "-i",
-                str(source_path),
+                str(backup_path),
                 "-map",
                 "0:a:0",
                 "-vn",
@@ -4936,67 +5739,18 @@ def run_audio_adjust_task(task: AudioAdjustTask, log: Callable[[str], None]) -> 
                 "-dn",
                 *ffmpeg_audio_filter_args(task),
                 *ffmpeg_audio_output_args(task),
-                str(original_path),
+                str(target),
             ]
-            run_logged_process(encode_original_args, log)
-        else:
-            source_path.rename(original_path)
-
-        lavfi = f"anullsrc=channel_layout={task.channel_layout}:sample_rate={task.sample_rate}"
-        silence_args = [
-            ffmpeg,
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            lavfi,
-            *ffmpeg_audio_output_args(task),
-            "-t",
-            f"{task.delta_seconds:.6f}".rstrip("0").rstrip("."),
-            str(target),
-        ]
-        run_logged_process(silence_args, log)
-    elif task.delta_seconds < 0:
-        backup_path = dedupe_sidecar_path(task.path, "source")
-        task.path.rename(backup_path)
-        trim_args = [
-            ffmpeg,
-            "-y",
-            "-ss",
-            f"{abs(task.delta_seconds):.6f}".rstrip("0").rstrip("."),
-            "-i",
-            str(backup_path),
-            "-map",
-            "0:a:0",
-            "-vn",
-            "-sn",
-            "-dn",
-        ]
-        if needs_reencode:
-            trim_args.extend(ffmpeg_audio_filter_args(task))
-            trim_args.extend(ffmpeg_audio_output_args(task))
-        else:
-            trim_args.extend(["-c:a", "copy"])
-        trim_args.append(str(target))
-        run_logged_process(trim_args, log)
-    else:
-        backup_path = dedupe_sidecar_path(task.path, "source")
-        task.path.rename(backup_path)
-        encode_args = [
-            ffmpeg,
-            "-y",
-            "-i",
-            str(backup_path),
-            "-map",
-            "0:a:0",
-            "-vn",
-            "-sn",
-            "-dn",
-            *ffmpeg_audio_filter_args(task),
-            *ffmpeg_audio_output_args(task),
-            str(target),
-        ]
-        run_logged_process(encode_args, log)
+            run_cancellable_logged_process(
+                encode_args,
+                log,
+                cancel_event=cancel_event,
+                register_process=register_process,
+                unregister_process=unregister_process,
+            )
+    except Exception:
+        cleanup_failed_audio_adjust(task.path, restore_path, generated_paths, log)
+        raise
 
     log(ui_text("log_audio_adjust_ready", name=target.name))
     return target
@@ -5624,9 +6378,10 @@ def build_extract_command(
     )
 
 
-class MkvCreatorApp(tk.Tk):
+class MkvCreatorApp(TK_ROOT_CLASS):
     def __init__(self, initial_extract_source: Path | None = None) -> None:
         super().__init__(className=APP_NAME)
+        self.withdraw()
         self.saved_preferences = load_saved_preferences()
         self.ui_language_var = tk.StringVar(
             value=normalise_ui_language(self.saved_preferences.get("ui_language", "en"))
@@ -5639,8 +6394,9 @@ class MkvCreatorApp(tk.Tk):
         self.localized_tree_headings: list[tuple[ttk.Treeview, str, str]] = []
         self.configure_ui_theme()
         self.title(APP_NAME)
-        self.geometry("1200x820")
-        self.minsize(1040, 700)
+        self.main_window_width, self.main_window_height = self.main_window_size()
+        self.geometry(f"{self.main_window_width}x{self.main_window_height}")
+        self.minsize(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
 
         self.log_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.log_lines: list[str] = []
@@ -5687,7 +6443,9 @@ class MkvCreatorApp(tk.Tk):
             value=self.saved_preferences.get("subtitle_language_order", "")
         )
         self.include_extra_subs_var = tk.BooleanVar(value=True)
+        self.add_tracks_before_mux_var = tk.BooleanVar(value=False)
         self.download_before_mux_var = tk.BooleanVar(value=True)
+        self.mux_tracks_download_missing_assets_var = tk.BooleanVar(value=False)
         self.auto_chapters_var = tk.BooleanVar(
             value=self.saved_preferences.get("auto_chapters", "false") == "true"
         )
@@ -5715,6 +6473,31 @@ class MkvCreatorApp(tk.Tk):
         self.audio_adjust_window: tk.Toplevel | None = None
         self.audio_adjust_apply_button: ttk.Button | None = None
         self.audio_adjust_rows: list[dict[str, Any]] = []
+        self.mux_tracks_window: tk.Toplevel | None = None
+        self.mux_tracks_tree: ttk.Treeview | None = None
+        self.mux_tracks_toggle_button: ttk.Button | None = None
+        self.mux_tracks_append_button: tk.Button | None = None
+        self.mux_tracks_append_remove_button: tk.Button | None = None
+        self.mux_tracks_append_button_font: tkfont.Font | None = None
+        self.mux_tracks_language_var = tk.StringVar()
+        self.mux_tracks_delay_var = tk.StringVar()
+        self.mux_tracks_language_entry: ttk.Entry | None = None
+        self.mux_tracks_delay_entry: ttk.Entry | None = None
+        self.mux_tracks_rows_by_iid: dict[str, MuxTrackWindowRow] = {}
+        self.mux_tracks_drag_iid: str | None = None
+        self.mux_tracks_selected_iid: str | None = None
+        self.mux_tracks_active_edit_iid: str | None = None
+        self.mux_tracks_active_edit_column: str | None = None
+        self.mux_tracks_inactive_font: tkfont.Font | None = None
+        self.additional_mux_tracks: list[AdditionalMuxTrack] = []
+        self.mux_track_order_keys: list[str] = []
+        self.mux_track_language_overrides: dict[str, str] = {}
+        self.mux_track_delay_overrides: dict[str, str] = {}
+        self.mux_track_append_overrides: dict[str, tuple[Path, ...]] = {}
+        self.mux_track_excluded_keys: set[str] = set()
+        self.mux_track_source_keys: set[str] = set()
+        self.additional_mux_assets: list[AdditionalMuxAsset] = []
+        self.mux_track_download_missing_assets = False
         self.extract_scan_button: ttk.Button | None = None
         self.extract_toggle_button: ttk.Button | None = None
         self.extract_all_button: ttk.Button | None = None
@@ -5731,6 +6514,7 @@ class MkvCreatorApp(tk.Tk):
 
         self.install_text_context_menu()
         self._build_ui()
+        self.show_centered()
         self.api_key_var.trace_add("write", self.on_api_key_changed)
         self.refresh_tmdb_media_type_display()
         self.update_download_before_mux_state()
@@ -5766,6 +6550,73 @@ class MkvCreatorApp(tk.Tk):
             self.logo_source_image = None
             self.logo_icon_image = None
             self.logo_header_image = None
+
+    def apply_window_icon(self, window: tk.Tk | tk.Toplevel) -> None:
+        if self.logo_icon_image is None:
+            return
+        try:
+            window.iconphoto(True, self.logo_icon_image)
+        except tk.TclError:
+            pass
+
+    def center_window(
+        self,
+        window: tk.Tk | tk.Toplevel,
+        parent: tk.Widget | None = None,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> None:
+        try:
+            window.update_idletasks()
+            target_width = width if width is not None else window.winfo_width()
+            target_height = height if height is not None else window.winfo_height()
+            if width is None or height is None:
+                geometry_match = re.match(r"^(\d+)x(\d+)", window.geometry())
+                if geometry_match is not None:
+                    geometry_width = int(geometry_match.group(1))
+                    geometry_height = int(geometry_match.group(2))
+                    if width is None and geometry_width > 1:
+                        target_width = geometry_width
+                    if height is None and geometry_height > 1:
+                        target_height = geometry_height
+            if target_width <= 1:
+                target_width = window.winfo_reqwidth()
+            if target_height <= 1:
+                target_height = window.winfo_reqheight()
+
+            if parent is not None and parent.winfo_exists():
+                parent.update_idletasks()
+                x = parent.winfo_rootx() + (parent.winfo_width() - target_width) // 2
+                y = parent.winfo_rooty() + (parent.winfo_height() - target_height) // 2
+            else:
+                x = (window.winfo_screenwidth() - target_width) // 2
+                y = (window.winfo_screenheight() - target_height) // 2
+
+            window.geometry(f"{target_width}x{target_height}+{max(x, 0)}+{max(y, 0)}")
+        except tk.TclError:
+            pass
+
+    def main_window_size(self) -> tuple[int, int]:
+        try:
+            screen_width = self.winfo_screenwidth()
+            screen_height = self.winfo_screenheight()
+        except tk.TclError:
+            return MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT
+        width = min(MAIN_WINDOW_WIDTH, max(MAIN_WINDOW_MIN_WIDTH, screen_width - 40))
+        height = min(MAIN_WINDOW_HEIGHT, max(MAIN_WINDOW_MIN_HEIGHT, screen_height - 80))
+        return width, height
+
+    def show_centered(self) -> None:
+        self.center_window(self, width=self.main_window_width, height=self.main_window_height)
+        self.deiconify()
+        self.after(
+            80,
+            lambda: self.center_window(
+                self,
+                width=self.main_window_width,
+                height=self.main_window_height,
+            ),
+        )
 
     def tr(self, key: str, **values: Any) -> str:
         return ui_text(key, **values)
@@ -5866,9 +6717,13 @@ class MkvCreatorApp(tk.Tk):
 
         if self.extract_window is not None and self.extract_window.winfo_exists():
             self.extract_window.title(f"{APP_NAME} Extract")
+        if self.mux_tracks_window is not None and self.mux_tracks_window.winfo_exists():
+            self.mux_tracks_window.title(f"{APP_NAME} - {self.tr('window_mux_tracks_title')}")
+            self.update_mux_track_toggle_button_text()
         if self.log_window is not None and self.log_window.winfo_exists():
             self.log_window.title(self.tr("window_log_title", app=APP_NAME))
 
+        self.update_audio_adjust_apply_button_text()
         ready_values = {texts["status_ready"] for texts in UI_TEXT.values()}
         completed_values = {texts["status_completed"] for texts in UI_TEXT.values()}
         current_status = self.progress_status_var.get()
@@ -6366,6 +7221,7 @@ class MkvCreatorApp(tk.Tk):
         tmdb_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
         tmdb_row.columnconfigure(0, weight=1)
         ttk.Label(form, text="TMDB").grid(row=row, column=0, sticky="w", pady=5)
+
         ttk.Entry(tmdb_row, textvariable=self.tmdb_id_var).grid(row=0, column=0, sticky="ew")
         self.localize_widget(
             ttk.Label(tmdb_row),
@@ -6383,12 +7239,12 @@ class MkvCreatorApp(tk.Tk):
         self.localize_widget(
             ttk.Label(tmdb_row),
             "label_image_language",
-        ).grid(row=0, column=3, padx=(12, 4))
+        ).grid(row=0, column=3, padx=(10, 4))
         ttk.Entry(tmdb_row, textvariable=self.language_var, width=7).grid(row=0, column=4)
         self.localize_widget(
             ttk.Label(tmdb_row),
             "label_tag_language",
-        ).grid(row=0, column=5, padx=(12, 4))
+        ).grid(row=0, column=5, padx=(10, 4))
         ttk.Entry(tmdb_row, textvariable=self.tag_language_var, width=7).grid(row=0, column=6)
         self.find_tmdb_button = ttk.Button(tmdb_row, command=self.start_find_tmdb_id)
         self.localize_widget(self.find_tmdb_button, "button_find_id")
@@ -6456,7 +7312,14 @@ class MkvCreatorApp(tk.Tk):
         self.localize_widget(
             self.download_before_mux_checkbutton,
             "option_download_before_mux",
-        ).grid(row=0, column=1, sticky="w", padx=(18, 0))
+        ).grid(row=0, column=1, sticky="w", padx=(14, 0))
+        self.localize_widget(
+            ttk.Checkbutton(
+                options,
+                variable=self.add_tracks_before_mux_var,
+            ),
+            "option_add_tracks_before_mux",
+        ).grid(row=0, column=2, sticky="w", padx=(14, 0))
         row += 1
 
         chapter_row = ttk.Frame(form)
@@ -6478,21 +7341,24 @@ class MkvCreatorApp(tk.Tk):
             "label_chapter_name",
         ).grid(row=0, column=1, padx=(12, 4))
         ttk.Entry(chapter_row, textvariable=self.chapter_name_var).grid(row=0, column=2, sticky="ew")
+
+        chapter_options_row = ttk.Frame(chapter_row)
+        chapter_options_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self.localize_widget(
-            ttk.Label(chapter_row),
+            ttk.Label(chapter_options_row),
             "label_chapter_interval",
-        ).grid(row=0, column=3, padx=(12, 4))
-        ttk.Entry(chapter_row, textvariable=self.chapter_interval_var, width=7).grid(row=0, column=4)
+        ).grid(row=0, column=0, padx=(0, 4))
+        ttk.Entry(chapter_options_row, textvariable=self.chapter_interval_var, width=7).grid(row=0, column=1)
         self.localize_widget(
-            ttk.Label(chapter_row),
+            ttk.Label(chapter_options_row),
             "label_chapter_start",
-        ).grid(row=0, column=5, padx=(12, 4))
-        ttk.Entry(chapter_row, textvariable=self.chapter_start_var, width=5).grid(row=0, column=6)
+        ).grid(row=0, column=2, padx=(12, 4))
+        ttk.Entry(chapter_options_row, textvariable=self.chapter_start_var, width=5).grid(row=0, column=3)
         self.localize_widget(
-            ttk.Label(chapter_row),
+            ttk.Label(chapter_options_row),
             "label_chapter_end",
-        ).grid(row=0, column=7, padx=(12, 4))
-        ttk.Entry(chapter_row, textvariable=self.chapter_end_var, width=8).grid(row=0, column=8)
+        ).grid(row=0, column=4, padx=(12, 4))
+        ttk.Entry(chapter_options_row, textvariable=self.chapter_end_var, width=8).grid(row=0, column=5)
 
         actions = ttk.Frame(outer, style="Toolbar.TFrame")
         actions.grid(row=3, column=0, sticky="ew", pady=(0, 14))
@@ -6953,6 +7819,1008 @@ class MkvCreatorApp(tk.Tk):
     def chapter_end_needs_auto_detection(self, value: str) -> bool:
         return not value.strip()
 
+    def mux_track_customizations(
+        self,
+    ) -> tuple[
+        list[AdditionalMuxTrack],
+        list[str],
+        dict[str, str],
+        dict[str, str],
+        dict[str, tuple[Path, ...]],
+        set[str],
+    ]:
+        if not self.add_tracks_before_mux_var.get():
+            return [], [], {}, {}, {}, set()
+        return (
+            list(self.additional_mux_tracks),
+            list(self.mux_track_order_keys),
+            dict(self.mux_track_language_overrides),
+            dict(self.mux_track_delay_overrides),
+            dict(self.mux_track_append_overrides),
+            set(self.mux_track_excluded_keys),
+        )
+
+    def mux_track_kind_label(self, path: Path) -> str:
+        kind = media_kind_from_path(path)
+        if kind == "audio":
+            return self.tr("track_type_audio")
+        if kind == "video":
+            return self.tr("track_type_video")
+        if kind == "subtitle":
+            return self.tr("track_type_subtitle")
+        return self.tr("track_type_generic")
+
+    def mux_asset_kind_label(self, asset_kind: str) -> str:
+        labels = {
+            "chapters": "chapters.txt",
+            "tags": "tags.xml",
+            "artwork": self.tr("track_type_artwork"),
+        }
+        return labels.get(asset_kind, self.tr("track_type_generic"))
+
+    def mux_window_row_key(self, path: Path, asset_kind: str = "", target_name: str = "") -> str:
+        if asset_kind:
+            return f"asset:{asset_kind}:{target_name}:{path_identity_key(path)}"
+        return path_identity_key(path)
+
+    def mux_track_file_label(self, row: MuxTrackWindowRow) -> str:
+        if row.asset_kind:
+            if row.target_name and row.target_name != row.path.name:
+                return f"{row.path.name} -> {row.target_name}"
+            return row.path.name
+        appended = "".join(f" + {path.name}" for path in row.append_paths)
+        return f"{row.path.name}{appended}"
+
+    def mux_track_append_supported(self, row: MuxTrackWindowRow | None) -> bool:
+        return bool(
+            row is not None
+            and row.included
+            and not row.asset_kind
+            and media_kind_from_path(row.path) == "audio"
+        )
+
+    def mux_track_window_rows(self, settings: AppSettings) -> list[MuxTrackWindowRow]:
+        config = load_or_create_template_config(settings.template_path, settings.media_dir)
+        unknown_language = (
+            normalise_language(settings.tag_language)
+            if settings.tag_language
+            else MUX_UNKNOWN_LANGUAGE
+        )
+        items, _ = prepare_mux_track_items(
+            config,
+            settings.media_dir,
+            settings.include_extra_subtitles,
+            unknown_language,
+            self.additional_mux_tracks,
+            self.mux_track_language_overrides,
+            self.mux_track_delay_overrides,
+            self.mux_track_append_overrides,
+        )
+        apply_video_fps_override(items, settings.video_fps)
+        ordered = apply_default_track_preferences(
+            config,
+            items,
+            settings.audio_language_order,
+            settings.subtitle_language_order,
+        )
+        ordered = apply_custom_track_order(ordered, self.mux_track_order_keys)
+        manual_keys = {path_identity_key(track.path) for track in self.additional_mux_tracks}
+        rows = []
+        for item in ordered:
+            key = path_identity_key(item.path)
+            rows.append(
+                MuxTrackWindowRow(
+                    key=key,
+                    path=item.path,
+                    kind=track_type_label(item),
+                    language=track_language_value(item) or MUX_UNKNOWN_LANGUAGE,
+                    delay=normalise_mux_delay(str(item.track.get("delay") or "")),
+                    delay_supported=track_type_value(item) in (0, 2),
+                    append_paths=item.append_paths,
+                    append_overridden=key in self.mux_track_append_overrides,
+                    manual=key in manual_keys,
+                    included=key not in self.mux_track_excluded_keys,
+                )
+            )
+        for asset in self.additional_mux_assets:
+            rows.append(
+                MuxTrackWindowRow(
+                    key=self.mux_window_row_key(asset.path, asset.kind, asset.target_name),
+                    path=asset.path,
+                    kind=self.mux_asset_kind_label(asset.kind),
+                    language="",
+                    delay="",
+                    delay_supported=False,
+                    asset_kind=asset.kind,
+                    target_name=asset.target_name,
+                    manual=True,
+                    included=True,
+                )
+            )
+        self.mux_track_source_keys = {row.key for row in rows if not row.manual}
+        return rows
+
+    def open_mux_tracks_window(self, settings: AppSettings) -> None:
+        try:
+            rows = self.mux_track_window_rows(settings)
+        except UserVisibleError as exc:
+            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            return
+
+        if self.mux_tracks_window is not None:
+            try:
+                if self.mux_tracks_window.winfo_exists():
+                    self.mux_tracks_window.destroy()
+            except tk.TclError:
+                pass
+
+        window = tk.Toplevel(self)
+        self.mux_tracks_window = window
+        self.mux_tracks_rows_by_iid = {}
+        self.mux_tracks_selected_iid = None
+        self.mux_tracks_drag_iid = None
+        window.title(f"{APP_NAME} - {self.tr('window_mux_tracks_title')}")
+        self.apply_window_icon(window)
+        window.geometry("1020x620")
+        window.minsize(900, 520)
+        window.transient(self)
+
+        outer = ttk.Frame(window, padding=18)
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+
+        toolbar = ttk.Frame(outer)
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        toolbar.columnconfigure(5, weight=1)
+        self.mux_tracks_download_missing_assets_var.set(False)
+
+        self.localize_widget(
+            ttk.Button(toolbar, command=self.add_mux_track_files),
+            "button_add_tracks",
+        ).grid(row=0, column=0, padx=(0, 6))
+        self.mux_tracks_toggle_button = ttk.Button(
+            toolbar,
+            command=self.remove_selected_mux_track,
+        )
+        self.mux_tracks_toggle_button.grid(row=0, column=1, padx=6)
+        self.update_mux_track_toggle_button_text()
+        ttk.Button(
+            toolbar,
+            text="↑",
+            width=3,
+            command=lambda: self.move_selected_mux_track(-1),
+        ).grid(row=0, column=2, padx=6)
+        ttk.Button(
+            toolbar,
+            text="↓",
+            width=3,
+            command=lambda: self.move_selected_mux_track(1),
+        ).grid(row=0, column=3, padx=6)
+        download_missing_check = ttk.Checkbutton(
+            toolbar,
+            variable=self.mux_tracks_download_missing_assets_var,
+            state="normal" if self.api_key_var.get().strip() else "disabled",
+        )
+        self.localize_widget(
+            download_missing_check,
+            "option_download_missing_mux_assets",
+        ).grid(row=0, column=4, sticky="w", padx=(14, 0))
+
+        tree_frame = ttk.Frame(outer)
+        tree_frame.grid(row=1, column=0, sticky="nsew")
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(
+            tree_frame,
+            columns=("type", "language", "delay", "append", "file"),
+            show="headings",
+            selectmode="browse",
+        )
+        self.mux_tracks_tree = tree
+        self.localize_tree_heading(tree, "type", "heading_track_type")
+        self.localize_tree_heading(tree, "language", "label_track_language")
+        self.localize_tree_heading(tree, "delay", "label_track_delay")
+        self.localize_tree_heading(tree, "append", "heading_audio_append")
+        self.localize_tree_heading(tree, "file", "heading_track")
+        tree.column("type", width=140, stretch=True)
+        tree.column("language", width=100, stretch=True)
+        tree.column("delay", width=120, stretch=True)
+        tree.column("append", width=70, stretch=False, anchor="center")
+        tree.column("file", width=400, stretch=True)
+        tree.grid(row=0, column=0, sticky="nsew")
+        if self.mux_tracks_inactive_font is None:
+            self.mux_tracks_inactive_font = tkfont.Font(
+                self,
+                font=tkfont.nametofont("TkDefaultFont"),
+            )
+            self.mux_tracks_inactive_font.configure(overstrike=True)
+        tree.tag_configure(
+            "inactive",
+            foreground=UI_COLORS["disabled"],
+            font=self.mux_tracks_inactive_font,
+        )
+
+        def scroll_mux_tracks(*args: str) -> None:
+            tree.yview(*args)
+            self.after_idle(self.position_mux_track_row_editors)
+
+        def set_mux_tracks_scrollbar(first: str, last: str) -> None:
+            scrollbar.set(first, last)
+            self.after_idle(self.position_mux_track_row_editors)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=scroll_mux_tracks)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=set_mux_tracks_scrollbar)
+        tree.bind("<<TreeviewSelect>>", self.on_mux_track_selected)
+        tree.bind("<ButtonPress-1>", self.on_mux_track_drag_start)
+        tree.bind("<B1-Motion>", self.on_mux_track_drag_motion)
+        tree.bind("<ButtonRelease-1>", self.on_mux_track_mouse_release)
+        tree.bind("<Configure>", lambda _event: self.position_mux_track_row_editors())
+
+        self.mux_tracks_language_entry = ttk.Entry(
+            tree,
+            textvariable=self.mux_tracks_language_var,
+        )
+        self.mux_tracks_delay_entry = ttk.Entry(
+            tree,
+            textvariable=self.mux_tracks_delay_var,
+        )
+        if self.mux_tracks_append_button_font is None:
+            self.mux_tracks_append_button_font = tkfont.Font(
+                self,
+                font=tkfont.nametofont("TkDefaultFont"),
+            )
+            self.mux_tracks_append_button_font.configure(weight="bold")
+        append_button_options = {
+            "background": UI_COLORS["accent"],
+            "foreground": "#ffffff",
+            "activebackground": UI_COLORS["accent_hover"],
+            "activeforeground": "#ffffff",
+            "relief": "flat",
+            "borderwidth": 0,
+            "highlightthickness": 0,
+            "padx": 0,
+            "pady": 0,
+            "font": self.mux_tracks_append_button_font,
+            "takefocus": False,
+        }
+        self.mux_tracks_append_button = tk.Button(
+            tree,
+            text="+",
+            command=self.add_mux_track_append_files,
+            **append_button_options,
+        )
+        self.mux_tracks_append_remove_button = tk.Button(
+            tree,
+            text="−",
+            command=self.remove_last_mux_track_append_path,
+            **append_button_options,
+        )
+        for entry in (self.mux_tracks_language_entry, self.mux_tracks_delay_entry):
+            entry.bind("<FocusOut>", lambda _event: self.apply_mux_track_edit())
+            entry.bind("<Return>", lambda _event: self.apply_mux_track_edit())
+
+        for row in rows:
+            self.insert_mux_track_row(row)
+
+        if self.register_mux_track_drop(tree):
+            self.localize_widget(
+                ttk.Label(outer, style="Muted.TLabel"),
+                "mux_tracks_drop_hint",
+            ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+
+        actions = ttk.Frame(outer)
+        actions.grid(row=3, column=0, sticky="e", pady=(12, 0))
+        self.localize_widget(
+            ttk.Button(actions, command=self.close_mux_tracks_window),
+            "button_cancel",
+        ).grid(row=0, column=0, padx=(0, 8))
+        self.localize_widget(
+            ttk.Button(
+                actions,
+                command=self.confirm_mux_tracks_and_start_mux,
+                style="Accent.TButton",
+            ),
+            "button_create_mkv",
+        ).grid(row=0, column=1)
+
+        children = tree.get_children()
+        if children:
+            tree.selection_set(children[0])
+            tree.focus(children[0])
+            self.on_mux_track_selected()
+
+        self.center_window(window, self)
+        window.focus_set()
+
+    def insert_mux_track_row(self, row: MuxTrackWindowRow) -> str:
+        if self.mux_tracks_tree is None:
+            return ""
+        iid = self.mux_tracks_tree.insert(
+            "",
+            "end",
+            values=(
+                row.kind,
+                row.language,
+                row.delay,
+                "+" if self.mux_track_append_supported(row) else "",
+                self.mux_track_file_label(row),
+            ),
+            tags=(() if row.included else ("inactive",)),
+        )
+        self.mux_tracks_rows_by_iid[iid] = row
+        return iid
+
+    def update_mux_track_row_state(self, iid: str) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        row = self.mux_tracks_rows_by_iid.get(iid)
+        if row is None:
+            return
+        self.mux_tracks_tree.item(iid, tags=(() if row.included else ("inactive",)))
+        self.mux_tracks_tree.set(iid, "append", "+" if self.mux_track_append_supported(row) else "")
+        self.mux_tracks_tree.set(iid, "file", self.mux_track_file_label(row))
+        if iid == self.mux_tracks_selected_iid:
+            self.position_mux_track_row_editors()
+            self.update_mux_track_toggle_button_text()
+
+    def update_mux_track_toggle_button_text(self) -> None:
+        if self.mux_tracks_toggle_button is None:
+            return
+        row = None
+        if self.mux_tracks_selected_iid:
+            row = self.mux_tracks_rows_by_iid.get(self.mux_tracks_selected_iid)
+        if row is None:
+            self.mux_tracks_toggle_button.configure(
+                text=self.tr("button_remove_track"),
+                state="disabled",
+            )
+            return
+        self.mux_tracks_toggle_button.configure(
+            text=self.tr("button_remove_track" if row.included else "button_include_track"),
+            state="normal",
+        )
+
+    def register_mux_track_drop(self, widget: tk.Widget) -> bool:
+        if DND_FILES and hasattr(widget, "drop_target_register"):
+            try:
+                widget.drop_target_register(DND_FILES)  # type: ignore[attr-defined]
+                widget.dnd_bind(  # type: ignore[attr-defined]
+                    "<<Drop>>",
+                    lambda event: self.add_mux_track_drop_data(str(event.data)),
+                )
+                return True
+            except (AttributeError, tk.TclError):
+                pass
+
+        try:
+            self.tk.call("package", "require", "tkdnd")
+            self.tk.call("tkdnd::drop_target", "register", widget, "DND_Files")
+        except tk.TclError:
+            return False
+
+        command = widget.register(self.add_mux_track_drop_data)
+        try:
+            self.tk.call("bind", widget, "<<Drop:DND_Files>>", f"{command} %D")
+        except tk.TclError:
+            return False
+        return True
+
+    def add_mux_track_drop_data(self, data: str) -> None:
+        try:
+            paths = self.tk.splitlist(data)
+        except tk.TclError:
+            paths = (data,)
+        self.add_mux_track_paths(paths)
+
+    def add_mux_track_files(self) -> None:
+        initial_dir = self.existing_initial_dir(
+            self.folder_var.get().strip(),
+            self.last_mkv_dir,
+            APP_DIR,
+        )
+        filetypes = (
+            (self.tr("heading_track"), MUX_ADD_FILE_PATTERNS),
+            (self.tr("filetype_all"), "*"),
+        )
+        paths = native_open_files(
+            title=self.tr("dialog_add_track_files_title"),
+            initialdir=initial_dir,
+            filetypes=filetypes,
+        )
+        if paths is None:
+            paths = filedialog.askopenfilenames(
+                title=self.tr("dialog_add_track_files_title"),
+                initialdir=initial_dir,
+                filetypes=filetypes,
+            )
+        self.add_mux_track_paths(paths)
+
+    def add_mux_track_paths(self, paths: tuple[str, ...] | list[str]) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        existing_path_keys = {
+            row.key for row in self.mux_tracks_rows_by_iid.values()
+        }
+        first_added = ""
+        for raw_path in paths:
+            if not raw_path:
+                continue
+            path = Path(str(raw_path)).expanduser()
+            if path.exists():
+                path = path.resolve()
+            asset_info = mux_asset_info_from_path(path)
+            track_kind = media_kind_from_path(path)
+            if not path.is_file() or (track_kind is None and asset_info is None):
+                message_key = (
+                    "error_unsupported_mux_asset_name"
+                    if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".xml", ".txt"}
+                    else "error_unsupported_track_type"
+                )
+                messagebox.showerror(
+                    self.tr("dialog_missing_info"),
+                    self.tr(message_key, name=path.name),
+                )
+                continue
+            asset_kind = ""
+            target_name = ""
+            if asset_info is not None:
+                asset_kind, target_name = asset_info
+            key = self.mux_window_row_key(path, asset_kind, target_name)
+            if key in existing_path_keys:
+                for iid, existing_row in self.mux_tracks_rows_by_iid.items():
+                    if existing_row.key == key:
+                        existing_row.included = True
+                        self.update_mux_track_row_state(iid)
+                        first_added = first_added or iid
+                        break
+                continue
+            language = "" if asset_kind else infer_language_from_filename(path, MUX_UNKNOWN_LANGUAGE)
+            row = MuxTrackWindowRow(
+                key=key,
+                path=path,
+                kind=self.mux_asset_kind_label(asset_kind) if asset_kind else self.mux_track_kind_label(path),
+                language=language,
+                delay="",
+                delay_supported=track_kind in {"audio", "subtitle"} if not asset_kind else False,
+                asset_kind=asset_kind,
+                target_name=target_name,
+                manual=True,
+            )
+            iid = self.insert_mux_track_row(row)
+            if iid:
+                existing_path_keys.add(key)
+                first_added = first_added or iid
+        if first_added and self.mux_tracks_tree is not None:
+            self.mux_tracks_tree.selection_set(first_added)
+            self.mux_tracks_tree.focus(first_added)
+            self.mux_tracks_tree.see(first_added)
+            self.on_mux_track_selected()
+
+    def add_mux_track_append_files(self) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        selected = self.mux_tracks_tree.selection()
+        iid = selected[0] if selected else self.mux_tracks_selected_iid
+        row = self.mux_tracks_rows_by_iid.get(iid or "")
+        if not iid or not self.mux_track_append_supported(row):
+            messagebox.showinfo(
+                self.tr("dialog_missing_info"),
+                self.tr("error_append_audio_selected"),
+            )
+            return
+        assert row is not None
+        initial_dir = self.existing_initial_dir(
+            str(row.path.parent),
+            self.folder_var.get().strip(),
+            self.last_mkv_dir,
+            APP_DIR,
+        )
+        filetypes = (
+            (self.tr("heading_audio_file"), AUDIO_FILE_PATTERNS),
+            (self.tr("filetype_all"), "*"),
+        )
+        paths = native_open_files(
+            title=self.tr("dialog_add_append_audio_title"),
+            initialdir=initial_dir,
+            filetypes=filetypes,
+        )
+        if paths is None:
+            paths = filedialog.askopenfilenames(
+                title=self.tr("dialog_add_append_audio_title"),
+                initialdir=initial_dir,
+                filetypes=filetypes,
+            )
+        self.add_mux_track_append_paths(iid, paths)
+
+    def add_mux_track_append_paths(self, iid: str, paths: tuple[str, ...] | list[str]) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        row = self.mux_tracks_rows_by_iid.get(iid)
+        if not self.mux_track_append_supported(row):
+            messagebox.showinfo(
+                self.tr("dialog_missing_info"),
+                self.tr("error_append_audio_selected"),
+            )
+            return
+        assert row is not None
+        if not self.apply_mux_track_edit(iid):
+            return
+        append_paths = list(row.append_paths)
+        seen = {path_identity_key(path) for path in append_paths}
+        for raw_path in paths:
+            if not raw_path:
+                continue
+            path = Path(str(raw_path)).expanduser()
+            if path.exists():
+                path = path.resolve()
+            key = path_identity_key(path)
+            if key in seen:
+                continue
+            try:
+                normalise_append_paths_for_track(row.path, [path])
+            except UserVisibleError as exc:
+                messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+                continue
+            append_paths.append(path)
+            seen.add(key)
+        row.append_paths = tuple(append_paths)
+        row.append_overridden = True
+        self.mux_tracks_tree.set(iid, "file", self.mux_track_file_label(row))
+        self.update_mux_track_row_state(iid)
+        self.mux_tracks_active_edit_iid = iid
+        self.mux_tracks_active_edit_column = "append"
+        self.after_idle(self.position_mux_track_row_editors)
+
+    def remove_last_mux_track_append_path(self) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        selected = self.mux_tracks_tree.selection()
+        iid = selected[0] if selected else self.mux_tracks_selected_iid
+        row = self.mux_tracks_rows_by_iid.get(iid or "")
+        if not iid or not self.mux_track_append_supported(row):
+            messagebox.showinfo(
+                self.tr("dialog_missing_info"),
+                self.tr("error_append_audio_selected"),
+            )
+            return
+        assert row is not None
+        if not row.append_paths:
+            return
+        if not self.apply_mux_track_edit(iid):
+            return
+        row.append_paths = tuple(row.append_paths[:-1])
+        row.append_overridden = True
+        self.mux_tracks_tree.set(iid, "file", self.mux_track_file_label(row))
+        self.update_mux_track_row_state(iid)
+        self.mux_tracks_active_edit_iid = iid
+        self.mux_tracks_active_edit_column = "append"
+        self.after_idle(self.position_mux_track_row_editors)
+
+    def on_mux_track_selected(self, _event: tk.Event | None = None) -> None:
+        previous_iid = self.mux_tracks_selected_iid
+        if previous_iid:
+            self.apply_mux_track_edit(previous_iid, show_errors=False)
+        if self.mux_tracks_tree is None:
+            return
+        selected = self.mux_tracks_tree.selection()
+        if not selected:
+            self.mux_tracks_selected_iid = None
+            self.mux_tracks_language_var.set("")
+            self.mux_tracks_delay_var.set("")
+            self.hide_mux_track_row_editors()
+            self.update_mux_track_toggle_button_text()
+            return
+        iid = selected[0]
+        row = self.mux_tracks_rows_by_iid.get(iid)
+        if row is None:
+            return
+        self.mux_tracks_selected_iid = iid
+        self.mux_tracks_language_var.set(row.language)
+        self.mux_tracks_delay_var.set(row.delay)
+        if self.mux_tracks_active_edit_iid == iid:
+            self.after_idle(self.position_mux_track_row_editors)
+        else:
+            self.hide_mux_track_row_editors()
+        self.update_mux_track_toggle_button_text()
+
+    def hide_mux_track_row_editors(self) -> None:
+        self.mux_tracks_active_edit_iid = None
+        self.mux_tracks_active_edit_column = None
+        for entry in (self.mux_tracks_language_entry, self.mux_tracks_delay_entry):
+            if entry is None:
+                continue
+            try:
+                entry.place_forget()
+            except tk.TclError:
+                pass
+        for button in (self.mux_tracks_append_button, self.mux_tracks_append_remove_button):
+            if button is None:
+                continue
+            try:
+                button.place_forget()
+            except tk.TclError:
+                pass
+
+    def position_mux_track_entry(self, entry: ttk.Entry, iid: str, column: str) -> bool:
+        if self.mux_tracks_tree is None:
+            return False
+        try:
+            bbox = self.mux_tracks_tree.bbox(iid, column)
+        except tk.TclError:
+            bbox = ()
+        if not bbox:
+            entry.place_forget()
+            return False
+        x, y, width, height = bbox
+        entry.place(x=x + 1, y=y + 1, width=max(20, width - 2), height=max(20, height - 2))
+        return True
+
+    def position_mux_track_append_buttons(self, iid: str) -> bool:
+        if self.mux_tracks_tree is None or self.mux_tracks_append_button is None:
+            return False
+        try:
+            bbox = self.mux_tracks_tree.bbox(iid, "append")
+        except tk.TclError:
+            bbox = ()
+        if not bbox:
+            self.mux_tracks_append_button.place_forget()
+            if self.mux_tracks_append_remove_button is not None:
+                self.mux_tracks_append_remove_button.place_forget()
+            return False
+        row = self.mux_tracks_rows_by_iid.get(iid)
+        if not self.mux_track_append_supported(row):
+            self.mux_tracks_append_button.place_forget()
+            if self.mux_tracks_append_remove_button is not None:
+                self.mux_tracks_append_remove_button.place_forget()
+            return False
+        x, y, width, height = bbox
+        button_width = 28 if row and row.append_paths else min(max(28, width - 6), 34)
+        self.mux_tracks_append_button.place(
+            x=x + 3,
+            y=y + 2,
+            width=button_width,
+            height=max(20, height - 4),
+        )
+        if self.mux_tracks_append_remove_button is not None:
+            if row and row.append_paths:
+                self.mux_tracks_append_remove_button.place(
+                    x=x + width - button_width - 3,
+                    y=y + 2,
+                    width=button_width,
+                    height=max(20, height - 4),
+                )
+            else:
+                self.mux_tracks_append_remove_button.place_forget()
+        return True
+
+    def position_mux_track_row_editors(self) -> None:
+        if (
+            self.mux_tracks_tree is None
+            or self.mux_tracks_active_edit_iid is None
+            or self.mux_tracks_active_edit_column is None
+        ):
+            self.hide_mux_track_row_editors()
+            return
+        iid = self.mux_tracks_active_edit_iid
+        column = self.mux_tracks_active_edit_column
+        row = self.mux_tracks_rows_by_iid.get(iid)
+        if row is None or not row.included:
+            self.hide_mux_track_row_editors()
+            return
+        if iid != self.mux_tracks_selected_iid:
+            self.hide_mux_track_row_editors()
+            return
+        if self.mux_tracks_language_entry is not None:
+            self.mux_tracks_language_entry.place_forget()
+        if self.mux_tracks_delay_entry is not None:
+            self.mux_tracks_delay_entry.place_forget()
+        for button in (self.mux_tracks_append_button, self.mux_tracks_append_remove_button):
+            if button is not None:
+                button.place_forget()
+        if column == "language" and row.delay_supported and self.mux_tracks_language_entry is not None:
+            self.position_mux_track_entry(self.mux_tracks_language_entry, iid, "language")
+        elif column == "delay" and row.delay_supported and self.mux_tracks_delay_entry is not None:
+            self.position_mux_track_entry(self.mux_tracks_delay_entry, iid, "delay")
+        elif column == "append" and self.mux_track_append_supported(row):
+            self.position_mux_track_append_buttons(iid)
+        else:
+            self.hide_mux_track_row_editors()
+
+    def apply_mux_track_edit(self, iid: str | None = None, *, show_errors: bool = True) -> bool:
+        if self.mux_tracks_tree is None:
+            return False
+        target_iid = iid or self.mux_tracks_selected_iid
+        if not target_iid:
+            selected = self.mux_tracks_tree.selection()
+            target_iid = selected[0] if selected else None
+        if not target_iid:
+            return False
+        row = self.mux_tracks_rows_by_iid.get(target_iid)
+        if row is None:
+            return False
+        if not row.included or row.asset_kind or not row.delay_supported:
+            return True
+        language = normalise_mux_language(self.mux_tracks_language_var.get())
+        try:
+            delay = normalise_mux_delay(
+                self.mux_tracks_delay_var.get()
+            )
+        except UserVisibleError as exc:
+            if show_errors:
+                messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            return False
+        row.language = language
+        row.delay = delay
+        self.mux_tracks_tree.set(target_iid, "language", language)
+        self.mux_tracks_tree.set(target_iid, "delay", delay)
+        if target_iid == self.mux_tracks_selected_iid:
+            self.mux_tracks_language_var.set(language)
+            self.mux_tracks_delay_var.set(delay)
+        return True
+
+    def apply_mux_track_language_edit(self, iid: str | None = None) -> None:
+        self.apply_mux_track_edit(iid)
+
+    def activate_mux_track_cell(self, iid: str, column: str, *, open_append: bool = False) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        row = self.mux_tracks_rows_by_iid.get(iid)
+        if row is None or not row.included:
+            self.hide_mux_track_row_editors()
+            return
+
+        self.mux_tracks_tree.selection_set(iid)
+        self.mux_tracks_tree.focus(iid)
+        self.mux_tracks_selected_iid = iid
+        self.mux_tracks_language_var.set(row.language)
+        self.mux_tracks_delay_var.set(row.delay)
+
+        if column == "append" and self.mux_track_append_supported(row):
+            self.mux_tracks_active_edit_iid = iid
+            self.mux_tracks_active_edit_column = "append"
+            self.position_mux_track_row_editors()
+            if open_append:
+                self.add_mux_track_append_files()
+            return
+
+        if not row.delay_supported:
+            self.hide_mux_track_row_editors()
+            return
+
+        target = None
+        if column == "language":
+            self.mux_tracks_active_edit_iid = iid
+            self.mux_tracks_active_edit_column = "language"
+            target = self.mux_tracks_language_entry
+        elif column == "delay":
+            self.mux_tracks_active_edit_iid = iid
+            self.mux_tracks_active_edit_column = "delay"
+            target = self.mux_tracks_delay_entry
+        if target is None:
+            self.hide_mux_track_row_editors()
+            return
+        self.position_mux_track_row_editors()
+        try:
+            target.focus_set()
+            target.selection_range(0, "end")
+        except tk.TclError:
+            pass
+
+    def on_mux_track_mouse_release(self, event: tk.Event) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        iid = self.mux_tracks_tree.identify_row(event.y)
+        column = self.mux_tracks_tree.identify_column(event.x)
+        column_name = {"#2": "language", "#3": "delay", "#4": "append"}.get(column)
+        if not iid or column_name is None:
+            self.hide_mux_track_row_editors()
+            return
+        self.after_idle(
+            lambda iid=iid, column_name=column_name: self.activate_mux_track_cell(
+                iid,
+                column_name,
+                open_append=column_name == "append",
+            )
+        )
+
+    def on_mux_track_drag_start(self, event: tk.Event) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        self.apply_mux_track_edit()
+        self.hide_mux_track_row_editors()
+        iid = self.mux_tracks_tree.identify_row(event.y)
+        self.mux_tracks_drag_iid = iid or None
+
+    def on_mux_track_drag_motion(self, event: tk.Event) -> None:
+        if self.mux_tracks_tree is None or not self.mux_tracks_drag_iid:
+            return
+        target_iid = self.mux_tracks_tree.identify_row(event.y)
+        if not target_iid or target_iid == self.mux_tracks_drag_iid:
+            return
+        target_index = self.mux_tracks_tree.index(target_iid)
+        self.mux_tracks_tree.move(self.mux_tracks_drag_iid, "", target_index)
+
+    def move_selected_mux_track(self, offset: int) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        selected = self.mux_tracks_tree.selection()
+        if not selected:
+            return
+        iid = selected[0]
+        index = self.mux_tracks_tree.index(iid)
+        new_index = max(0, min(len(self.mux_tracks_tree.get_children()) - 1, index + offset))
+        if new_index == index:
+            return
+        self.apply_mux_track_edit(iid)
+        self.hide_mux_track_row_editors()
+        self.mux_tracks_tree.move(iid, "", new_index)
+        self.mux_tracks_tree.selection_set(iid)
+        self.mux_tracks_tree.focus(iid)
+        self.after_idle(self.position_mux_track_row_editors)
+
+    def remove_selected_mux_track(self) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        selected = self.mux_tracks_tree.selection()
+        if not selected:
+            return
+        iid = selected[0]
+        row = self.mux_tracks_rows_by_iid.get(iid)
+        if row is None:
+            return
+        if row.included and not self.apply_mux_track_edit(iid):
+            return
+        row.included = not row.included
+        self.update_mux_track_row_state(iid)
+        if row.included:
+            self.mux_tracks_tree.selection_set(iid)
+            self.mux_tracks_tree.focus(iid)
+            self.on_mux_track_selected()
+        else:
+            self.hide_mux_track_row_editors()
+
+    def prepare_additional_mux_assets(self, settings: AppSettings) -> bool:
+        for asset in self.additional_mux_assets:
+            source = asset.path.expanduser()
+            if source.exists():
+                source = source.resolve()
+            if not source.is_file():
+                messagebox.showerror(
+                    self.tr("dialog_missing_info"),
+                    self.tr("error_track_file_not_found", path=source),
+                )
+                return False
+            target = settings.media_dir / asset.target_name
+            try:
+                if path_identity_key(source) == path_identity_key(target):
+                    continue
+            except OSError:
+                pass
+            if target.exists() and not self.ask_yes_no(
+                self.tr("dialog_overwrite_title"),
+                self.tr("dialog_overwrite_message", name=target.name),
+            ):
+                return False
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            except OSError as exc:
+                messagebox.showerror(
+                    self.tr("dialog_error_title"),
+                    self.tr("error_file_prepare_failed", name=target.name, error=exc),
+                )
+                return False
+            self.queue_log(self.tr("log_manual_asset_ready", name=target.name))
+        return True
+
+    def mux_requires_tmdb(self, *, skip_track_window: bool = False) -> bool:
+        if (
+            skip_track_window
+            and self.add_tracks_before_mux_var.get()
+            and self.additional_mux_assets
+            and not self.mux_track_download_missing_assets
+        ):
+            return False
+        return bool(
+            self.download_before_mux_var.get()
+            or (
+                skip_track_window
+                and self.add_tracks_before_mux_var.get()
+                and self.mux_track_download_missing_assets
+            )
+        )
+
+    def mux_should_download_tmdb_assets(
+        self,
+        settings: AppSettings,
+        *,
+        skip_track_window: bool = False,
+    ) -> bool:
+        if skip_track_window and self.add_tracks_before_mux_var.get():
+            if self.mux_track_download_missing_assets:
+                return True
+            if self.additional_mux_assets:
+                return False
+        return settings.download_before_mux
+
+    def confirm_mux_tracks_and_start_mux(self) -> None:
+        if self.mux_tracks_tree is None:
+            return
+        if self.mux_tracks_tree.selection() and not self.apply_mux_track_edit():
+            return
+        download_missing_assets = bool(self.mux_tracks_download_missing_assets_var.get())
+        try:
+            settings = self.collect_settings(require_tmdb=download_missing_assets)
+        except UserVisibleError as exc:
+            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            return
+        ordered_rows = [
+            self.mux_tracks_rows_by_iid[iid]
+            for iid in self.mux_tracks_tree.get_children()
+            if iid in self.mux_tracks_rows_by_iid
+        ]
+        active_rows = [row for row in ordered_rows if row.included]
+        active_track_rows = [row for row in active_rows if not row.asset_kind]
+        active_asset_rows = [row for row in active_rows if row.asset_kind]
+        self.additional_mux_tracks = [
+            AdditionalMuxTrack(
+                row.path,
+                normalise_mux_language(row.language),
+                row.delay,
+                row.append_paths,
+            )
+            for row in active_track_rows
+            if row.manual
+        ]
+        self.additional_mux_assets = [
+            AdditionalMuxAsset(row.path, row.asset_kind, row.target_name)
+            for row in active_asset_rows
+            if row.manual
+        ]
+        self.mux_track_download_missing_assets = download_missing_assets
+        if not self.prepare_additional_mux_assets(settings):
+            return
+        self.mux_track_order_keys = [row.key for row in active_track_rows]
+        self.mux_track_language_overrides = {
+            row.key: normalise_mux_language(row.language) for row in active_track_rows
+        }
+        self.mux_track_delay_overrides = {
+            row.key: row.delay for row in active_track_rows if row.delay_supported
+        }
+        self.mux_track_append_overrides = {
+            row.key: row.append_paths
+            for row in active_track_rows
+            if row.append_paths or row.append_overridden
+        }
+        active_track_keys = {row.key for row in active_track_rows}
+        self.mux_track_excluded_keys = self.mux_track_source_keys - active_track_keys
+        self.queue_log(self.tr("log_custom_tracks_ready", count=len(active_rows)))
+        self.close_mux_tracks_window()
+        self.start_mux(skip_track_window=True)
+
+    def close_mux_tracks_window(self) -> None:
+        if self.mux_tracks_window is not None:
+            try:
+                if self.mux_tracks_window.winfo_exists():
+                    self.mux_tracks_window.destroy()
+            except tk.TclError:
+                pass
+        self.mux_tracks_window = None
+        self.mux_tracks_tree = None
+        self.mux_tracks_toggle_button = None
+        self.mux_tracks_append_button = None
+        self.mux_tracks_append_remove_button = None
+        self.mux_tracks_language_entry = None
+        self.mux_tracks_rows_by_iid = {}
+        self.mux_tracks_selected_iid = None
+        self.mux_tracks_drag_iid = None
+        self.mux_tracks_active_edit_iid = None
+        self.mux_tracks_active_edit_column = None
+        self.mux_tracks_delay_entry = None
+
     def collect_extract_settings(self) -> tuple[Path, Path]:
         source_raw = self.extract_source_var.get().strip()
         if not source_raw:
@@ -7089,26 +8957,16 @@ class MkvCreatorApp(tk.Tk):
 
         window = tk.Toplevel(self)
         self.audio_adjust_window = window
+        window.configure(background=UI_COLORS["surface"])
         window.title(f"{APP_NAME} - {self.tr('window_audio_adjust_title')}")
+        self.apply_window_icon(window)
         window.geometry("1220x420")
         window.transient(self)
         window.columnconfigure(0, weight=1)
-        window.rowconfigure(1, weight=1)
+        window.rowconfigure(0, weight=1)
 
-        hint_label = self.localize_widget(
-            ttk.Label(window, style="Root.TLabel", wraplength=1180, justify="left"),
-            "audio_adjust_hint",
-        )
-        hint_label.grid(
-            row=0,
-            column=0,
-            sticky="ew",
-            padx=14,
-            pady=(12, 8),
-        )
-
-        container = ttk.Frame(window, padding=(14, 0, 14, 10))
-        container.grid(row=1, column=0, sticky="nsew")
+        container = ttk.Frame(window, padding=(14, 14, 14, 8))
+        container.grid(row=0, column=0, sticky="nsew")
         container.columnconfigure(0, weight=1)
         canvas = tk.Canvas(container, highlightthickness=0, background=UI_COLORS["surface"])
         scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
@@ -7217,6 +9075,11 @@ class MkvCreatorApp(tk.Tk):
                 }
             )
 
+        self.localize_widget(
+            ttk.Label(window, style="Muted.TLabel", wraplength=1150, justify="left"),
+            "audio_adjust_hint",
+        ).grid(row=1, column=0, sticky="w", padx=14, pady=(0, 8))
+
         actions = ttk.Frame(window, padding=(14, 0, 14, 14))
         actions.grid(row=2, column=0, sticky="ew")
         actions.columnconfigure(0, weight=1)
@@ -7228,6 +9091,21 @@ class MkvCreatorApp(tk.Tk):
         self.audio_adjust_apply_button = apply_button
         self.localize_widget(apply_button, "button_apply_audio_adjust")
         apply_button.grid(row=0, column=1, sticky="e")
+        self.center_window(window, self)
+        window.focus_set()
+
+    def update_audio_adjust_apply_button_text(self) -> None:
+        if self.audio_adjust_apply_button is None:
+            return
+        key = (
+            "button_cancel"
+            if self.current_operation == "audio_adjust" and self.worker is not None and self.worker.is_alive()
+            else "button_apply_audio_adjust"
+        )
+        try:
+            self.audio_adjust_apply_button.configure(text=self.tr(key), state="normal")
+        except tk.TclError:
+            pass
 
     def close_audio_adjust_window(self) -> None:
         if self.audio_adjust_window is None:
@@ -7278,6 +9156,16 @@ class MkvCreatorApp(tk.Tk):
         return tasks
 
     def start_audio_adjust(self) -> None:
+        if self.worker is not None and self.worker.is_alive():
+            if self.current_operation == "audio_adjust":
+                self.cancel_current_operation()
+            else:
+                messagebox.showinfo(
+                    self.tr("dialog_in_progress_title"),
+                    self.tr("dialog_in_progress_message"),
+                )
+            return
+
         try:
             tasks = self.collect_audio_adjust_tasks()
         except UserVisibleError as exc:
@@ -7285,16 +9173,23 @@ class MkvCreatorApp(tk.Tk):
             return
 
         if self.audio_adjust_apply_button is not None:
-            self.audio_adjust_apply_button.configure(state="disabled")
+            self.audio_adjust_apply_button.configure(text=self.tr("button_cancel"), state="normal")
 
         def work() -> None:
             for task in tasks:
-                run_audio_adjust_task(task, self.queue_log)
+                self.check_cancelled()
+                run_audio_adjust_task(
+                    task,
+                    self.queue_log,
+                    cancel_event=self.cancel_event,
+                    register_process=self.register_active_process,
+                    unregister_process=self.unregister_active_process,
+                )
             self.log_queue.put(("close_audio_adjust", True))
 
-        started = self.run_background(work, self.tr("status_adjusting_audio"))
+        started = self.run_background(work, self.tr("status_adjusting_audio"), operation="audio_adjust")
         if not started and self.audio_adjust_apply_button is not None:
-            self.audio_adjust_apply_button.configure(state="normal")
+            self.update_audio_adjust_apply_button_text()
 
     def start_check_app_update(self) -> None:
         if self.app_update_thread is not None and self.app_update_thread.is_alive():
@@ -7364,10 +9259,24 @@ class MkvCreatorApp(tk.Tk):
 
         def work() -> None:
             config = load_or_create_template_config(settings.template_path, settings.media_dir)
-            items, missing_optional, _ = discover_track_items(
+            (
+                additional_tracks,
+                track_order_keys,
+                language_overrides,
+                delay_overrides,
+                append_overrides,
+                excluded_track_keys,
+            ) = self.mux_track_customizations()
+            items, missing_optional = prepare_mux_track_items(
                 config,
                 settings.media_dir,
                 settings.include_extra_subtitles,
+                MUX_UNKNOWN_LANGUAGE,
+                additional_tracks,
+                language_overrides,
+                delay_overrides,
+                append_overrides,
+                excluded_track_keys,
             )
             ordered = apply_default_track_preferences(
                 config,
@@ -7375,6 +9284,7 @@ class MkvCreatorApp(tk.Tk):
                 settings.audio_language_order,
                 settings.subtitle_language_order,
             )
+            ordered = apply_custom_track_order(ordered, track_order_keys)
             chapter_end = chapter_end_minutes_from_duration_seconds(
                 detect_media_duration_seconds(items)
             )
@@ -7492,6 +9402,14 @@ class MkvCreatorApp(tk.Tk):
 
         def work() -> None:
             config = load_or_create_template_config(settings.template_path, settings.media_dir)
+            (
+                additional_tracks,
+                track_order_keys,
+                language_overrides,
+                delay_overrides,
+                append_overrides,
+                excluded_track_keys,
+            ) = self.mux_track_customizations()
             if settings.auto_chapters and auto_chapter_end:
                 chapter_end = detect_chapter_end_minutes_for_media_dir(
                     config,
@@ -7517,12 +9435,18 @@ class MkvCreatorApp(tk.Tk):
                 settings.audio_language_order,
                 settings.subtitle_language_order,
                 settings.tag_language,
+                additional_tracks,
+                track_order_keys,
+                language_overrides,
+                delay_overrides,
+                append_overrides,
+                excluded_track_keys,
             )
             self.queue_log(self.tr("log_config_written", path=generated))
 
         self.run_background(work, self.tr("status_writing_config"))
 
-    def start_mux(self) -> None:
+    def start_mux(self, *, skip_track_window: bool = False) -> None:
         if (
             self.worker is not None
             and self.worker.is_alive()
@@ -7532,16 +9456,26 @@ class MkvCreatorApp(tk.Tk):
             return
 
         try:
-            settings = self.collect_settings(require_tmdb=self.download_before_mux_var.get())
+            settings = self.collect_settings(
+                require_tmdb=self.mux_requires_tmdb(skip_track_window=skip_track_window)
+            )
+            settings.download_before_mux = self.mux_should_download_tmdb_assets(
+                settings,
+                skip_track_window=skip_track_window,
+            )
             auto_chapter_end = self.chapter_end_needs_auto_detection(settings.chapter_end_minutes)
             self.save_preferences()
         except UserVisibleError as exc:
             messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
             return
 
+        if self.add_tracks_before_mux_var.get() and not skip_track_window:
+            self.open_mux_tracks_window(settings)
+            return
+
         overwrite_existing = False
         if settings.output_path.exists():
-            overwrite_existing = messagebox.askyesno(
+            overwrite_existing = self.ask_yes_no(
                 self.tr("dialog_overwrite_title"),
                 self.tr("dialog_overwrite_message", name=settings.output_path.name),
             )
@@ -7550,6 +9484,14 @@ class MkvCreatorApp(tk.Tk):
 
         def work() -> None:
             config = load_or_create_template_config(settings.template_path, settings.media_dir)
+            (
+                additional_tracks,
+                track_order_keys,
+                language_overrides,
+                delay_overrides,
+                append_overrides,
+                excluded_track_keys,
+            ) = self.mux_track_customizations()
             settings.output_path.parent.mkdir(parents=True, exist_ok=True)
 
             if settings.download_before_mux:
@@ -7576,7 +9518,13 @@ class MkvCreatorApp(tk.Tk):
                 try:
                     settings.output_path.unlink()
                 except OSError as exc:
-                    raise UserVisibleError(f"{settings.output_path.name} silinemedi: {exc}") from exc
+                    raise UserVisibleError(
+                        ui_text(
+                            "error_output_delete_failed",
+                            name=settings.output_path.name,
+                            error=exc,
+                        )
+                    ) from exc
 
             if settings.auto_chapters and auto_chapter_end:
                 chapter_end = detect_chapter_end_minutes_for_media_dir(
@@ -7603,6 +9551,12 @@ class MkvCreatorApp(tk.Tk):
                 settings.audio_language_order,
                 settings.subtitle_language_order,
                 settings.tag_language,
+                additional_tracks,
+                track_order_keys,
+                language_overrides,
+                delay_overrides,
+                append_overrides,
+                excluded_track_keys,
                 cancel_event=self.cancel_event,
                 register_process=self.register_active_process,
                 unregister_process=self.unregister_active_process,
@@ -7621,6 +9575,12 @@ class MkvCreatorApp(tk.Tk):
                 settings.audio_language_order,
                 settings.subtitle_language_order,
                 settings.tag_language,
+                additional_tracks,
+                track_order_keys,
+                language_overrides,
+                delay_overrides,
+                append_overrides,
+                excluded_track_keys,
             )
             self.queue_log(self.tr("log_config_written", path=generated))
             if missing_optional:
@@ -7665,6 +9625,42 @@ class MkvCreatorApp(tk.Tk):
 
         self.run_background(work, self.tr("status_creating_mkv"), operation="mux")
 
+    def ask_yes_no(self, title: str, message: str) -> bool:
+        dialog = tk.Toplevel(self)
+        dialog.title(title)
+        self.apply_window_icon(dialog)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        result = {"value": False}
+
+        container = ttk.Frame(dialog, padding=16)
+        container.pack(fill="both", expand=True)
+
+        ttk.Label(
+            container,
+            text=message,
+            wraplength=420,
+            justify="left",
+        ).pack(fill="x", pady=(0, 12))
+
+        button_frame = ttk.Frame(container)
+        button_frame.pack(fill="x")
+
+        def close(value: bool) -> None:
+            result["value"] = value
+            dialog.destroy()
+
+        ttk.Button(button_frame, text=self.tr("value_no"), command=lambda: close(False)).pack(side="right")
+        ttk.Button(button_frame, text=self.tr("value_yes"), command=lambda: close(True)).pack(side="right", padx=(0, 8))
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: close(False))
+        self.center_window(dialog, self)
+        dialog.focus_set()
+        dialog.wait_window()
+        return result["value"]
+
     def close_extract_window(self) -> None:
         if self.extract_window is not None:
             self.extract_window.destroy()
@@ -7686,8 +9682,7 @@ class MkvCreatorApp(tk.Tk):
         window = tk.Toplevel(self)
         window.configure(background=UI_COLORS["window"])
         window.title(f"{APP_NAME} Extract")
-        if self.logo_icon_image is not None:
-            window.iconphoto(True, self.logo_icon_image)
+        self.apply_window_icon(window)
         window.geometry("960x620")
         window.minsize(760, 480)
         window.columnconfigure(0, weight=1)
@@ -7759,6 +9754,9 @@ class MkvCreatorApp(tk.Tk):
         if self.extract_items:
             self.populate_extract_tree()
             self.populate_extract_language_inputs()
+
+        self.center_window(window, self)
+        window.focus_set()
 
     def populate_extract_tree(self) -> None:
         if self.extract_tree is None:
@@ -7935,8 +9933,7 @@ class MkvCreatorApp(tk.Tk):
         window = tk.Toplevel(self)
         window.configure(background=UI_COLORS["window"])
         window.title(self.tr("window_log_title", app=APP_NAME))
-        if self.logo_icon_image is not None:
-            window.iconphoto(True, self.logo_icon_image)
+        self.apply_window_icon(window)
         window.geometry("980x700")
         window.minsize(720, 480)
         window.columnconfigure(0, weight=1)
@@ -7958,6 +9955,8 @@ class MkvCreatorApp(tk.Tk):
 
         self.log_window = window
         self.log_window_text = text
+        self.center_window(window, self)
+        window.focus_set()
 
     def start_batch_extract_folder(self) -> None:
         if (
@@ -8513,14 +10512,20 @@ class MkvCreatorApp(tk.Tk):
         if not clean_message:
             return
 
-        percent_match = re.search(r"(?:[İI]lerleme|Progress):\s*(\d{1,3})%", clean_message)
+        percent_match = re.search(
+            r"(?:[İIiı]lerleme|Progress):?\s*(\d{1,3})%",
+            clean_message,
+            flags=re.IGNORECASE,
+        )
         if percent_match:
             value = min(100, max(0, int(percent_match.group(1))))
             if self.progress_bar is not None:
                 self.progress_bar.stop()
                 self.progress_bar.configure(mode="determinate")
             self.progress_var.set(value)
-            self.progress_status_var.set(clean_message)
+            self.progress_status_var.set(
+                self.tr("status_progress_percent", percent=value)
+            )
             return
 
         command_line = clean_message.startswith("/") and (
@@ -8555,7 +10560,7 @@ class MkvCreatorApp(tk.Tk):
                 if not bool(value) and self.audio_adjust_apply_button is not None:
                     try:
                         if self.audio_adjust_window is not None and self.audio_adjust_window.winfo_exists():
-                            self.audio_adjust_apply_button.configure(state="normal")
+                            self.update_audio_adjust_apply_button_text()
                     except tk.TclError:
                         pass
             elif kind == "app_update_available":
@@ -8611,13 +10616,17 @@ def initial_extract_source_from_argv(argv: list[str]) -> Path | None:
         if not value or value.startswith("-"):
             continue
         path = Path(value).expanduser()
-        if path.suffix.lower() == ".mkv" or path.is_file():
+        if is_supported_extract_source_path(path):
             return path
     return None
 
 
 def main(argv: list[str] | None = None) -> None:
-    app = MkvCreatorApp(initial_extract_source_from_argv(argv or sys.argv))
+    argv = argv or sys.argv
+    if handle_windows_context_menu_cli(argv):
+        return
+    install_windows_context_menu()
+    app = MkvCreatorApp(initial_extract_source_from_argv(argv))
     app.mainloop()
 
 

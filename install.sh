@@ -6,6 +6,7 @@ APP_NAME="G-TMCE"
 SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="/opt/G-TMCE"
 BIN_LINK="/usr/local/bin/g-tmce"
+VENDOR_DIR="$INSTALL_DIR/vendor"
 
 APP_DESKTOP_DIR="/usr/share/applications"
 PIXMAP_DIR="/usr/share/pixmaps"
@@ -76,6 +77,7 @@ check_dependencies() {
   if is_debian_like; then
     local packages=(
       "python3"
+      "python3-pip"
       "zenity"
       "kdialog"
       "python3-tk"
@@ -105,6 +107,7 @@ check_dependencies() {
   elif is_fedora_like; then
     local packages=(
       "python3"
+      "python3-pip"
       "zenity"
       "kdialog"
       "python3-tkinter"
@@ -133,6 +136,7 @@ check_dependencies() {
   elif is_arch_like; then
     local packages=(
       "python"
+      "python-pip"
       "zenity"
       "kdialog"
       "tk"
@@ -161,6 +165,7 @@ check_dependencies() {
   elif is_opensuse_like; then
     local packages=(
       "python3"
+      "python3-pip"
       "zenity"
       "kdialog"
       "python3-tk"
@@ -191,6 +196,7 @@ check_dependencies() {
     echo
     echo "Install these dependencies manually:"
     echo "- python3"
+    echo "- pip for Python 3"
     echo "- tkinter for Python 3"
     echo "- Pillow for Python 3"
     echo "- desktop-file-utils"
@@ -216,6 +222,32 @@ PY
     echo "Error: Python Pillow is still not available after dependency installation."
     exit 1
   fi
+
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    echo "Error: pip for Python 3 is still not available after dependency installation."
+    exit 1
+  fi
+}
+
+install_vendor_python_package() {
+  local module="$1"
+  local package="$2"
+
+  if PYTHONPATH="$VENDOR_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$module" >/dev/null 2>&1 <<'PY'
+import importlib.util
+import sys
+
+module = sys.argv[1]
+sys.exit(0 if importlib.util.find_spec(module) else 1)
+PY
+  then
+    echo "Python module already available: $module"
+    return
+  fi
+
+  echo "Installing Python package into app vendor directory: $package"
+  PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    python3 -m pip install --upgrade --target "$VENDOR_DIR" "$package"
 }
 
 install_application() {
@@ -225,6 +257,9 @@ install_application() {
 
   mkdir -p "$INSTALL_DIR"
   cp -a "$SRC_DIR/." "$INSTALL_DIR/"
+
+  mkdir -p "$VENDOR_DIR"
+  install_vendor_python_package "tkinterdnd2" "tkinterdnd2"
 
   mkdir -p "$INSTALL_DIR/3rdParty/bin"
   mkdir -p "$INSTALL_DIR/3rdParty/.downloads"
@@ -246,9 +281,10 @@ install_application() {
 install_launcher() {
   echo "[2/6] Installing command launcher..."
 
-  cat > "$BIN_LINK" <<EOF
+cat > "$BIN_LINK" <<EOF
 #!/usr/bin/env bash
 cd "$INSTALL_DIR"
+export PYTHONPATH="$VENDOR_DIR\${PYTHONPATH:+:\$PYTHONPATH}"
 exec python3 "$INSTALL_DIR/mkv_creator_ui.py" "\$@"
 EOF
 

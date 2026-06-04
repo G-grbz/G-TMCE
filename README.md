@@ -145,13 +145,20 @@ Supported distributions:
 You can download a pre-built executable or AppImage from the [Releases](../../releases) page, or build one yourself using the instructions below.
 
 > **Windows support has been added.** A pre-built `.exe` is available for download on the Releases page.
+>
+> **VirusTotal Note:** A few antivirus engines may occasionally flag G-TMCE as suspicious. The application uses FFmpeg and MKVToolNix, works directly with media files, and launches external processes as part of its normal operation. Because of this, some machine learning–based antivirus solutions may generate false positives.
+>
+> At the time of writing, the latest release is detected by 5 out of 71 security vendors on VirusTotal, while major vendors such as BitDefender, Kaspersky, ESET, Malwarebytes, Sophos, and Trend Micro report the file as clean.
+>
+> VirusTotal report:
+> https://www.virustotal.com/gui/file/8093821caf8639574a6be6cfd91bb672d986ae5213c0dbc4f43389bd779b01fd/detection
 
 ## Building from Source
 
 ### Windows EXE
 
 ```powershell
-py -3 -m pip install --upgrade pillow pyinstaller
+py -3 -m pip install --upgrade pillow tkinterdnd2 pyinstaller
 py -3 build_windows_exe.py
 ```
 
@@ -159,6 +166,20 @@ Output path:
 
 ```text
 dist\G-TMCE.exe
+```
+
+Windows right-click integration:
+
+* On first launch, the EXE registers a per-user Explorer context menu entry for supported media containers.
+* The menu item is named `Open with G-TMCE Extract` and opens the selected file directly in the extraction window.
+* No admin permission is required because the registry entries are written under `HKEY_CURRENT_USER`.
+* If you move the portable EXE, launch it once from the new location so the context menu command path is refreshed.
+
+Manual commands:
+
+```powershell
+dist\G-TMCE.exe --install-context-menu
+dist\G-TMCE.exe --uninstall-context-menu
 ```
 
 ### AppImage
@@ -439,6 +460,8 @@ Rules:
 * Audio and video append is supported
 * Subtitle append is not supported
 
+In the **Add Tracks** window, audio rows also have a `+` control. Use it to append one or more audio files to the selected audio track without placing numbered files in the track folder manually.
+
 ## Additional Subtitle Files
 
 When `Include additional subtitles` is enabled, subtitle files found in the track folder are added even if they were not listed in the original template.
@@ -458,6 +481,8 @@ logo.png
 ```
 
 Font files are attached automatically. They may be placed directly in the selected track folder or inside subfolders.
+
+The **Add Tracks** window also accepts `chapters.txt`, `tags.xml`, and the artwork file names listed above. Added metadata/artwork files are copied into the selected track folder before muxing, so existing manual files are used instead of being generated or downloaded again. Enable `Fill missing artwork/tags from TMDB` in that window to try downloading any missing artwork and `tags.xml`.
 
 Supported font extensions:
 
@@ -522,7 +547,7 @@ It can also automatically generate:
 tags.xml
 ```
 
-If `tags.xml` already exists, it is not overwritten.
+If `tags.xml` already exists, it is not overwritten. Existing artwork files are also kept and skipped by the TMDB download step.
 
 During muxing:
 
