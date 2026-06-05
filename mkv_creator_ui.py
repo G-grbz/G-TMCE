@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import hashlib
 import io
 import json
@@ -24,7 +25,7 @@ import urllib.request
 import webbrowser
 import xml.etree.ElementTree as ET
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -112,6 +113,8 @@ def app_config_dir() -> Path:
 SETTINGS_PATH = app_config_dir() / "settings.json"
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/original"
+OPENSUBTITLES_API_BASE = "https://api.opensubtitles.com/api/v1"
+OPENSUBTITLES_USER_AGENT = f"{APP_NAME} v{APP_VERSION}"
 THIRD_PARTY_DIR = app_config_dir() / "3rdParty"
 THIRD_PARTY_BIN_DIR = THIRD_PARTY_DIR / "bin"
 THIRD_PARTY_DOWNLOADS_DIR = THIRD_PARTY_DIR / ".downloads"
@@ -180,6 +183,16 @@ UI_TEXT = {
         "error_tmdb_request_failed": "TMDB request failed ({code}): {message}",
         "error_tmdb_connection_failed": "Could not connect to TMDB: {reason}",
         "error_image_download_failed": "Image download failed: {reason}",
+        "error_subtitle_api_required": "OpenSubtitles API key is required.",
+        "error_subtitle_credentials_required": "OpenSubtitles username and password are required to download subtitles.",
+        "error_subtitle_request_failed": "OpenSubtitles request failed ({code}): {message}",
+        "error_subtitle_connection_failed": "Could not connect to OpenSubtitles: {reason}",
+        "error_subtitle_no_results": "No subtitles were found.",
+        "error_subtitle_no_selection": "Select at least one subtitle result.",
+        "error_subtitle_all_selected_downloaded": "Selected subtitle results are already downloaded.",
+        "error_subtitle_download_link_missing": "OpenSubtitles did not return a download link.",
+        "error_subtitle_file_empty": "Downloaded subtitle file is empty.",
+        "error_subtitle_missing_target": "Subtitle target folder is missing: {path}",
         "error_tmdb_svg_logo": "TMDB returned an SVG for {name}; no PNG logo was available.",
         "error_pillow_image_convert": "Pillow must be installed to convert images.",
         "error_pillow_small_cover": "Pillow must be installed to create small cover artwork.",
@@ -211,6 +224,7 @@ UI_TEXT = {
         "path_template": "Template config (optional)",
         "path_track_folder": "Track folder",
         "path_output_mkv": "Output MKV",
+        "label_output_name_extra": "Output name suffix",
         "button_browse": "Browse",
         "button_show": "Show",
         "button_update_third_party": "Update Tools",
@@ -267,6 +281,7 @@ UI_TEXT = {
         "log_audio_adjust_command": "Audio ffmpeg command:",
         "status_adjusting_audio": "Adjusting audio...",
         "button_download_assets": "Download Artwork/Tags",
+        "button_download_subtitles": "Download Subtitles",
         "button_write_config": "Write Config",
         "button_create_mkv": "Create MKV",
         "button_cancel": "Cancel",
@@ -287,6 +302,26 @@ UI_TEXT = {
         "dialog_track_folder_title": "Select track folder",
         "dialog_add_track_files_title": "Select tracks",
         "dialog_add_append_audio_title": "Select audio append files",
+        "window_subtitle_download_title": "Download Subtitles",
+        "label_subtitle_api_key": "OpenSubtitles API key",
+        "label_subtitle_username": "Username",
+        "label_subtitle_password": "Password",
+        "label_subtitle_language": "Subtitle language",
+        "label_subtitle_query": "Search",
+        "label_subtitle_target": "Target",
+        "label_subtitle_status_ready": "Ready.",
+        "label_subtitle_status_no_results": "No subtitles found. You can search again.",
+        "button_search_subtitles": "Search",
+        "button_download_selected_subtitle": "Download Selected",
+        "button_download_best_subtitles": "Download Best",
+        "heading_subtitle_status": "Status",
+        "heading_subtitle_target": "Target",
+        "heading_subtitle_language": "Lang",
+        "heading_subtitle_release": "Release",
+        "heading_subtitle_fps": "FPS",
+        "heading_subtitle_flags": "Flags",
+        "heading_subtitle_downloads": "Downloads",
+        "heading_subtitle_file": "File",
         "dialog_output_mkv_title": "Select output MKV",
         "dialog_source_mkv_title": "Select source MKV / folder",
         "dialog_extract_folder_title": "Select extraction folder",
@@ -332,6 +367,20 @@ UI_TEXT = {
         "log_tmdb_id_found": "TMDB ID found: {tmdb_id} - {title}{year_text}",
         "status_finding_tmdb": "Finding TMDB ID...",
         "status_downloading_assets": "Downloading artwork and tags...",
+        "status_searching_subtitles": "Searching subtitles...",
+        "status_downloading_subtitles": "Downloading subtitles...",
+        "subtitle_target_single": "{folder}",
+        "subtitle_target_batch": "Batch TV folders: {count} episodes",
+        "log_subtitle_results_found": "Subtitle results found: {count}",
+        "log_subtitle_no_result_for_target": "No subtitle found for {target}.",
+        "log_subtitle_downloaded": "Subtitle downloaded: {path}",
+        "log_batch_subtitles_complete": "Folder subtitle download completed: {count} subtitles.",
+        "value_subtitle_downloaded": "Downloaded",
+        "value_subtitle_flag_hi": "SDH",
+        "value_subtitle_flag_forced": "forced",
+        "value_subtitle_flag_trusted": "trusted",
+        "value_subtitle_flag_machine": "machine",
+        "value_subtitle_flag_ai": "AI",
         "log_config_written": "Config written: {path}",
         "status_writing_config": "Writing config...",
         "error_output_exists_choose": "{name} already exists. Choose a different name or move the existing file.",
@@ -346,6 +395,7 @@ UI_TEXT = {
         "log_batch_final_folder": "Final season folder: {path}",
         "log_batch_moved": "Moved MKV: {path}",
         "log_batch_extract_complete": "Folder extraction completed: {count} episode folders.",
+        "log_batch_assets_complete": "Folder artwork/tag refresh completed: {count} episode folders.",
         "log_batch_mux_complete": "Folder mux completed: {count} MKV files.",
         "status_creating_mkv": "Creating MKV...",
         "status_batch_extract_folder": "Extracting folder...",
@@ -445,6 +495,16 @@ UI_TEXT = {
         "error_tmdb_request_failed": "TMDB isteği başarısız ({code}): {message}",
         "error_tmdb_connection_failed": "TMDB bağlantısı kurulamadı: {reason}",
         "error_image_download_failed": "Görsel indirilemedi: {reason}",
+        "error_subtitle_api_required": "OpenSubtitles API key boş.",
+        "error_subtitle_credentials_required": "Altyazı indirmek için OpenSubtitles kullanıcı adı ve şifre gerekli.",
+        "error_subtitle_request_failed": "OpenSubtitles isteği başarısız ({code}): {message}",
+        "error_subtitle_connection_failed": "OpenSubtitles bağlantısı kurulamadı: {reason}",
+        "error_subtitle_no_results": "Altyazı sonucu bulunamadı.",
+        "error_subtitle_no_selection": "En az bir altyazı sonucu seç.",
+        "error_subtitle_all_selected_downloaded": "Seçilen altyazı sonuçları zaten indirildi.",
+        "error_subtitle_download_link_missing": "OpenSubtitles indirme linki döndürmedi.",
+        "error_subtitle_file_empty": "İndirilen altyazı dosyası boş.",
+        "error_subtitle_missing_target": "Altyazı hedef klasörü yok: {path}",
         "error_tmdb_svg_logo": "{name} için TMDB SVG döndürdü; PNG logo bulunamadı.",
         "error_pillow_image_convert": "Görsel dönüştürme için Pillow kurulu olmalı.",
         "error_pillow_small_cover": "Küçük kapak görseli üretmek için Pillow kurulu olmalı.",
@@ -476,6 +536,7 @@ UI_TEXT = {
         "path_template": "Şablon config (opsiyonel)",
         "path_track_folder": "Parça klasörü",
         "path_output_mkv": "Çıktı MKV",
+        "label_output_name_extra": "Çıktı adı eki",
         "button_browse": "Seç",
         "button_show": "Göster",
         "button_update_third_party": "Araçları Güncelle",
@@ -532,6 +593,7 @@ UI_TEXT = {
         "log_audio_adjust_command": "Ses ffmpeg komutu:",
         "status_adjusting_audio": "Ses ayarlanıyor...",
         "button_download_assets": "Görsel/Tag İndir",
+        "button_download_subtitles": "Altyazı İndir",
         "button_write_config": "Config Yaz",
         "button_create_mkv": "MKV Oluştur",
         "button_cancel": "İptal",
@@ -552,6 +614,26 @@ UI_TEXT = {
         "dialog_track_folder_title": "Parça klasörü seç",
         "dialog_add_track_files_title": "Parça seç",
         "dialog_add_append_audio_title": "İlave ses dosyalarını seç",
+        "window_subtitle_download_title": "Altyazı İndir",
+        "label_subtitle_api_key": "OpenSubtitles API key",
+        "label_subtitle_username": "Kullanıcı adı",
+        "label_subtitle_password": "Şifre",
+        "label_subtitle_language": "Altyazı dili",
+        "label_subtitle_query": "Arama",
+        "label_subtitle_target": "Hedef",
+        "label_subtitle_status_ready": "Hazır.",
+        "label_subtitle_status_no_results": "Altyazı sonucu bulunamadı. Yeniden arama yapabilirsin.",
+        "button_search_subtitles": "Ara",
+        "button_download_selected_subtitle": "Seçileni İndir",
+        "button_download_best_subtitles": "En İyiyi İndir",
+        "heading_subtitle_status": "Durum",
+        "heading_subtitle_target": "Hedef",
+        "heading_subtitle_language": "Dil",
+        "heading_subtitle_release": "Release",
+        "heading_subtitle_fps": "FPS",
+        "heading_subtitle_flags": "Bayrak",
+        "heading_subtitle_downloads": "İndirme",
+        "heading_subtitle_file": "Dosya",
         "dialog_output_mkv_title": "Çıktı MKV seç",
         "dialog_source_mkv_title": "Kaynak MKV / klasör seç",
         "dialog_extract_folder_title": "Çıkarma klasörü seç",
@@ -597,6 +679,20 @@ UI_TEXT = {
         "log_tmdb_id_found": "TMDB ID bulundu: {tmdb_id} - {title}{year_text}",
         "status_finding_tmdb": "TMDB ID aranıyor...",
         "status_downloading_assets": "Görsel/tag indiriliyor...",
+        "status_searching_subtitles": "Altyazı aranıyor...",
+        "status_downloading_subtitles": "Altyazı indiriliyor...",
+        "subtitle_target_single": "{folder}",
+        "subtitle_target_batch": "Toplu dizi klasörleri: {count} bölüm",
+        "log_subtitle_results_found": "Altyazı sonucu bulundu: {count}",
+        "log_subtitle_no_result_for_target": "{target} için altyazı bulunamadı.",
+        "log_subtitle_downloaded": "Altyazı indirildi: {path}",
+        "log_batch_subtitles_complete": "Klasör altyazı indirme tamamlandı: {count} altyazı.",
+        "value_subtitle_downloaded": "İndi",
+        "value_subtitle_flag_hi": "SDH",
+        "value_subtitle_flag_forced": "forced",
+        "value_subtitle_flag_trusted": "güvenilir",
+        "value_subtitle_flag_machine": "makine",
+        "value_subtitle_flag_ai": "AI",
         "log_config_written": "Config yazıldı: {path}",
         "status_writing_config": "Config yazılıyor...",
         "error_output_exists_choose": "{name} zaten var. Farklı ad ver veya mevcut dosyayı taşı.",
@@ -611,6 +707,7 @@ UI_TEXT = {
         "log_batch_final_folder": "Final sezon klasörü: {path}",
         "log_batch_moved": "MKV taşındı: {path}",
         "log_batch_extract_complete": "Klasör çıkarma tamamlandı: {count} bölüm klasörü.",
+        "log_batch_assets_complete": "Klasör görsel/tag yenileme tamamlandı: {count} bölüm klasörü.",
         "log_batch_mux_complete": "Klasör birleştirme tamamlandı: {count} MKV.",
         "status_creating_mkv": "MKV oluşturuluyor...",
         "status_batch_extract_folder": "Klasör çıkarılıyor...",
@@ -975,6 +1072,62 @@ AUDIO_EXTENSIONS = {
 AUDIO_FILE_PATTERNS = " ".join(f"*{ext}" for ext in sorted(AUDIO_EXTENSIONS))
 TRACK_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | SUBTITLE_EXTENSIONS
 TRACK_FILE_PATTERNS = " ".join(f"*{ext}" for ext in sorted(TRACK_EXTENSIONS))
+SUBTITLE_LANGUAGE_CHOICES = (
+    "tr",
+    "en",
+    "de",
+    "fr",
+    "es",
+    "it",
+    "pt",
+    "pt-br",
+    "ru",
+    "ar",
+    "nl",
+    "pl",
+    "sv",
+    "da",
+    "no",
+    "fi",
+    "ja",
+    "ko",
+    "zh-cn",
+    "zh-tw",
+)
+SUBTITLE_FILENAME_LANGUAGE_CODES = {
+    "ar": "ara",
+    "bg": "bul",
+    "cs": "cze",
+    "da": "dan",
+    "de": "ger",
+    "el": "gre",
+    "en": "eng",
+    "es": "spa",
+    "fi": "fin",
+    "fr": "fre",
+    "he": "heb",
+    "hi": "hin",
+    "hr": "hrv",
+    "hu": "hun",
+    "it": "ita",
+    "ja": "jpn",
+    "ko": "kor",
+    "nl": "dut",
+    "no": "nor",
+    "pl": "pol",
+    "pt": "por",
+    "pt-br": "por",
+    "pt-pt": "por",
+    "ro": "rum",
+    "ru": "rus",
+    "sk": "slo",
+    "sv": "swe",
+    "tr": "tur",
+    "uk": "ukr",
+    "zh": "chi",
+    "zh-cn": "chi",
+    "zh-tw": "chi",
+}
 
 
 def quote_windows_command_arg(value: Path | str) -> str:
@@ -1515,6 +1668,13 @@ class UserVisibleError(RuntimeError):
     """An expected problem that should be shown without a traceback."""
 
 
+class OpenSubtitlesRequestError(UserVisibleError):
+    def __init__(self, code: int | str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(ui_text("error_subtitle_request_failed", code=code, message=message))
+
+
 class OperationCancelled(UserVisibleError):
     """Raised when the user cancels the current background operation."""
 
@@ -1574,6 +1734,7 @@ class AppSettings:
     template_path: Path | None
     media_dir: Path
     output_path: Path
+    output_name_extra: str
     api_key: str
     tmdb_id: str
     media_type: str
@@ -1603,6 +1764,46 @@ class BatchEpisodeTask:
     source: Path
     extract_dir: Path
     episode_ref: EpisodeRef
+
+
+@dataclass(frozen=True)
+class SubtitleSearchTarget:
+    media_dir: Path
+    query: str
+    output_stem: str
+    media_type: str
+    tmdb_id: str = ""
+    imdb_id: str = ""
+    year: str = ""
+    episode_ref: EpisodeRef | None = None
+    source_name: str = ""
+
+
+@dataclass(frozen=True)
+class SubtitleResult:
+    key: str
+    target_index: int
+    subtitle_id: str
+    file_id: int
+    language: str
+    release: str
+    file_name: str
+    fps: str
+    downloads: int
+    forced: bool
+    hearing_impaired: bool
+    from_trusted: bool
+    machine_translated: bool
+    ai_translated: bool
+    url: str
+
+
+@dataclass(frozen=True)
+class SubtitleLookupMetadata:
+    query: str = ""
+    tmdb_id: str = ""
+    imdb_id: str = ""
+    year: str = ""
 
 
 @dataclass
@@ -2644,6 +2845,37 @@ def safe_filename_stem(value: str) -> str:
     return cleaned or "output"
 
 
+def clean_output_name_extra(value: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', " ", value or "")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned if cleaned.strip() else ""
+
+
+def output_path_with_name_extra(output_path: Path, extra: str) -> Path:
+    cleaned_extra = clean_output_name_extra(extra)
+    if not cleaned_extra:
+        return output_path
+
+    suffix = output_path.suffix or ".mkv"
+    stem = output_path.stem if output_path.suffix else output_path.name
+    if not stem.endswith(cleaned_extra):
+        stem = f"{stem}{cleaned_extra}"
+    return output_path.with_name(f"{stem}{suffix}")
+
+
+def output_path_without_name_extra(output_path: Path, extra: str) -> Path:
+    cleaned_extra = clean_output_name_extra(extra)
+    if not cleaned_extra:
+        return output_path
+
+    suffix = output_path.suffix
+    stem = output_path.stem if suffix else output_path.name
+    if not stem.endswith(cleaned_extra):
+        return output_path
+    stem = stem[: -len(cleaned_extra)] or "output"
+    return output_path.with_name(f"{stem}{suffix}")
+
+
 def tmdb_output_path(media_dir: Path, title: str) -> Path:
     return media_dir / f"{safe_filename_stem(title)}.mkv"
 
@@ -2808,6 +3040,14 @@ def natural_path_sort_key(path: Path) -> list[Any]:
         elif token:
             parts.append(token)
     return parts
+
+
+def path_is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def video_sources_in_folder(source_dir: Path) -> list[Path]:
@@ -4569,6 +4809,749 @@ class TMDBClient:
             ) from exc
 
 
+class OpenSubtitlesClient:
+    def __init__(self, api_key: str, username: str = "", password: str = "", timeout: int = 30) -> None:
+        self.api_key = api_key
+        self.username = username
+        self.password = password
+        self.timeout = timeout
+
+    def headers(self, token: str = "", *, json_body: bool = False) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json",
+            "Api-Key": self.api_key,
+            "User-Agent": OPENSUBTITLES_USER_AGENT,
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if json_body:
+            headers["Content-Type"] = "application/json"
+        return headers
+
+    def api_url(self, path: str, params: dict[str, str] | None = None, base_url: str = "") -> str:
+        base = normalise_opensubtitles_base_url(base_url)
+        query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value != ""})
+        return f"{base}{path}" + (f"?{query}" if query else "")
+
+    def request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        payload: dict[str, Any] | None = None,
+        token: str = "",
+        base_url: str = "",
+    ) -> dict[str, Any]:
+        data = None
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            self.api_url(path, params, base_url),
+            data=data,
+            headers=self.headers(token, json_body=payload is not None),
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                value = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            message = opensubtitles_error_message(body) or str(exc)
+            raise OpenSubtitlesRequestError(exc.code, message) from exc
+        except urllib.error.URLError as exc:
+            raise UserVisibleError(
+                ui_text("error_subtitle_connection_failed", reason=exc.reason)
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise UserVisibleError(
+                ui_text("error_subtitle_request_failed", code="JSON", message=exc)
+            ) from exc
+        if not isinstance(value, dict):
+            raise UserVisibleError(
+                ui_text("error_subtitle_request_failed", code="JSON", message="response is not an object")
+            )
+        return value
+
+    def login(self) -> tuple[str, str]:
+        if not self.username.strip() or not self.password:
+            raise UserVisibleError(ui_text("error_subtitle_credentials_required"))
+        payload = self.request_json(
+            "POST",
+            "/login",
+            payload={
+                "username": self.username.strip(),
+                "password": self.password,
+            },
+        )
+        token = str(payload.get("token") or "").strip()
+        base_url = str(payload.get("base_url") or "").strip()
+        if not token:
+            raise UserVisibleError(
+                ui_text("error_subtitle_request_failed", code="login", message="token missing")
+            )
+        return token, base_url
+
+    def search(
+        self,
+        target: SubtitleSearchTarget,
+        target_index: int,
+        language: str,
+        query: str,
+        *,
+        limit: int,
+    ) -> list[SubtitleResult]:
+        query = query.strip()
+        search_target = (
+            replace(target, query=query, source_name=query, output_stem=query)
+            if query
+            else target
+        )
+        results: list[SubtitleResult] = []
+        seen_file_ids: set[int] = set()
+        request_succeeded = False
+        not_enough_parameters_error: OpenSubtitlesRequestError | None = None
+        for params in opensubtitles_search_param_variants(search_target, language, query):
+            try:
+                payload = self.request_json("GET", "/subtitles", params=params)
+            except OpenSubtitlesRequestError as exc:
+                if opensubtitles_error_is_not_enough_parameters(exc):
+                    not_enough_parameters_error = exc
+                    continue
+                raise
+            request_succeeded = True
+            data = payload.get("data") or []
+            if not isinstance(data, list):
+                continue
+
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                attributes = item.get("attributes") or {}
+                if not isinstance(attributes, dict):
+                    continue
+                if not opensubtitles_result_matches_target(search_target, attributes):
+                    continue
+                files = attributes.get("files") or []
+                if not isinstance(files, list):
+                    continue
+                for file_info in files:
+                    if not isinstance(file_info, dict):
+                        continue
+                    try:
+                        file_id = int(file_info.get("file_id"))
+                    except (TypeError, ValueError):
+                        continue
+                    if file_id in seen_file_ids:
+                        continue
+                    seen_file_ids.add(file_id)
+                    key = f"{target_index}:{attributes.get('subtitle_id') or item.get('id')}:{file_id}:{len(results)}"
+                    results.append(
+                        SubtitleResult(
+                            key=key,
+                            target_index=target_index,
+                            subtitle_id=str(attributes.get("subtitle_id") or item.get("id") or ""),
+                            file_id=file_id,
+                            language=str(attributes.get("language") or language),
+                            release=str(attributes.get("release") or ""),
+                            file_name=str(file_info.get("file_name") or ""),
+                            fps=opensubtitles_fps_text(attributes.get("fps")),
+                            downloads=int(attributes.get("download_count") or attributes.get("new_download_count") or 0),
+                            forced=opensubtitles_result_is_forced(attributes, file_info),
+                            hearing_impaired=bool(attributes.get("hearing_impaired")),
+                            from_trusted=bool(attributes.get("from_trusted")),
+                            machine_translated=bool(attributes.get("machine_translated")),
+                            ai_translated=bool(attributes.get("ai_translated")),
+                            url=str(attributes.get("url") or ""),
+                        )
+                    )
+                    if len(results) >= limit:
+                        return results
+        if not request_succeeded and not_enough_parameters_error is not None:
+            raise not_enough_parameters_error
+        return results
+
+    def download_link(
+        self,
+        result: SubtitleResult,
+        token: str,
+        base_url: str,
+        destination_name: str,
+        out_fps: float | None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "file_id": result.file_id,
+            "sub_format": "srt",
+            "file_name": destination_name,
+        }
+        in_fps = parse_fps_number(result.fps)
+        if in_fps is not None and out_fps is not None:
+            payload["in_fps"] = in_fps
+            payload["out_fps"] = out_fps
+        response = self.request_json(
+            "POST",
+            "/download",
+            payload=payload,
+            token=token,
+            base_url=base_url,
+        )
+        link = str(response.get("link") or "").strip()
+        if not link:
+            raise UserVisibleError(ui_text("error_subtitle_download_link_missing"))
+        return link
+
+    def download_bytes(self, link: str) -> tuple[bytes, str]:
+        request = urllib.request.Request(
+            link,
+            headers={"User-Agent": OPENSUBTITLES_USER_AGENT},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=max(self.timeout, 60)) as response:
+                return response.read(), response.headers.get("Content-Type", "")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            message = opensubtitles_error_message(body) or str(exc)
+            raise UserVisibleError(
+                ui_text("error_subtitle_request_failed", code=exc.code, message=message)
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise UserVisibleError(
+                ui_text("error_subtitle_connection_failed", reason=exc.reason)
+            ) from exc
+
+
+def normalise_opensubtitles_base_url(base_url: str) -> str:
+    value = str(base_url or "").strip()
+    if not value:
+        return OPENSUBTITLES_API_BASE
+    if not value.startswith(("http://", "https://")):
+        value = f"https://{value}"
+    value = value.rstrip("/")
+    if not value.endswith("/api/v1"):
+        value = f"{value}/api/v1"
+    return value
+
+
+def opensubtitles_error_message(body: str) -> str:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return body.strip()
+    if isinstance(payload, dict):
+        for key in ("message", "error"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+        errors = payload.get("errors")
+        if isinstance(errors, list):
+            return "; ".join(str(error) for error in errors)
+    return body.strip()
+
+
+def opensubtitles_error_is_not_enough_parameters(error: OpenSubtitlesRequestError) -> bool:
+    return str(error.code) == "400" and "not enough parameter" in error.message.lower()
+
+
+def normalise_subtitle_language(language: str) -> str:
+    raw = str(language or "").strip().lower()
+    if raw in {"pt-br", "pt-pt", "zh-cn", "zh-tw"}:
+        return raw
+    return normalise_language(raw or "en")
+
+
+def subtitle_filename_language_code(language: str) -> str:
+    code = normalise_subtitle_language(language)
+    return SUBTITLE_FILENAME_LANGUAGE_CODES.get(code, code)
+
+
+def subtitle_descriptor_tokens(*values: str) -> set[str]:
+    tokens: set[str] = set()
+    for value in values:
+        tokens.update(token for token in re.split(r"[._\-\s\[\]\(\)]+", value.lower()) if token)
+    return tokens
+
+
+def opensubtitles_result_is_forced(
+    attributes: dict[str, Any],
+    file_info: dict[str, Any],
+) -> bool:
+    if bool(attributes.get("foreign_parts_only")):
+        return True
+    tokens = subtitle_descriptor_tokens(
+        str(attributes.get("release") or ""),
+        str(file_info.get("file_name") or ""),
+        str(attributes.get("comments") or ""),
+    )
+    return bool(tokens & {"forced", "force", "forc", "foreign", "foreignparts"})
+
+
+def clean_numeric_id(value: Any) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def opensubtitles_feature_details(attributes: dict[str, Any]) -> dict[str, Any]:
+    feature = attributes.get("feature_details") or {}
+    return feature if isinstance(feature, dict) else {}
+
+
+def opensubtitles_feature_id_values(feature: dict[str, Any], *keys: str) -> set[str]:
+    values: set[str] = set()
+    for key in keys:
+        value = clean_numeric_id(feature.get(key))
+        if value:
+            values.add(value)
+    return values
+
+
+def opensubtitles_result_id_matches_target(
+    target: SubtitleSearchTarget,
+    feature: dict[str, Any],
+) -> bool | None:
+    target_tmdb = clean_numeric_id(target.tmdb_id)
+    target_imdb = clean_numeric_id(target.imdb_id)
+
+    if target.media_type == "tv" and target.episode_ref is not None:
+        feature_tmdb_values = opensubtitles_feature_id_values(feature, "parent_tmdb_id")
+        if not feature_tmdb_values:
+            feature_tmdb_values = opensubtitles_feature_id_values(feature, "tmdb_id")
+        feature_imdb_values = opensubtitles_feature_id_values(feature, "parent_imdb_id")
+        if not feature_imdb_values:
+            feature_imdb_values = opensubtitles_feature_id_values(feature, "imdb_id")
+    else:
+        feature_tmdb_values = opensubtitles_feature_id_values(feature, "tmdb_id")
+        feature_imdb_values = opensubtitles_feature_id_values(feature, "imdb_id")
+
+    if target_tmdb and feature_tmdb_values:
+        return target_tmdb in feature_tmdb_values
+    if target_imdb and feature_imdb_values:
+        return target_imdb in feature_imdb_values
+
+    if (target_tmdb or target_imdb) and (feature_tmdb_values or feature_imdb_values):
+        return False
+    return None
+
+
+def opensubtitles_year_values(attributes: dict[str, Any], feature: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for value in (
+        feature.get("year"),
+        feature.get("movie_name"),
+        feature.get("title"),
+        feature.get("parent_title"),
+        attributes.get("release"),
+    ):
+        values.update(re.findall(r"(?:19|20)\d{2}", str(value or "")))
+    return values
+
+
+def strip_year_text(value: str, year: str) -> str:
+    if not year:
+        return value
+    return re.sub(rf"(?:^|[\s._\-\(\)\[\]]){re.escape(year)}(?:$|[\s._\-\(\)\[\]])", " ", value)
+
+
+def opensubtitles_text_values(attributes: dict[str, Any], feature: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for value in (
+        feature.get("movie_name"),
+        feature.get("title"),
+        feature.get("parent_title"),
+        attributes.get("release"),
+    ):
+        text = str(value or "").strip()
+        if text and text not in values:
+            values.append(text)
+    return values
+
+
+def opensubtitles_result_text_matches_target(
+    target: SubtitleSearchTarget,
+    attributes: dict[str, Any],
+    feature: dict[str, Any],
+) -> bool:
+    target_values = [
+        value
+        for value in (target.query, target.source_name, target.output_stem)
+        if str(value or "").strip()
+    ]
+    if not target_values:
+        return True
+
+    target_year = str(target.year or "").strip()
+    if target_year:
+        years = opensubtitles_year_values(attributes, feature)
+        if years and target_year not in years:
+            return False
+
+    candidate_keys = [
+        normalise_title_for_match(value)
+        for value in opensubtitles_text_values(attributes, feature)
+    ]
+    candidate_keys = [value for value in candidate_keys if value]
+    if not candidate_keys:
+        return True
+
+    for value in target_values:
+        full_key = normalise_title_for_match(value)
+        base_key = normalise_title_for_match(strip_year_text(value, target_year))
+        keys = [key for key in (full_key, base_key) if key]
+        for key in keys:
+            for candidate in candidate_keys:
+                if candidate == key or candidate.startswith(key) or key.startswith(candidate):
+                    return True
+                if target_year and key in candidate:
+                    return True
+    return False
+
+
+def opensubtitles_result_matches_target(
+    target: SubtitleSearchTarget,
+    attributes: dict[str, Any],
+) -> bool:
+    feature = opensubtitles_feature_details(attributes)
+    id_match = opensubtitles_result_id_matches_target(target, feature)
+    if id_match is not None:
+        return id_match
+    return opensubtitles_result_text_matches_target(target, attributes, feature)
+
+
+def opensubtitles_search_params(
+    target: SubtitleSearchTarget,
+    language: str,
+    query: str,
+) -> dict[str, str]:
+    params = opensubtitles_base_search_params(language, target)
+    query = query.strip()
+    if query:
+        params["query"] = query
+    if target.media_type == "tv" and target.episode_ref is not None:
+        params["season_number"] = str(target.episode_ref.season)
+        params["episode_number"] = str(target.episode_ref.episode)
+        if target.tmdb_id:
+            params["parent_tmdb_id"] = target.tmdb_id
+        if target.imdb_id:
+            params["parent_imdb_id"] = clean_imdb_id_number(target.imdb_id)
+    elif target.tmdb_id:
+        params["tmdb_id"] = target.tmdb_id
+    elif target.imdb_id:
+        params["imdb_id"] = clean_imdb_id_number(target.imdb_id)
+    return params
+
+
+def clean_imdb_id_number(value: str) -> str:
+    return str(value or "").strip().lower().removeprefix("tt")
+
+
+def opensubtitles_episode_params(target: SubtitleSearchTarget) -> dict[str, str]:
+    if target.media_type != "tv" or target.episode_ref is None:
+        return {}
+    return {
+        "season_number": str(target.episode_ref.season),
+        "episode_number": str(target.episode_ref.episode),
+    }
+
+
+def opensubtitles_id_params(target: SubtitleSearchTarget, *, prefer_imdb: bool = False) -> dict[str, str]:
+    params: dict[str, str] = {}
+    imdb_id = clean_imdb_id_number(target.imdb_id)
+    if target.media_type == "tv" and target.episode_ref is not None:
+        if prefer_imdb and imdb_id:
+            params.update(opensubtitles_episode_params(target))
+            params["parent_imdb_id"] = imdb_id
+        elif target.tmdb_id:
+            params.update(opensubtitles_episode_params(target))
+            params["parent_tmdb_id"] = target.tmdb_id
+        elif imdb_id:
+            params.update(opensubtitles_episode_params(target))
+            params["parent_imdb_id"] = imdb_id
+        return params
+
+    if prefer_imdb and imdb_id:
+        params["imdb_id"] = imdb_id
+    elif target.tmdb_id:
+        params["tmdb_id"] = target.tmdb_id
+    elif imdb_id:
+        params["imdb_id"] = imdb_id
+    return params
+
+
+def opensubtitles_type_param(target: SubtitleSearchTarget | None) -> str:
+    if target is None:
+        return ""
+    if target.media_type == "movie":
+        return "movie"
+    if target.media_type == "tv" and target.episode_ref is not None:
+        return "episode"
+    return ""
+
+
+def opensubtitles_base_search_params(
+    language: str,
+    target: SubtitleSearchTarget | None = None,
+) -> dict[str, str]:
+    params = {
+        "languages": normalise_subtitle_language(language),
+        "order_by": "download_count",
+        "order_direction": "desc",
+        "per_page": "60",
+    }
+    type_param = opensubtitles_type_param(target)
+    if type_param:
+        params["type"] = type_param
+    return params
+
+
+def add_unique_search_params(
+    variants: list[dict[str, str]],
+    seen: set[tuple[tuple[str, str], ...]],
+    params: dict[str, str],
+) -> None:
+    cleaned = {key: value for key, value in params.items() if str(value).strip()}
+    key = tuple(sorted(cleaned.items()))
+    if key in seen:
+        return
+    variants.append(cleaned)
+    seen.add(key)
+
+
+def opensubtitles_query_candidates(target: SubtitleSearchTarget, query: str) -> list[str]:
+    explicit_query = re.sub(r"\s+", " ", str(query or "").strip())
+    base_candidates: list[str] = []
+    source_values = (explicit_query,) if explicit_query else (target.query, target.source_name, target.output_stem)
+    for value in source_values:
+        value = re.sub(r"\s+", " ", str(value or "").strip())
+        if value and value not in base_candidates:
+            base_candidates.append(value)
+
+    candidates: list[str] = []
+    if target.year:
+        for value in base_candidates:
+            if target.year not in value:
+                with_year = f"{value} {target.year}"
+                if with_year not in candidates:
+                    candidates.append(with_year)
+    for value in base_candidates:
+        if value not in candidates:
+            candidates.append(value)
+    return candidates
+
+
+def opensubtitles_search_param_variants(
+    target: SubtitleSearchTarget,
+    language: str,
+    query: str,
+) -> list[dict[str, str]]:
+    base = opensubtitles_base_search_params(language, target)
+    variants: list[dict[str, str]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    queries = opensubtitles_query_candidates(target, query)
+    episode_params = opensubtitles_episode_params(target)
+    has_id_variants = False
+
+    for id_params in (
+        opensubtitles_id_params(target),
+        opensubtitles_id_params(target, prefer_imdb=True),
+    ):
+          if not id_params:
+              continue
+          has_id_variants = True
+          for candidate in queries[:2]:
+              add_unique_search_params(variants, seen, {**base, **id_params, "query": candidate})
+          add_unique_search_params(variants, seen, {**base, **id_params})
+
+    query_limit = 2 if has_id_variants else len(queries)
+    for candidate in queries[:query_limit]:
+        if episode_params:
+            add_unique_search_params(variants, seen, {**base, **episode_params, "query": candidate})
+        add_unique_search_params(variants, seen, {**base, "query": candidate})
+    return variants
+
+
+def opensubtitles_fps_text(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return format_fps_value(number)
+
+
+def parse_fps_number(value: str) -> float | None:
+    raw = str(value or "").strip().lower().removesuffix("fps").strip().replace(",", ".")
+    if not raw:
+        return None
+    if "/" in raw:
+        numerator, denominator = raw.split("/", 1)
+        try:
+            return float(numerator) / float(denominator)
+        except (ValueError, ZeroDivisionError):
+            return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def subtitle_target_label(target: SubtitleSearchTarget) -> str:
+    if target.episode_ref is not None:
+        return episode_code(target.episode_ref)
+    return target.media_dir.name
+
+
+def subtitle_flags(result: SubtitleResult) -> str:
+    flags = []
+    if result.forced:
+        flags.append(ui_text("value_subtitle_flag_forced"))
+    if result.hearing_impaired:
+        flags.append(ui_text("value_subtitle_flag_hi"))
+    if result.from_trusted:
+        flags.append(ui_text("value_subtitle_flag_trusted"))
+    if result.machine_translated:
+        flags.append(ui_text("value_subtitle_flag_machine"))
+    if result.ai_translated:
+        flags.append(ui_text("value_subtitle_flag_ai"))
+    return ", ".join(flags)
+
+
+def subtitle_output_stem_for_dir(media_dir: Path, fallback: str) -> str:
+    for path in discover_media_track_paths(media_dir):
+        if media_kind_from_path(path) == "video":
+            return safe_filename_stem(path.stem)
+    return safe_filename_stem(fallback or media_dir.name or "subtitle")
+
+
+def subtitle_query_from_settings(settings: AppSettings) -> str:
+    return first_non_empty(
+        settings.mkv_title,
+        release_output_title_from_folder(settings.media_dir),
+        settings.output_path.stem,
+        settings.media_dir.name,
+    )
+
+
+def subtitle_lookup_metadata_from_tmdb(settings: AppSettings) -> SubtitleLookupMetadata:
+    if not settings.api_key:
+        return SubtitleLookupMetadata()
+    tmdb_id = settings.tmdb_id.strip()
+    if not tmdb_id.isdigit():
+        tmdb_id, _title, _found_year, _query = find_tmdb_match_from_folder(settings)
+    client = TMDBClient(settings.api_key)
+    details = client.get_json(
+        f"/{settings.media_type}/{tmdb_id}",
+        {
+            "language": "en-US",
+            "append_to_response": "external_ids",
+        },
+    )
+    return SubtitleLookupMetadata(
+        query=first_non_empty(detail_original_title(details), title_from_details(details)),
+        tmdb_id=tmdb_id,
+        imdb_id=imdb_id_from_details(details),
+        year=detail_release_date(details)[:4],
+    )
+
+
+def subtitle_target_from_settings(settings: AppSettings) -> SubtitleSearchTarget:
+    query = subtitle_query_from_settings(settings)
+    return SubtitleSearchTarget(
+        media_dir=settings.media_dir,
+        query=query,
+        output_stem=subtitle_output_stem_for_dir(settings.media_dir, query),
+        media_type=settings.media_type,
+        tmdb_id=settings.tmdb_id if settings.tmdb_id.isdigit() else "",
+        imdb_id="",
+        year="",
+        episode_ref=episode_ref_from_settings(settings),
+        source_name=settings.media_dir.name,
+    )
+
+
+def batch_subtitle_targets(
+    settings: AppSettings,
+    source_dir: Path,
+    tasks: list[BatchEpisodeTask],
+) -> list[SubtitleSearchTarget]:
+    targets: list[SubtitleSearchTarget] = []
+    for task in tasks:
+        query = task.source.stem
+        fallback = batch_episode_preview_title(source_dir, task)
+        targets.append(
+            SubtitleSearchTarget(
+                media_dir=task.extract_dir,
+                query=query,
+                output_stem=safe_filename_stem(task.source.stem or fallback),
+                media_type="tv",
+                tmdb_id=settings.tmdb_id if settings.tmdb_id.isdigit() else "",
+                imdb_id="",
+                year="",
+                episode_ref=task.episode_ref,
+                source_name=task.source.name,
+            )
+        )
+    return targets
+
+
+def subtitle_destination_path(
+    target: SubtitleSearchTarget,
+    result: SubtitleResult,
+) -> Path:
+    language = subtitle_filename_language_code(result.language)
+    parts = []
+    if result.forced:
+        parts.append("forced")
+    if result.hearing_impaired:
+        parts.append("sdh")
+    parts.append(language)
+    stem = ".".join(part for part in parts if part)
+    destination = target.media_dir / f"{stem}.srt"
+    counter = 2
+    while destination.exists():
+        destination = target.media_dir / f"{stem}.{counter}.srt"
+        counter += 1
+    return destination
+
+
+def extract_subtitle_payload(data: bytes, content_type: str) -> bytes:
+    if not data:
+        raise UserVisibleError(ui_text("error_subtitle_file_empty"))
+    if data.startswith(b"\x1f\x8b"):
+        data = gzip.decompress(data)
+    stream = io.BytesIO(data)
+    if zipfile.is_zipfile(stream) or "zip" in content_type.lower():
+        stream.seek(0)
+        with zipfile.ZipFile(stream) as archive:
+            candidates = [
+                name
+                for name in archive.namelist()
+                if Path(name).suffix.lower() in {".srt", ".ass", ".ssa", ".vtt", ".sub"}
+            ]
+            if not candidates:
+                raise UserVisibleError(ui_text("error_subtitle_file_empty"))
+            return archive.read(candidates[0])
+    return data
+
+
+def download_subtitle_result(
+    client: OpenSubtitlesClient,
+    result: SubtitleResult,
+    target: SubtitleSearchTarget,
+    token: str,
+    base_url: str,
+    out_fps: float | None,
+) -> Path:
+    if not target.media_dir.exists():
+        raise UserVisibleError(ui_text("error_subtitle_missing_target", path=target.media_dir))
+    destination = subtitle_destination_path(target, result)
+    link = client.download_link(result, token, base_url, destination.name, out_fps)
+    data, content_type = client.download_bytes(link)
+    subtitle_bytes = extract_subtitle_payload(data, content_type)
+    if not subtitle_bytes:
+        raise UserVisibleError(ui_text("error_subtitle_file_empty"))
+    destination.write_bytes(subtitle_bytes)
+    return destination
+
+
 def normalise_language(language: str) -> str:
     value = language.strip().lower() or "en"
     if "-" in value:
@@ -4681,8 +5664,10 @@ def download_optional_tmdb_image(
     image_format: str,
     log: Callable[[str], None],
     ready_message: str | None,
+    *,
+    replace_existing: bool = False,
 ) -> bool:
-    if destination.exists():
+    if destination.exists() and not replace_existing:
         log(ui_text("log_file_exists_skipped", name=destination.name))
         return False
     if image is None:
@@ -4946,9 +5931,11 @@ def ensure_tmdb_tags_file(
     language: str,
     log: Callable[[str], None],
     episode_ref: EpisodeRef | None = None,
+    *,
+    replace_existing: bool = False,
 ) -> None:
     tags_path = settings.media_dir / "tags.xml"
-    if tags_path.exists():
+    if tags_path.exists() and not replace_existing:
         log(ui_text("log_tags_exists"))
         return
 
@@ -4984,6 +5971,8 @@ def download_tmdb_assets(
     settings: AppSettings,
     log: Callable[[str], None],
     episode_ref: EpisodeRef | None = None,
+    *,
+    replace_existing: bool = False,
 ) -> str:
     client = TMDBClient(settings.api_key)
     language = normalise_language(settings.image_language)
@@ -5020,6 +6009,7 @@ def download_tmdb_assets(
         "JPEG",
         log,
         None,
+        replace_existing=replace_existing,
     )
     if cover_downloaded:
         try:
@@ -5028,7 +6018,7 @@ def download_tmdb_assets(
         except UserVisibleError as exc:
             log(ui_text("log_file_prepare_skipped", name=cover.name, error=exc))
     small_cover = settings.media_dir / "small_cover.jpg"
-    if cover.exists() and not small_cover.exists():
+    if cover.exists() and (replace_existing or not small_cover.exists()):
         try:
             make_small_cover(cover, small_cover)
             log(ui_text("log_small_cover_ready"))
@@ -5043,6 +6033,7 @@ def download_tmdb_assets(
         "JPEG",
         log,
         None,
+        replace_existing=replace_existing,
     )
     if cover_land_downloaded:
         try:
@@ -5051,7 +6042,7 @@ def download_tmdb_assets(
         except UserVisibleError as exc:
             log(ui_text("log_file_prepare_skipped", name=cover_land.name, error=exc))
     small_cover_land = settings.media_dir / "small_cover_land.jpg"
-    if cover_land.exists() and not small_cover_land.exists():
+    if cover_land.exists() and (replace_existing or not small_cover_land.exists()):
         try:
             make_small_cover(cover_land, small_cover_land)
             log(ui_text("log_small_cover_land_ready"))
@@ -5065,6 +6056,7 @@ def download_tmdb_assets(
         "PNG",
         log,
         ui_text("log_logo_ready"),
+        replace_existing=replace_existing,
     )
 
     ensure_tmdb_tags_file(
@@ -5075,6 +6067,7 @@ def download_tmdb_assets(
         tag_language,
         log,
         episode_ref=episode_ref if media_type == "tv" else None,
+        replace_existing=replace_existing,
     )
 
     if media_type == "tv" and episode_ref is not None:
@@ -6416,12 +7409,40 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.template_var = tk.StringVar(value="")
         self.folder_var = tk.StringVar()
         self.output_var = tk.StringVar()
+        self.output_name_extra_var = tk.StringVar(
+            value=self.saved_preferences.get("output_name_extra", "")
+        )
+        self.current_output_name_extra = self.output_name_extra_var.get()
         self.extract_source_var = tk.StringVar()
         self.extract_output_dir_var = tk.StringVar()
         self.extract_items: dict[str, ExtractItem] = {}
         self.api_key_var = tk.StringVar(
             value=os.environ.get("TMDB_API_KEY", self.saved_preferences.get("api_key", ""))
         )
+        self.subtitle_api_key_var = tk.StringVar(
+            value=os.environ.get(
+                "OPENSUBTITLES_API_KEY",
+                self.saved_preferences.get("opensubtitles_api_key", ""),
+            )
+        )
+        self.subtitle_username_var = tk.StringVar(
+            value=os.environ.get(
+                "OPENSUBTITLES_USERNAME",
+                self.saved_preferences.get("opensubtitles_username", ""),
+            )
+        )
+        self.subtitle_password_var = tk.StringVar(
+            value=os.environ.get(
+                "OPENSUBTITLES_PASSWORD",
+                self.saved_preferences.get("opensubtitles_password", ""),
+            )
+        )
+        self.subtitle_language_var = tk.StringVar(
+            value=self.saved_preferences.get("subtitle_download_language", "")
+        )
+        self.subtitle_query_var = tk.StringVar()
+        self.subtitle_status_var = tk.StringVar()
+        self.subtitle_show_password_var = tk.BooleanVar(value=False)
         self.tmdb_id_var = tk.StringVar()
         self.media_type_var = tk.StringVar(
             value=normalise_tmdb_media_type(self.saved_preferences.get("media_type", "movie"))
@@ -6473,6 +7494,16 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.audio_adjust_window: tk.Toplevel | None = None
         self.audio_adjust_apply_button: ttk.Button | None = None
         self.audio_adjust_rows: list[dict[str, Any]] = []
+        self.subtitle_window: tk.Toplevel | None = None
+        self.subtitle_results_tree: ttk.Treeview | None = None
+        self.subtitle_search_button: ttk.Button | None = None
+        self.subtitle_download_button: ttk.Button | None = None
+        self.subtitle_best_button: ttk.Button | None = None
+        self.subtitle_password_entry: ttk.Entry | None = None
+        self.subtitle_targets: list[SubtitleSearchTarget] = []
+        self.subtitle_results: dict[str, SubtitleResult] = {}
+        self.subtitle_downloaded_paths: dict[str, Path] = {}
+        self.subtitle_batch_mode = False
         self.mux_tracks_window: tk.Toplevel | None = None
         self.mux_tracks_tree: ttk.Treeview | None = None
         self.mux_tracks_toggle_button: ttk.Button | None = None
@@ -6507,6 +7538,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.third_party_button: ttk.Button | None = None
         self.app_update_button: ttk.Button | None = None
         self.download_before_mux_checkbutton: ttk.Checkbutton | None = None
+        self.subtitle_button: ttk.Button | None = None
         self.media_type_combobox: ttk.Combobox | None = None
         self.progress_bar: ttk.Progressbar | None = None
         self.log_window: tk.Toplevel | None = None
@@ -6516,6 +7548,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self._build_ui()
         self.show_centered()
         self.api_key_var.trace_add("write", self.on_api_key_changed)
+        self.output_name_extra_var.trace_add("write", self.on_output_name_extra_changed)
         self.refresh_tmdb_media_type_display()
         self.update_download_before_mux_state()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -6621,6 +7654,46 @@ class MkvCreatorApp(TK_ROOT_CLASS):
     def tr(self, key: str, **values: Any) -> str:
         return ui_text(key, **values)
 
+    def dialog_parent(self) -> tk.Tk | tk.Toplevel:
+        try:
+            focused = self.focus_get()
+            if focused is not None and focused.winfo_exists():
+                top = focused.winfo_toplevel()
+                if isinstance(top, (tk.Tk, tk.Toplevel)) and top.winfo_exists():
+                    return top
+        except tk.TclError:
+            pass
+
+        for window in (
+            self.subtitle_window,
+            self.audio_adjust_window,
+            self.mux_tracks_window,
+            self.extract_window,
+            self.log_window,
+        ):
+            try:
+                if window is not None and window.winfo_exists() and window.winfo_viewable():
+                    return window
+            except tk.TclError:
+                continue
+        return self
+
+    def show_error(self, title: str, message: str) -> None:
+        parent = self.dialog_parent()
+        try:
+            parent.lift()
+        except tk.TclError:
+            pass
+        messagebox.showerror(title, message, parent=parent)
+
+    def show_info(self, title: str, message: str) -> None:
+        parent = self.dialog_parent()
+        try:
+            parent.lift()
+        except tk.TclError:
+            pass
+        messagebox.showinfo(title, message, parent=parent)
+
     def localize_widget(
         self,
         widget: tk.Widget,
@@ -6720,6 +7793,9 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         if self.mux_tracks_window is not None and self.mux_tracks_window.winfo_exists():
             self.mux_tracks_window.title(f"{APP_NAME} - {self.tr('window_mux_tracks_title')}")
             self.update_mux_track_toggle_button_text()
+        if self.subtitle_window is not None and self.subtitle_window.winfo_exists():
+            self.subtitle_window.title(f"{APP_NAME} - {self.tr('window_subtitle_download_title')}")
+            self.set_subtitle_results(list(self.subtitle_results.values()))
         if self.log_window is not None and self.log_window.winfo_exists():
             self.log_window.title(self.tr("window_log_title", app=APP_NAME))
 
@@ -7204,6 +8280,26 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self._path_row(form, row, "path_output_mkv", self.output_var, self.browse_output)
         row += 1
 
+        self.localize_widget(
+            ttk.Label(form),
+            "label_output_name_extra",
+        ).grid(row=row, column=0, sticky="w", pady=5)
+        name_row = ttk.Frame(form)
+        name_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
+        name_row.columnconfigure(0, weight=1)
+        name_row.columnconfigure(2, weight=2)
+        ttk.Entry(name_row, textvariable=self.output_name_extra_var).grid(row=0, column=0, sticky="ew")
+        self.localize_widget(
+            ttk.Label(name_row),
+            "label_mkv_title",
+        ).grid(row=0, column=1, sticky="w", padx=(16, 8))
+        ttk.Entry(name_row, textvariable=self.title_var).grid(
+            row=0,
+            column=2,
+            sticky="ew",
+        )
+        row += 1
+
         ttk.Label(form, text="TMDB API key").grid(row=row, column=0, sticky="w", pady=5)
         self.api_key_entry = ttk.Entry(form, textvariable=self.api_key_var, show="*")
         self.api_key_entry.grid(row=row, column=1, sticky="ew", padx=8, pady=5)
@@ -7249,13 +8345,6 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.find_tmdb_button = ttk.Button(tmdb_row, command=self.start_find_tmdb_id)
         self.localize_widget(self.find_tmdb_button, "button_find_id")
         self.find_tmdb_button.grid(row=0, column=7, padx=(8, 0))
-        row += 1
-
-        self.localize_widget(
-            ttk.Label(form),
-            "label_mkv_title",
-        ).grid(row=row, column=0, sticky="w", pady=5)
-        ttk.Entry(form, textvariable=self.title_var).grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
         row += 1
 
         ttk.Label(form, text="Video FPS").grid(row=row, column=0, sticky="w", pady=5)
@@ -7362,7 +8451,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
 
         actions = ttk.Frame(outer, style="Toolbar.TFrame")
         actions.grid(row=3, column=0, sticky="ew", pady=(0, 14))
-        for index in range(5):
+        for index in range(6):
             actions.columnconfigure(index, weight=1)
 
         self.scan_button = ttk.Button(actions, command=self.open_audio_adjust_window)
@@ -7371,23 +8460,26 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.download_button = ttk.Button(actions, command=self.start_download)
         self.localize_widget(self.download_button, "button_download_assets")
         self.download_button.grid(row=0, column=1, sticky="ew", padx=8)
+        self.subtitle_button = ttk.Button(actions, command=self.open_subtitle_download_window)
+        self.localize_widget(self.subtitle_button, "button_download_subtitles")
+        self.subtitle_button.grid(row=0, column=2, sticky="ew", padx=8)
         self.config_button = ttk.Button(actions, command=self.start_write_config)
         self.localize_widget(self.config_button, "button_write_config")
-        self.config_button.grid(row=0, column=2, sticky="ew", padx=8)
+        self.config_button.grid(row=0, column=3, sticky="ew", padx=8)
         self.mux_button = ttk.Button(
             actions,
             command=self.start_mux,
             style="Accent.TButton",
         )
         self.localize_widget(self.mux_button, "button_create_mkv")
-        self.mux_button.grid(row=0, column=3, sticky="ew", padx=8)
+        self.mux_button.grid(row=0, column=4, sticky="ew", padx=8)
         self.localize_widget(
             ttk.Button(
                 actions,
                 command=self.open_log_window,
             ),
             "button_show_log",
-        ).grid(row=0, column=4, sticky="ew", padx=(8, 0))
+        ).grid(row=0, column=5, sticky="ew", padx=(8, 0))
 
         self.progress_bar = ttk.Progressbar(
             actions,
@@ -7395,13 +8487,13 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             maximum=100,
             mode="determinate",
         )
-        self.progress_bar.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(10, 0))
+        self.progress_bar.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(10, 0))
         ttk.Label(
             actions,
             textvariable=self.progress_status_var,
             style="Root.TLabel",
             anchor="w",
-        ).grid(row=2, column=0, columnspan=5, sticky="ew", pady=(4, 0))
+        ).grid(row=2, column=0, columnspan=6, sticky="ew", pady=(4, 0))
 
         extract = self.make_section(outer, 4, "section_extract")
 
@@ -7502,6 +8594,21 @@ class MkvCreatorApp(TK_ROOT_CLASS):
     def on_api_key_changed(self, *_args: str) -> None:
         self.update_download_before_mux_state()
 
+    def output_path_with_current_name_extra(self, output_path: Path) -> Path:
+        return output_path_with_name_extra(output_path, self.output_name_extra_var.get())
+
+    def on_output_name_extra_changed(self, *_args: str) -> None:
+        output_raw = self.output_var.get().strip()
+        if output_raw:
+            output_path = Path(output_raw).expanduser()
+            output_path = output_path_without_name_extra(
+                output_path,
+                self.current_output_name_extra,
+            )
+            output_path = self.output_path_with_current_name_extra(output_path)
+            self.output_var.set(str(output_path))
+        self.current_output_name_extra = self.output_name_extra_var.get()
+
     def update_download_before_mux_state(self) -> None:
         if self.download_before_mux_checkbutton is None:
             return
@@ -7518,11 +8625,16 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 {
                     "ui_language": self.ui_language_var.get(),
                     "api_key": self.api_key_var.get().strip(),
+                    "opensubtitles_api_key": self.subtitle_api_key_var.get().strip(),
+                    "opensubtitles_username": self.subtitle_username_var.get().strip(),
+                    "opensubtitles_password": self.subtitle_password_var.get(),
+                    "subtitle_download_language": self.subtitle_language_var.get().strip(),
                     "media_type": normalise_tmdb_media_type(self.media_type_var.get()),
                     "image_language": self.language_var.get().strip() or "en",
                     "tag_language": self.tag_language_var.get().strip()
                     or self.language_var.get().strip()
                     or "en",
+                    "output_name_extra": self.output_name_extra_var.get(),
                     "video_fps": self.video_fps_var.get().strip(),
                     "audio_language_order": self.audio_language_order_var.get().strip(),
                     "subtitle_language_order": self.subtitle_language_order_var.get().strip(),
@@ -7568,7 +8680,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     self.title_var.set(template_title(config))
                 self._set_default_output()
             except UserVisibleError as exc:
-                messagebox.showerror(self.tr("dialog_config_error"), str(exc))
+                self.show_error(self.tr("dialog_config_error"), str(exc))
 
     def browse_folder(self) -> None:
         initial_dir = self.folder_var.get().strip() or self.last_mkv_dir or str(APP_DIR)
@@ -7619,7 +8731,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             )
 
         if path:
-            self.output_var.set(path)
+            self.output_var.set(str(self.output_path_with_current_name_extra(Path(path))))
             self.remember_mkv_dir(Path(path))
 
     def browse_extract_source(self) -> None:
@@ -7734,6 +8846,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             output_path = default_output_path(config, media_dir)
         except UserVisibleError:
             output_path = media_dir / default_output_name(base_template_config(), media_dir)
+        output_path = self.output_path_with_current_name_extra(output_path)
         self.output_var.set(str(output_path))
 
     def collect_settings(self, *, require_tmdb: bool = False) -> AppSettings:
@@ -7742,6 +8855,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         folder_raw = self.folder_var.get().strip()
         media_dir = Path(folder_raw).expanduser()
         output_raw = self.output_var.get().strip()
+        output_name_extra = self.output_name_extra_var.get()
         api_key = self.api_key_var.get().strip()
         tmdb_id = self.tmdb_id_var.get().strip()
         media_type = self.tmdb_media_type_from_display(self.media_type_display_var.get())
@@ -7770,10 +8884,12 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         else:
             config = load_or_create_template_config(template_path, media_dir)
             output_path = default_output_path(config, media_dir)
+            output_path = output_path_with_name_extra(output_path, output_name_extra)
             self.log_queue.put(
                 ("log", self.tr("log_output_default_used", path=output_path))
             )
             self.output_var.set(str(output_path))
+        output_path = output_path_with_name_extra(output_path, output_name_extra)
         if media_type not in {"movie", "tv"}:
             raise UserVisibleError(ui_text("error_tmdb_media_type"))
         normalize_video_fps(video_fps)
@@ -7789,6 +8905,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             template_path=template_path,
             media_dir=media_dir,
             output_path=output_path,
+            output_name_extra=output_name_extra,
             api_key=api_key,
             tmdb_id=tmdb_id,
             media_type=media_type,
@@ -7944,7 +9061,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         try:
             rows = self.mux_track_window_rows(settings)
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
         if self.mux_tracks_window is not None:
@@ -8259,7 +9376,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".xml", ".txt"}
                     else "error_unsupported_track_type"
                 )
-                messagebox.showerror(
+                self.show_error(
                     self.tr("dialog_missing_info"),
                     self.tr(message_key, name=path.name),
                 )
@@ -8306,7 +9423,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         iid = selected[0] if selected else self.mux_tracks_selected_iid
         row = self.mux_tracks_rows_by_iid.get(iid or "")
         if not iid or not self.mux_track_append_supported(row):
-            messagebox.showinfo(
+            self.show_info(
                 self.tr("dialog_missing_info"),
                 self.tr("error_append_audio_selected"),
             )
@@ -8340,7 +9457,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             return
         row = self.mux_tracks_rows_by_iid.get(iid)
         if not self.mux_track_append_supported(row):
-            messagebox.showinfo(
+            self.show_info(
                 self.tr("dialog_missing_info"),
                 self.tr("error_append_audio_selected"),
             )
@@ -8362,7 +9479,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             try:
                 normalise_append_paths_for_track(row.path, [path])
             except UserVisibleError as exc:
-                messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+                self.show_error(self.tr("dialog_missing_info"), str(exc))
                 continue
             append_paths.append(path)
             seen.add(key)
@@ -8381,7 +9498,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         iid = selected[0] if selected else self.mux_tracks_selected_iid
         row = self.mux_tracks_rows_by_iid.get(iid or "")
         if not iid or not self.mux_track_append_supported(row):
-            messagebox.showinfo(
+            self.show_info(
                 self.tr("dialog_missing_info"),
                 self.tr("error_append_audio_selected"),
             )
@@ -8550,7 +9667,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             )
         except UserVisibleError as exc:
             if show_errors:
-                messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+                self.show_error(self.tr("dialog_missing_info"), str(exc))
             return False
         row.language = language
         row.delay = delay
@@ -8688,7 +9805,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             if source.exists():
                 source = source.resolve()
             if not source.is_file():
-                messagebox.showerror(
+                self.show_error(
                     self.tr("dialog_missing_info"),
                     self.tr("error_track_file_not_found", path=source),
                 )
@@ -8708,7 +9825,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
             except OSError as exc:
-                messagebox.showerror(
+                self.show_error(
                     self.tr("dialog_error_title"),
                     self.tr("error_file_prepare_failed", name=target.name, error=exc),
                 )
@@ -8755,7 +9872,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         try:
             settings = self.collect_settings(require_tmdb=download_missing_assets)
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
         ordered_rows = [
             self.mux_tracks_rows_by_iid[iid]
@@ -8909,6 +10026,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             template_path=template_path,
             media_dir=source_dir,
             output_path=source_dir / "output.mkv",
+            output_name_extra=self.output_name_extra_var.get(),
             api_key=api_key,
             tmdb_id=tmdb_id,
             media_type=media_type,
@@ -8930,6 +10048,518 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         )
         return settings, source_dir, extract_root, tasks
 
+    def collect_batch_subtitle_download_settings(
+        self,
+    ) -> tuple[AppSettings, Path, Path, list[BatchEpisodeTask]] | None:
+        source_raw = self.extract_source_var.get().strip()
+        if not source_raw:
+            return None
+        source_dir = Path(source_raw).expanduser()
+        if not source_dir.exists() or not source_dir.is_dir():
+            return None
+        source_dir = source_dir.resolve()
+
+        output_raw = self.extract_output_dir_var.get().strip()
+        extract_root = (
+            Path(output_raw).expanduser()
+            if output_raw
+            else source_dir.parent / f"{source_dir.name}_tracks"
+        ).resolve()
+
+        folder_raw = self.folder_var.get().strip()
+        if folder_raw:
+            media_dir = Path(folder_raw).expanduser().resolve()
+            if media_dir != extract_root and not path_is_relative_to(media_dir, extract_root):
+                return None
+
+        return self.collect_batch_folder_settings(require_mux=True)
+
+    def default_subtitle_download_language(self) -> str:
+        current = self.subtitle_language_var.get().strip()
+        if current:
+            return normalise_subtitle_language(current)
+        subtitle_order = parse_language_order(self.subtitle_language_order_var.get())
+        if subtitle_order:
+            return subtitle_order[0]
+        for value in (self.tag_language_var.get(), self.language_var.get()):
+            if value.strip():
+                return normalise_subtitle_language(value)
+        return "tr" if self.ui_language_var.get() == "tr" else "en"
+
+    def open_subtitle_download_window(self) -> None:
+        try:
+            batch_settings = self.collect_batch_subtitle_download_settings()
+            if batch_settings is None:
+                settings = self.collect_settings()
+                metadata = self.subtitle_lookup_metadata(settings)
+                targets = [subtitle_target_from_settings(settings)]
+                targets = [self.apply_subtitle_lookup_metadata(targets[0], metadata)]
+                batch_mode = False
+                target_text = self.tr("subtitle_target_single", folder=settings.media_dir)
+                query = metadata.query or targets[0].query
+            else:
+                settings, source_dir, _extract_root, tasks = batch_settings
+                metadata = self.subtitle_lookup_metadata(settings)
+                targets = batch_subtitle_targets(settings, source_dir, tasks)
+                targets = [self.apply_subtitle_lookup_metadata(target, metadata) for target in targets]
+                batch_mode = True
+                target_text = self.tr("subtitle_target_batch", count=len(targets))
+                query = metadata.query or (batch_episode_series_title(source_dir, tasks[0].source) if tasks else "")
+            self.save_preferences()
+        except UserVisibleError as exc:
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
+            return
+
+        self.subtitle_targets = targets
+        self.subtitle_results = {}
+        self.subtitle_downloaded_paths = {}
+        self.subtitle_batch_mode = batch_mode
+        self.subtitle_language_var.set(self.default_subtitle_download_language())
+        self.subtitle_query_var.set(query)
+        self.subtitle_status_var.set(self.tr("label_subtitle_status_ready"))
+
+        if self.subtitle_window is not None:
+            try:
+                if self.subtitle_window.winfo_exists():
+                    self.subtitle_window.destroy()
+            except tk.TclError:
+                pass
+
+        window = tk.Toplevel(self)
+        self.subtitle_window = window
+        window.configure(background=UI_COLORS["window"])
+        window.title(f"{APP_NAME} - {self.tr('window_subtitle_download_title')}")
+        self.apply_window_icon(window)
+        window.geometry("1280x740")
+        window.minsize(1080, 600)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(1, weight=1)
+        window.protocol("WM_DELETE_WINDOW", self.close_subtitle_window)
+
+        form = ttk.Frame(window, padding=(18, 18, 18, 8), style="Root.TFrame")
+        form.grid(row=0, column=0, sticky="ew")
+        form.columnconfigure(1, weight=1)
+        form.columnconfigure(3, weight=1)
+
+        self.localize_widget(ttk.Label(form), "label_subtitle_api_key").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=4,
+        )
+        ttk.Entry(form, textvariable=self.subtitle_api_key_var, show="*").grid(
+            row=0,
+            column=1,
+            columnspan=3,
+            sticky="ew",
+            padx=8,
+            pady=4,
+        )
+
+        self.localize_widget(ttk.Label(form), "label_subtitle_username").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=4,
+        )
+        ttk.Entry(form, textvariable=self.subtitle_username_var).grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            padx=8,
+            pady=4,
+        )
+        self.localize_widget(ttk.Label(form), "label_subtitle_password").grid(
+            row=1,
+            column=2,
+            sticky="w",
+            pady=4,
+        )
+        self.subtitle_password_entry = ttk.Entry(
+            form,
+            textvariable=self.subtitle_password_var,
+            show="",
+        )
+        self.subtitle_password_entry.grid(row=1, column=3, sticky="ew", padx=8, pady=4)
+        self.toggle_subtitle_password_visibility()
+        self.localize_widget(
+            ttk.Checkbutton(
+                form,
+                variable=self.subtitle_show_password_var,
+                command=self.toggle_subtitle_password_visibility,
+            ),
+            "button_show",
+        ).grid(row=1, column=4, sticky="w", pady=4)
+
+        self.localize_widget(ttk.Label(form), "label_subtitle_language").grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=4,
+        )
+        ttk.Combobox(
+            form,
+            textvariable=self.subtitle_language_var,
+            values=SUBTITLE_LANGUAGE_CHOICES,
+        ).grid(row=2, column=1, sticky="ew", padx=8, pady=4)
+        self.localize_widget(ttk.Label(form), "label_subtitle_query").grid(
+            row=2,
+            column=2,
+            sticky="w",
+            pady=4,
+        )
+        ttk.Entry(form, textvariable=self.subtitle_query_var).grid(
+            row=2,
+            column=3,
+            sticky="ew",
+            padx=8,
+            pady=4,
+        )
+        self.subtitle_search_button = ttk.Button(form, command=self.start_subtitle_search)
+        self.localize_widget(self.subtitle_search_button, "button_search_subtitles")
+        self.subtitle_search_button.grid(row=2, column=4, sticky="ew", pady=4)
+
+        self.localize_widget(ttk.Label(form), "label_subtitle_target").grid(
+            row=3,
+            column=0,
+            sticky="w",
+            pady=4,
+        )
+        ttk.Label(
+            form,
+            text=target_text,
+            style="Root.TLabel",
+            wraplength=1020,
+            justify="left",
+        ).grid(row=3, column=1, columnspan=4, sticky="ew", padx=8, pady=4)
+        ttk.Label(
+            form,
+            textvariable=self.subtitle_status_var,
+            style="Root.TLabel",
+            foreground=UI_COLORS["muted"],
+        ).grid(row=4, column=1, columnspan=4, sticky="ew", padx=8, pady=(0, 4))
+
+        frame = ttk.Frame(window, padding=(18, 0, 18, 8), style="Root.TFrame")
+        frame.grid(row=1, column=0, sticky="nsew")
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(
+            frame,
+            columns=("status", "target", "language", "release", "fps", "flags", "downloads", "file"),
+            show="headings",
+            height=16,
+            selectmode="extended",
+        )
+        self.localize_tree_heading(tree, "status", "heading_subtitle_status")
+        self.localize_tree_heading(tree, "target", "heading_subtitle_target")
+        self.localize_tree_heading(tree, "language", "heading_subtitle_language")
+        self.localize_tree_heading(tree, "release", "heading_subtitle_release")
+        self.localize_tree_heading(tree, "fps", "heading_subtitle_fps")
+        self.localize_tree_heading(tree, "flags", "heading_subtitle_flags")
+        self.localize_tree_heading(tree, "downloads", "heading_subtitle_downloads")
+        self.localize_tree_heading(tree, "file", "heading_subtitle_file")
+        tree.column("status", width=115, minwidth=100, stretch=False, anchor="center")
+        tree.column("target", width=105, minwidth=85, stretch=False)
+        tree.column("language", width=90, minwidth=80, stretch=False, anchor="center")
+        tree.column("release", width=470, minwidth=300, stretch=True)
+        tree.column("fps", width=85, minwidth=70, stretch=False, anchor="center")
+        tree.column("flags", width=170, minwidth=130, stretch=False)
+        tree.column("downloads", width=115, minwidth=100, stretch=False, anchor="e")
+        tree.column("file", width=320, minwidth=220, stretch=True)
+        tree.tag_configure("downloaded", background="#dcfce7")
+        tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+        self.subtitle_results_tree = tree
+
+        actions = ttk.Frame(window, padding=(18, 8, 18, 18), style="Root.TFrame")
+        actions.grid(row=2, column=0, sticky="ew")
+        actions.columnconfigure(0, weight=1)
+        actions.columnconfigure(1, weight=1)
+        actions.columnconfigure(2, weight=1)
+        self.subtitle_best_button = ttk.Button(
+            actions,
+            command=self.start_subtitle_download_best,
+        )
+        self.localize_widget(self.subtitle_best_button, "button_download_best_subtitles")
+        self.subtitle_best_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.subtitle_download_button = ttk.Button(
+            actions,
+            command=self.start_subtitle_download_selected,
+            style="Accent.TButton",
+        )
+        self.localize_widget(self.subtitle_download_button, "button_download_selected_subtitle")
+        self.subtitle_download_button.grid(row=0, column=1, sticky="ew", padx=8)
+        self.localize_widget(
+            ttk.Button(actions, command=self.close_subtitle_window),
+            "button_cancel",
+        ).grid(row=0, column=2, sticky="ew", padx=(8, 0))
+
+        self.center_window(window, self)
+        window.focus_set()
+
+    def subtitle_lookup_metadata(self, settings: AppSettings) -> SubtitleLookupMetadata:
+        if not settings.api_key:
+            return SubtitleLookupMetadata()
+        try:
+            metadata = subtitle_lookup_metadata_from_tmdb(settings)
+        except UserVisibleError as exc:
+            self.queue_log(self.tr("log_tmdb_id_auto_failed", error=exc))
+            return SubtitleLookupMetadata()
+        if metadata.tmdb_id:
+            settings.tmdb_id = metadata.tmdb_id
+            self.tmdb_id_var.set(metadata.tmdb_id)
+        return metadata
+
+    def apply_subtitle_lookup_metadata(
+        self,
+        target: SubtitleSearchTarget,
+        metadata: SubtitleLookupMetadata,
+    ) -> SubtitleSearchTarget:
+        if not any((metadata.query, metadata.tmdb_id, metadata.imdb_id, metadata.year)):
+            return target
+        return replace(
+            target,
+            query=metadata.query or target.query,
+            tmdb_id=metadata.tmdb_id or target.tmdb_id,
+            imdb_id=metadata.imdb_id or target.imdb_id,
+            year=metadata.year or target.year,
+        )
+
+    def close_subtitle_window(self) -> None:
+        if self.subtitle_window is not None:
+            try:
+                if self.subtitle_window.winfo_exists():
+                    self.subtitle_window.destroy()
+            except tk.TclError:
+                pass
+        self.subtitle_window = None
+        self.subtitle_results_tree = None
+        self.subtitle_search_button = None
+        self.subtitle_download_button = None
+        self.subtitle_best_button = None
+        self.subtitle_password_entry = None
+        self.subtitle_results = {}
+        self.subtitle_downloaded_paths = {}
+
+    def toggle_subtitle_password_visibility(self) -> None:
+        if self.subtitle_password_entry is None:
+            return
+        self.subtitle_password_entry.configure(
+            show="" if self.subtitle_show_password_var.get() else "*"
+        )
+
+    def subtitle_search_query_for_target(
+        self,
+        target: SubtitleSearchTarget,
+        query_override: str,
+    ) -> str:
+        if not self.subtitle_batch_mode:
+            return query_override or target.query
+        if query_override and target.episode_ref is not None:
+            return f"{query_override} {episode_code(target.episode_ref)}"
+        return query_override or target.query
+
+    def start_subtitle_search(self) -> None:
+        api_key = self.subtitle_api_key_var.get().strip()
+        if not api_key:
+            self.show_error(
+                self.tr("dialog_missing_info"),
+                self.tr("error_subtitle_api_required"),
+            )
+            return
+        targets = list(self.subtitle_targets)
+        if not targets:
+            self.show_error(
+                self.tr("dialog_missing_info"),
+                self.tr("error_track_folder_not_selected"),
+            )
+            return
+        language = normalise_subtitle_language(self.subtitle_language_var.get())
+        self.subtitle_language_var.set(language)
+        query_override = self.subtitle_query_var.get().strip()
+        self.subtitle_downloaded_paths = {}
+        self.subtitle_status_var.set(self.tr("status_searching_subtitles"))
+        self.save_preferences()
+
+        def work() -> None:
+            client = OpenSubtitlesClient(api_key)
+            results: list[SubtitleResult] = []
+            per_target_limit = 8 if len(targets) > 1 else 50
+            for index, target in enumerate(targets):
+                self.check_cancelled()
+                query = self.subtitle_search_query_for_target(target, query_override)
+                found = client.search(
+                    target,
+                    index,
+                    language,
+                    query,
+                    limit=per_target_limit,
+                )
+                if not found:
+                    self.queue_log(
+                        self.tr(
+                            "log_subtitle_no_result_for_target",
+                            target=subtitle_target_label(target),
+                        )
+                    )
+                results.extend(found)
+            self.log_queue.put(("set_subtitle_results", results))
+            if not results:
+                self.log_queue.put(("set_subtitle_status", ui_text("label_subtitle_status_no_results")))
+                self.queue_log(self.tr("error_subtitle_no_results"))
+                return
+            self.log_queue.put(("set_subtitle_status", ui_text("log_subtitle_results_found", count=len(results))))
+            self.queue_log(self.tr("log_subtitle_results_found", count=len(results)))
+
+        self.run_background(work, self.tr("status_searching_subtitles"))
+
+    def set_subtitle_results(self, results: list[SubtitleResult]) -> None:
+        self.subtitle_results = {result.key: result for result in results}
+        if self.subtitle_results_tree is None:
+            return
+        for row_id in self.subtitle_results_tree.get_children():
+            self.subtitle_results_tree.delete(row_id)
+        for result in results:
+            target = self.subtitle_targets[result.target_index]
+            self.subtitle_results_tree.insert(
+                "",
+                "end",
+                iid=result.key,
+                values=(
+                    self.subtitle_download_status(result.key),
+                    subtitle_target_label(target),
+                    subtitle_filename_language_code(result.language),
+                    result.release,
+                    result.fps,
+                    subtitle_flags(result),
+                    result.downloads,
+                    result.file_name,
+                ),
+                tags=(("downloaded",) if result.key in self.subtitle_downloaded_paths else ()),
+            )
+
+    def subtitle_download_status(self, result_key: str) -> str:
+        return (
+            self.tr("value_subtitle_downloaded")
+            if result_key in self.subtitle_downloaded_paths
+            else ""
+        )
+
+    def mark_subtitle_result_downloaded(self, result_key: str, destination: Path) -> None:
+        self.subtitle_downloaded_paths[result_key] = destination
+        if self.subtitle_results_tree is None:
+            return
+        if not self.subtitle_results_tree.exists(result_key):
+            return
+        values = list(self.subtitle_results_tree.item(result_key, "values"))
+        if not values:
+            return
+        values[0] = self.subtitle_download_status(result_key)
+        self.subtitle_results_tree.item(result_key, values=values, tags=("downloaded",))
+
+    def selected_subtitle_results(self) -> list[SubtitleResult]:
+        if self.subtitle_results_tree is None:
+            return []
+        row_ids = list(self.subtitle_results_tree.selection())
+        if not row_ids:
+            focused = self.subtitle_results_tree.focus()
+            if focused:
+                row_ids = [focused]
+        return [
+            self.subtitle_results[row_id]
+            for row_id in row_ids
+            if row_id in self.subtitle_results
+        ]
+
+    def not_downloaded_subtitle_results(
+        self,
+        results: list[SubtitleResult],
+    ) -> list[SubtitleResult]:
+        return [
+            result
+            for result in results
+            if result.key not in self.subtitle_downloaded_paths
+        ]
+
+    def best_subtitle_results(self) -> list[SubtitleResult]:
+        selected: dict[int, SubtitleResult] = {}
+        for result in self.subtitle_results.values():
+            if result.key in self.subtitle_downloaded_paths:
+                continue
+            selected.setdefault(result.target_index, result)
+        return list(selected.values())
+
+    def start_subtitle_download_selected(self) -> None:
+        self.start_subtitle_download(self.selected_subtitle_results())
+
+    def start_subtitle_download_best(self) -> None:
+        self.start_subtitle_download(self.best_subtitle_results())
+
+    def start_subtitle_download(self, results: list[SubtitleResult]) -> None:
+        if not results:
+            self.show_error(
+                self.tr("dialog_missing_info"),
+                self.tr("error_subtitle_no_selection"),
+            )
+            return
+        results = self.not_downloaded_subtitle_results(results)
+        if not results:
+            self.show_info(
+                self.tr("dialog_missing_info"),
+                self.tr("error_subtitle_all_selected_downloaded"),
+            )
+            return
+        api_key = self.subtitle_api_key_var.get().strip()
+        username = self.subtitle_username_var.get().strip()
+        password = self.subtitle_password_var.get()
+        if not api_key:
+            self.show_error(
+                self.tr("dialog_missing_info"),
+                self.tr("error_subtitle_api_required"),
+            )
+            return
+        if not username or not password:
+            self.show_error(
+                self.tr("dialog_missing_info"),
+                self.tr("error_subtitle_credentials_required"),
+            )
+            return
+        try:
+            normalize_video_fps(self.video_fps_var.get().strip())
+        except UserVisibleError as exc:
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
+            return
+        out_fps = parse_fps_number(self.video_fps_var.get())
+        self.save_preferences()
+
+        def work() -> None:
+            client = OpenSubtitlesClient(api_key, username, password)
+            token, base_url = client.login()
+            count = 0
+            for result in results:
+                self.check_cancelled()
+                if result.key in self.subtitle_downloaded_paths:
+                    continue
+                target = self.subtitle_targets[result.target_index]
+                destination = download_subtitle_result(
+                    client,
+                    result,
+                    target,
+                    token,
+                    base_url,
+                    out_fps,
+                )
+                count += 1
+                self.queue_log(self.tr("log_subtitle_downloaded", path=destination))
+                self.log_queue.put(("mark_subtitle_downloaded", (result.key, destination)))
+            if len(self.subtitle_targets) > 1:
+                self.queue_log(self.tr("log_batch_subtitles_complete", count=count))
+
+        self.run_background(work, self.tr("status_downloading_subtitles"))
+
     def open_audio_adjust_window(self) -> None:
         try:
             settings = self.collect_settings()
@@ -8940,12 +10570,12 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 settings.include_extra_subtitles,
             )
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
         audio_items = [item for item in items if track_type_value(item) == 0]
         if not audio_items:
-            messagebox.showinfo(self.tr("dialog_missing_info"), self.tr("error_audio_adjust_none"))
+            self.show_info(self.tr("dialog_missing_info"), self.tr("error_audio_adjust_none"))
             return
 
         if self.audio_adjust_window is not None:
@@ -9160,7 +10790,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             if self.current_operation == "audio_adjust":
                 self.cancel_current_operation()
             else:
-                messagebox.showinfo(
+                self.show_info(
                     self.tr("dialog_in_progress_title"),
                     self.tr("dialog_in_progress_message"),
                 )
@@ -9169,7 +10799,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         try:
             tasks = self.collect_audio_adjust_tasks()
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
         if self.audio_adjust_apply_button is not None:
@@ -9217,7 +10847,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         url = self.app_update_url or APP_LATEST_RELEASE_URL
         if not webbrowser.open_new_tab(url):
             if not webbrowser.open(url):
-                messagebox.showinfo(self.tr("button_app_update_available"), url)
+                self.show_info(self.tr("button_app_update_available"), url)
 
     def start_update_third_party(self) -> None:
         groups = (
@@ -9254,7 +10884,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         try:
             settings = self.collect_settings()
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
         def work() -> None:
@@ -9326,7 +10956,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             self.save_preferences()
         except UserVisibleError as exc:
             if not auto:
-                messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+                self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
         def work() -> None:
@@ -9346,7 +10976,10 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 episode_ref,
             )
             if image_title:
-                output_path = tmdb_output_path(settings.media_dir, image_title)
+                output_path = output_path_with_name_extra(
+                    tmdb_output_path(settings.media_dir, image_title),
+                    settings.output_name_extra,
+                )
                 self.log_queue.put(("set_output", str(output_path)))
                 self.queue_log(
                     self.tr("log_output_from_artwork_language", name=output_path.name)
@@ -9373,18 +11006,88 @@ class MkvCreatorApp(TK_ROOT_CLASS):
 
         self.run_background(work, self.tr("status_finding_tmdb"))
 
+    def collect_batch_asset_download_settings(
+        self,
+    ) -> tuple[AppSettings, Path, Path, list[BatchEpisodeTask]] | None:
+        source_raw = self.extract_source_var.get().strip()
+        if not source_raw:
+            return None
+        source_dir = Path(source_raw).expanduser()
+        if not source_dir.exists() or not source_dir.is_dir():
+            return None
+        source_dir = source_dir.resolve()
+
+        output_raw = self.extract_output_dir_var.get().strip()
+        extract_root = (
+            Path(output_raw).expanduser()
+            if output_raw
+            else source_dir.parent / f"{source_dir.name}_tracks"
+        ).resolve()
+
+        folder_raw = self.folder_var.get().strip()
+        if folder_raw:
+            media_dir = Path(folder_raw).expanduser().resolve()
+            if media_dir != extract_root and not path_is_relative_to(media_dir, extract_root):
+                return None
+
+        settings, source_dir, extract_root, tasks = self.collect_batch_folder_settings(
+            require_mux=True
+        )
+        if settings.media_type != "tv":
+            raise UserVisibleError(ui_text("error_batch_tmdb_tv_required"))
+        if not settings.api_key:
+            raise UserVisibleError(ui_text("error_tmdb_artwork_api_required"))
+        if not settings.tmdb_id:
+            raise UserVisibleError(ui_text("error_tmdb_id_empty"))
+        if not settings.tmdb_id.isdigit():
+            raise UserVisibleError(ui_text("error_tmdb_id_numeric"))
+        return settings, source_dir, extract_root, tasks
+
     def start_download(self) -> None:
         try:
-            settings = self.collect_settings(require_tmdb=True)
+            batch_settings = self.collect_batch_asset_download_settings()
+            if batch_settings is None:
+                settings = self.collect_settings(require_tmdb=True)
+            else:
+                settings, source_dir, _extract_root, tasks = batch_settings
             self.save_preferences()
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
+            return
+
+        if batch_settings is not None:
+            def batch_work() -> None:
+                for index, task in enumerate(tasks, start=1):
+                    self.check_cancelled()
+                    self.queue_log(
+                        self.tr(
+                            "log_batch_episode",
+                            index=index,
+                            count=len(tasks),
+                            name=task.source.name,
+                        )
+                    )
+                    self.queue_log(self.tr("log_batch_extract_dir", path=task.extract_dir))
+                    episode_settings = copy.copy(settings)
+                    episode_settings.media_dir = task.extract_dir
+                    download_tmdb_assets(
+                        episode_settings,
+                        self.queue_log,
+                        episode_ref=task.episode_ref,
+                        replace_existing=True,
+                    )
+                self.queue_log(self.tr("log_batch_assets_complete", count=len(tasks)))
+
+            self.run_background(batch_work, self.tr("status_downloading_assets"))
             return
 
         def work() -> None:
-            title = download_tmdb_assets(settings, self.queue_log)
+            title = download_tmdb_assets(settings, self.queue_log, replace_existing=True)
             if title:
-                output_path = tmdb_output_path(settings.media_dir, title)
+                output_path = output_path_with_name_extra(
+                    tmdb_output_path(settings.media_dir, title),
+                    settings.output_name_extra,
+                )
                 self.log_queue.put(("set_output", str(output_path)))
                 self.queue_log(
                     self.tr("log_output_from_artwork_language", name=output_path.name)
@@ -9397,7 +11100,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             settings = self.collect_settings()
             auto_chapter_end = self.chapter_end_needs_auto_detection(settings.chapter_end_minutes)
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
         def work() -> None:
@@ -9466,7 +11169,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             auto_chapter_end = self.chapter_end_needs_auto_detection(settings.chapter_end_minutes)
             self.save_preferences()
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
         if self.add_tracks_before_mux_var.get() and not skip_track_window:
@@ -9497,7 +11200,10 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             if settings.download_before_mux:
                 title = download_tmdb_assets(settings, self.queue_log)
                 if title:
-                    settings.output_path = tmdb_output_path(settings.media_dir, title)
+                    settings.output_path = output_path_with_name_extra(
+                        tmdb_output_path(settings.media_dir, title),
+                        settings.output_name_extra,
+                    )
                     settings.output_path.parent.mkdir(parents=True, exist_ok=True)
                     self.log_queue.put(("set_output", str(settings.output_path)))
                     self.queue_log(
@@ -9626,10 +11332,11 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.run_background(work, self.tr("status_creating_mkv"), operation="mux")
 
     def ask_yes_no(self, title: str, message: str) -> bool:
-        dialog = tk.Toplevel(self)
+        parent = self.dialog_parent()
+        dialog = tk.Toplevel(parent)
         dialog.title(title)
         self.apply_window_icon(dialog)
-        dialog.transient(self)
+        dialog.transient(parent)
         dialog.grab_set()
         dialog.resizable(False, False)
 
@@ -9656,7 +11363,8 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         ttk.Button(button_frame, text=self.tr("value_yes"), command=lambda: close(True)).pack(side="right", padx=(0, 8))
 
         dialog.protocol("WM_DELETE_WINDOW", lambda: close(False))
-        self.center_window(dialog, self)
+        self.center_window(dialog, parent)
+        dialog.lift(parent)
         dialog.focus_set()
         dialog.wait_window()
         return result["value"]
@@ -9973,7 +11681,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             )
             self.save_preferences()
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
         def work() -> None:
@@ -10057,7 +11765,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             auto_chapter_end = self.chapter_end_needs_auto_detection(settings.chapter_end_minutes)
             self.save_preferences()
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
         def work() -> None:
@@ -10138,6 +11846,10 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     )
                 else:
                     episode_settings.output_path = batch_episode_output_path(source_dir, task)
+                episode_settings.output_path = output_path_with_name_extra(
+                    episode_settings.output_path,
+                    episode_settings.output_name_extra,
+                )
 
                 if index == 1:
                     first_default_mux_title = default_mux_title
@@ -10261,7 +11973,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         try:
             source, output_dir = self.collect_extract_settings()
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
         self.ensure_extract_window()
 
@@ -10289,11 +12001,11 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         try:
             source, output_dir = self.collect_extract_settings()
         except UserVisibleError as exc:
-            messagebox.showerror(self.tr("dialog_missing_info"), str(exc))
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
         if not self.extract_items:
-            messagebox.showerror(
+            self.show_error(
                 self.tr("dialog_missing_info"),
                 self.tr("error_scan_extract_first"),
             )
@@ -10307,7 +12019,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
 
         items = [copy.deepcopy(item) for item in self.extract_items.values() if item.selected]
         if not items:
-            messagebox.showerror(
+            self.show_error(
                 self.tr("dialog_missing_info"),
                 self.tr("error_extract_none_selected"),
             )
@@ -10414,7 +12126,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         operation: str | None = None,
     ) -> bool:
         if self.worker and self.worker.is_alive():
-            messagebox.showinfo(
+            self.show_info(
                 self.tr("dialog_in_progress_title"),
                 self.tr("dialog_in_progress_message"),
             )
@@ -10448,6 +12160,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             self.scan_button,
             self.find_tmdb_button,
             self.download_button,
+            self.subtitle_button,
             self.config_button,
             self.extract_scan_button,
             self.extract_toggle_button,
@@ -10456,6 +12169,9 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             self.batch_extract_button,
             self.batch_mux_button,
             self.third_party_button,
+            self.subtitle_search_button,
+            self.subtitle_download_button,
+            self.subtitle_best_button,
         )
         for button in buttons:
             if button is not None:
@@ -10554,7 +12270,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 message = str(value)
                 self.append_log(self.tr("error_prefix", message=message))
                 self.set_progress_error(message)
-                messagebox.showerror(self.tr("dialog_error_title"), message)
+                self.show_error(self.tr("dialog_error_title"), message)
             elif kind == "busy":
                 self.set_busy(bool(value))
                 if not bool(value) and self.audio_adjust_apply_button is not None:
@@ -10571,7 +12287,9 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             elif kind == "close_extract":
                 self.close_extract_window()
             elif kind == "set_output":
-                self.output_var.set(str(value))
+                self.output_var.set(
+                    str(self.output_path_with_current_name_extra(Path(str(value))))
+                )
             elif kind == "set_tmdb_id":
                 self.tmdb_id_var.set(str(value))
             elif kind == "set_title":
@@ -10593,6 +12311,16 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     self.auto_chapter_end_value = str(value)
             elif kind == "set_extract_items":
                 self.set_extract_items(value)
+            elif kind == "set_subtitle_results":
+                self.set_subtitle_results(value)
+            elif kind == "set_subtitle_status":
+                self.subtitle_status_var.set(str(value))
+            elif kind == "mark_subtitle_downloaded":
+                try:
+                    result_key, destination = value
+                except (TypeError, ValueError):
+                    continue
+                self.mark_subtitle_result_downloaded(str(result_key), Path(str(destination)))
         self.after(100, self._drain_log_queue)
 
     def append_log(self, message: str) -> None:
