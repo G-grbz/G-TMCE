@@ -442,7 +442,7 @@ Template config is optional. If no config is provided, G-TMCE automatically gene
 
 ## Automatic Chapters
 
-If `chapters.txt` does not exist and automatic chapters are enabled, G-TMCE generates chapters using: chapter name, interval, start number, and end minute.
+If `chapters.txt` does not exist and automatic chapters are enabled, G-TMCE generates chapters using: chapter name, interval, start number, and end minute. When intro-end detection is enabled, the first automatic chapter is aligned to the detected intro end when the signal is reliable; otherwise the normal interval-based start is used.
 
 Example output:
 
@@ -461,12 +461,14 @@ Durations over 60 minutes are automatically written as:
 
 ## Extraction Naming Rules
 
-Second tracks with the same language are numbered:
+Second extracted tracks with the same language are numbered with parentheses so they stay separate from append parts:
 
 ```
-eng.2.srt
-tur.2.srt
+eng.(2).srt
+tur.(2).srt
 ```
+
+Append parts still use plain numeric suffixes, such as `eng.1.eac3` and `eng.2.eac3`, and are appended to `eng.eac3`.
 
 Extracted video tracks include the detected FPS:
 

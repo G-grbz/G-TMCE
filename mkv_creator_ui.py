@@ -245,6 +245,7 @@ UI_TEXT = {
         "option_download_missing_mux_assets": "Fill missing artwork/tags from TMDB",
         "label_auto_chapters": "Automatic chapters",
         "option_create_if_missing": "Create if missing",
+        "option_detect_intro_end": "Detect intro end",
         "label_chapter_name": "Name",
         "label_chapter_interval": "Interval (min)",
         "label_chapter_start": "Start #",
@@ -252,7 +253,7 @@ UI_TEXT = {
         "button_scan_tracks": "Adjust Audio",
         "window_audio_adjust_title": "Audio Adjust",
         "window_mux_tracks_title": "Add Tracks",
-        "audio_adjust_hint": "Select audio tracks. A + value creates silence in the selected output codec and prepends it; a - value cuts that many seconds from the beginning. Leave duration empty or 0 to only change codec/output settings. Volume 1x keeps the original level; 2x-5x boosts it.",
+        "audio_adjust_hint": "Duration (ms): Enter a value in milliseconds. Positive (+) values create a new audio file with the specified amount of silence added to the beginning while preserving the original codec and channel layout, effectively delaying the audio. Negative (-) values trim the specified amount from the beginning of the audio track, effectively advancing the audio. Leave blank or set to 0 if you only want to change codec or output settings.\n\nVolume: 1x preserves the original volume level. Values between 1.1x and 5x increase the audio volume. Higher values may introduce distortion/clipping and should be used with caution.",
         "mux_tracks_drop_hint": "Drag and drop files to add tracks, chapters, tags, or artwork",
         "button_add_tracks": "Add Files",
         "button_include_track": "Include",
@@ -264,7 +265,7 @@ UI_TEXT = {
         "heading_audio_append": "Append",
         "heading_audio_file": "Audio file",
         "heading_track_type": "Type",
-        "heading_audio_delta": "Delta (s)",
+        "heading_audio_delta": "Delta (ms)",
         "heading_audio_codec": "Codec",
         "heading_audio_bitrate": "Bitrate",
         "heading_audio_rate": "Sample rate",
@@ -273,8 +274,8 @@ UI_TEXT = {
         "heading_audio_speed": "Audio FPS Sync",
         "button_apply_audio_adjust": "Apply",
         "error_ffmpeg_missing": "ffmpeg is not available in 3rdParty.",
-        "error_audio_adjust_none": "Select at least one audio track and enter a duration or change codec/output settings.",
-        "error_audio_adjust_numeric": "Duration value must be numeric, for example +0.967 or -0.967.",
+        "error_audio_adjust_none": "Select at least one audio track and enter milliseconds or change codec/output settings.",
+        "error_audio_adjust_numeric": "Milliseconds must be numeric, for example +1 or -967.",
         "error_audio_codec_unsupported": "Unsupported audio codec: {codec}",
         "error_ffmpeg_exit": "ffmpeg exited with error code: {code}",
         "log_audio_adjust_ready": "Audio adjustment ready: {name}",
@@ -400,6 +401,8 @@ UI_TEXT = {
         "status_creating_mkv": "Creating MKV...",
         "status_batch_extract_folder": "Extracting folder...",
         "status_batch_mux_folder": "Muxing extracted folder...",
+        "log_detecting_chapter_end": "Detecting chapter end...",
+        "log_detecting_intro_end": "Detecting intro end...",
         "status_cancelling": "Cancelling...",
         "log_operation_cancelled": "Operation cancelled.",
         "button_scan_mkv": "Scan MKV",
@@ -557,6 +560,7 @@ UI_TEXT = {
         "option_download_missing_mux_assets": "Eksik görsel/tag TMDB'den tamamla",
         "label_auto_chapters": "Otomatik chapter",
         "option_create_if_missing": "Yoksa oluştur",
+        "option_detect_intro_end": "Intro bitişini algıla",
         "label_chapter_name": "Ad",
         "label_chapter_interval": "Aralık dk",
         "label_chapter_start": "Başlangıç",
@@ -564,7 +568,7 @@ UI_TEXT = {
         "button_scan_tracks": "Ses Ayarla",
         "window_audio_adjust_title": "Ses Ayarla",
         "window_mux_tracks_title": "Parça Ekle",
-        "audio_adjust_hint": "Ses parçalarını seç. + değer, girilen süre kadar seçili çıkış kodekinde sessizlik oluşturup parçanın başına ekler; - değer, seçili parçanın başından girilen süre kadar keser. Sadece kodek/çıkış ayarı değiştirmek için süreyi boş veya 0 bırak. Ses 1x orijinal seviyeyi korur; 2x-5x yükseltir.",
+        "audio_adjust_hint": "Süre (ms): Milisaniye cinsinden girilir. Pozitif (+) değerler, seçilen ses parçasının kodek ve kanal yapısını koruyarak başına belirtilen süre kadar sessizlik eklenmiş yeni bir ses dosyası oluşturur. Negatif (-) değerler ise ses parçasının başından belirtilen süreyi keserek sesi öne alır. Yalnızca kodek veya çıktı ayarlarını değiştirecekseniz boş bırakabilir ya da 0 girebilirsiniz.\n\nSes: 1x orijinal ses düzeyidir. 1.1x ile 5x arasındaki değerler sesi yükseltir. Yüksek değerlerde ses bozulması (distortion/clipping) oluşabileceğinden dikkatli kullanılması önerilir.",
         "mux_tracks_drop_hint": "Parça, chapter, tag veya görsel eklemek için dosyaları sürükle & bırak",
         "button_add_tracks": "Dosya Ekle",
         "button_include_track": "Ekle",
@@ -576,7 +580,7 @@ UI_TEXT = {
         "heading_audio_append": "İlave",
         "heading_audio_file": "Ses dosyası",
         "heading_track_type": "Tür",
-        "heading_audio_delta": "Süre (sn)",
+        "heading_audio_delta": "Süre (ms)",
         "heading_audio_codec": "Kodek",
         "heading_audio_bitrate": "Bitrate",
         "heading_audio_rate": "Sample rate",
@@ -585,8 +589,8 @@ UI_TEXT = {
         "heading_audio_speed": "FPS Eşitle",
         "button_apply_audio_adjust": "Uygula",
         "error_ffmpeg_missing": "ffmpeg 3rdParty içinde kullanıma hazır değil.",
-        "error_audio_adjust_none": "En az bir ses parçası seç ve süre gir ya da kodek/çıkış ayarını değiştir.",
-        "error_audio_adjust_numeric": "Süre sayısal olmalı, örnek +0.967 veya -0.967.",
+        "error_audio_adjust_none": "En az bir ses parçası seç ve milisaniye gir ya da kodek/çıkış ayarını değiştir.",
+        "error_audio_adjust_numeric": "Milisaniye sayısal olmalı, örnek +1 veya -967.",
         "error_audio_codec_unsupported": "Desteklenmeyen ses kodeki: {codec}",
         "error_ffmpeg_exit": "ffmpeg hata kodu ile bitti: {code}",
         "log_audio_adjust_ready": "Ses ayarı hazır: {name}",
@@ -712,6 +716,8 @@ UI_TEXT = {
         "status_creating_mkv": "MKV oluşturuluyor...",
         "status_batch_extract_folder": "Klasör çıkarılıyor...",
         "status_batch_mux_folder": "Çıkan klasörler birleştiriliyor...",
+        "log_detecting_chapter_end": "Chapter bitişi algılanıyor...",
+        "log_detecting_intro_end": "Intro bitişi algılanıyor...",
         "status_cancelling": "İptal ediliyor...",
         "log_operation_cancelled": "İş iptal edildi.",
         "button_scan_mkv": "MKV Tara",
@@ -1307,6 +1313,13 @@ SMALL_COVER_SMALLEST_SIDE = 120
 FONT_ATTACHMENT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"}
 MUX_UNKNOWN_LANGUAGE = "und"
 DEFAULT_OUTPUT_NAME = "output.mkv"
+INTRO_DETECTION_WINDOW_SECONDS = 4 * 60
+INTRO_DETECTION_MIN_SECONDS = 35.0
+INTRO_DETECTION_MAX_SECONDS = 4 * 60
+INTRO_DETECTION_CLUSTER_SECONDS = 10.0
+INTRO_DETECTION_MIN_CONFIDENCE = 65.0
+INTRO_DETECTION_FAST_CONFIDENCE = 90.0
+INTRO_DETECTION_TOP_CANDIDATES = 5
 RELEASE_STOP_TOKENS = {
     "2160p",
     "1080p",
@@ -1747,6 +1760,7 @@ class AppSettings:
     include_extra_subtitles: bool
     download_before_mux: bool
     auto_chapters: bool
+    auto_chapter_detect_intro: bool
     chapter_interval_minutes: str
     chapter_name: str
     chapter_start_number: str
@@ -1809,10 +1823,18 @@ class SubtitleLookupMetadata:
 @dataclass
 class ChapterOptions:
     enabled: bool
+    detect_intro: bool
     interval_minutes: str
     name: str
     start_number: str
     end_minutes: str
+
+
+@dataclass(frozen=True)
+class IntroDetectionCandidate:
+    seconds: float
+    score: float
+    source: str
 
 
 @dataclass
@@ -1826,6 +1848,7 @@ class ExtractItem:
     language: str = ""
     language_override: str = ""
     extension: str = ""
+    track_type: str = ""
     name_prefix_parts: tuple[str, ...] = ()
     name_suffix_parts: tuple[str, ...] = ()
 
@@ -3141,9 +3164,11 @@ def release_name_candidates(settings: AppSettings) -> list[str]:
     ]
     result: list[str] = []
     for candidate in candidates:
-        value = candidate.strip()
-        if value and value not in {".", "/"} and value not in result:
-            result.append(value)
+        raw = candidate.strip()
+        for value in (strip_track_folder_suffix(raw), raw):
+            value = value.strip()
+            if value and value not in {".", "/"} and value not in result:
+                result.append(value)
     return result
 
 
@@ -4346,12 +4371,71 @@ def detect_chapter_end_minutes_for_source(source: Path) -> str:
     )
 
 
+def detect_ffprobe_duration_seconds(
+    path: Path,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> float:
+    ffprobe = ffprobe_path(auto_install=False)
+    if not ffprobe:
+        return 0.0
+    args = [
+        ffprobe,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration:stream=duration",
+        "-of",
+        "json",
+        str(path),
+    ]
+    process = run_cancellable_capture(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=third_party_subprocess_env(),
+        executable=third_party_subprocess_executable(args),
+        cancel_event=cancel_event,
+        register_process=register_process,
+        unregister_process=unregister_process,
+    )
+    if process.returncode != 0:
+        return 0.0
+    try:
+        payload = json.loads(process.stdout)
+    except json.JSONDecodeError:
+        return 0.0
+
+    def ffprobe_seconds(value: Any) -> float:
+        try:
+            duration = float(str(value or "").strip())
+        except ValueError:
+            return 0.0
+        return duration if duration > 0 else 0.0
+
+    durations = [ffprobe_seconds(payload.get("format", {}).get("duration"))]
+    for stream in payload.get("streams", []):
+        durations.append(ffprobe_seconds(stream.get("duration")))
+    return max(durations, default=0.0)
+
+
 def detect_item_duration_seconds(
     item: TrackItem,
     cancel_event: threading.Event | None = None,
     register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
     unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
 ) -> float:
+    if media_kind_from_path(item.path) == "audio":
+        duration = detect_ffprobe_duration_seconds(
+            item.path,
+            cancel_event=cancel_event,
+            register_process=register_process,
+            unregister_process=unregister_process,
+        )
+        if duration > 0:
+            return duration
+
     mkvmerge = third_party_tool_path("mkvmerge", required=False)
     if not mkvmerge:
         return 0.0
@@ -4376,6 +4460,15 @@ def detect_item_duration_seconds(
     return duration_seconds_from_identify_payload(payload)
 
 
+def duration_detection_priority(item: TrackItem) -> tuple[int, str]:
+    kind = media_kind_from_path(item.path)
+    if kind == "audio":
+        return 0, item.path.name.lower()
+    if kind == "video":
+        return 1, item.path.name.lower()
+    return 2, item.path.name.lower()
+
+
 def detect_media_duration_seconds(
     items: list[TrackItem],
     cancel_event: threading.Event | None = None,
@@ -4384,7 +4477,7 @@ def detect_media_duration_seconds(
 ) -> float:
     ordered = sorted(
         items,
-        key=lambda item: 0 if is_video_entry(item.entry) else 1,
+        key=duration_detection_priority,
     )
     for item in ordered:
         duration = detect_item_duration_seconds(
@@ -4424,10 +4517,566 @@ def detect_chapter_end_minutes_for_media_dir(
     )
 
 
+def intro_detection_limit_seconds(duration_seconds: float = 0.0) -> float:
+    if duration_seconds <= 0:
+        return float(INTRO_DETECTION_MAX_SECONDS)
+    return max(
+        INTRO_DETECTION_MIN_SECONDS,
+        min(float(INTRO_DETECTION_MAX_SECONDS), duration_seconds - 30),
+    )
+
+
+def intro_candidate_is_valid(seconds: float, duration_seconds: float = 0.0) -> bool:
+    if seconds < INTRO_DETECTION_MIN_SECONDS:
+        return False
+    if seconds > intro_detection_limit_seconds(duration_seconds):
+        return False
+    if duration_seconds > 0 and seconds >= duration_seconds - 30:
+        return False
+    return True
+
+
+def intro_common_time_bonus(seconds: float) -> float:
+    if 70 <= seconds <= 180:
+        return 12.0
+    if 45 <= seconds <= 260:
+        return 7.0
+    if seconds <= INTRO_DETECTION_MAX_SECONDS:
+        return 3.0
+    return 0.0
+
+
+def top_intro_candidates(
+    candidates: list[IntroDetectionCandidate],
+    duration_seconds: float = 0.0,
+) -> list[IntroDetectionCandidate]:
+    valid = [
+        candidate
+        for candidate in candidates
+        if intro_candidate_is_valid(candidate.seconds, duration_seconds)
+    ]
+    return sorted(valid, key=lambda candidate: candidate.score, reverse=True)[
+        :INTRO_DETECTION_TOP_CANDIDATES
+    ]
+
+
+def parse_intro_timestamp_seconds(value: str) -> float | None:
+    raw = value.strip().replace(",", ".")
+    match = re.search(r"(?:(\d+):)?(\d{1,2}):(\d{2}(?:\.\d+)?)", raw)
+    if match is None:
+        return None
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2))
+    seconds = float(match.group(3))
+    if minutes >= 60 or seconds >= 60:
+        return None
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def parse_srt_vtt_events(text: str) -> list[tuple[float, float]]:
+    events: list[tuple[float, float]] = []
+    for line in text.splitlines():
+        if "-->" not in line:
+            continue
+        start_raw, end_raw = line.split("-->", 1)
+        start = parse_intro_timestamp_seconds(start_raw)
+        end = parse_intro_timestamp_seconds(end_raw)
+        if start is None:
+            continue
+        if end is None or end <= start:
+            end = start + 2.0
+        events.append((start, end))
+    return events
+
+
+def parse_ass_events(text: str) -> list[tuple[float, float]]:
+    events: list[tuple[float, float]] = []
+    format_fields: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        lower = line.lower()
+        if lower.startswith("format:"):
+            format_fields = [
+                field.strip().lower()
+                for field in line.split(":", 1)[1].split(",")
+            ]
+            continue
+        if not lower.startswith("dialogue:"):
+            continue
+
+        payload = line.split(":", 1)[1].lstrip()
+        if format_fields:
+            parts = payload.split(",", max(0, len(format_fields) - 1))
+            try:
+                start_index = format_fields.index("start")
+                end_index = format_fields.index("end")
+            except ValueError:
+                start_index, end_index = 1, 2
+        else:
+            parts = payload.split(",", 9)
+            start_index, end_index = 1, 2
+
+        if len(parts) <= max(start_index, end_index):
+            continue
+        start = parse_intro_timestamp_seconds(parts[start_index])
+        end = parse_intro_timestamp_seconds(parts[end_index])
+        if start is None:
+            continue
+        if end is None or end <= start:
+            end = start + 2.0
+        events.append((start, end))
+    return events
+
+
+def parse_subtitle_intro_events(path: Path) -> list[tuple[float, float]]:
+    suffix = path.suffix.lower()
+    if suffix not in {".srt", ".vtt", ".ass", ".ssa"}:
+        return []
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return []
+    if suffix in {".ass", ".ssa"}:
+        return parse_ass_events(text)
+    return parse_srt_vtt_events(text)
+
+
+def merge_subtitle_events(
+    events: list[tuple[float, float]]
+) -> list[tuple[float, float]]:
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(events):
+        if not merged or start > merged[-1][1] + 1.0:
+            merged.append((start, end))
+            continue
+        prev_start, prev_end = merged[-1]
+        merged[-1] = (prev_start, max(prev_end, end))
+    return merged
+
+
+def subtitle_intro_candidates(
+    item: TrackItem,
+    duration_seconds: float = 0.0,
+) -> list[IntroDetectionCandidate]:
+    events = [
+        event
+        for event in parse_subtitle_intro_events(item.path)
+        if event[0] <= intro_detection_limit_seconds(duration_seconds) + 20
+    ]
+    if not events:
+        return []
+
+    forced_multiplier = 0.55 if is_forced_track_item(item) else 1.0
+    merged = merge_subtitle_events(events)
+    candidates: list[IntroDetectionCandidate] = []
+    first_start = merged[0][0]
+    if intro_candidate_is_valid(first_start, duration_seconds):
+        score = (64.0 + intro_common_time_bonus(first_start)) * forced_multiplier
+        candidates.append(IntroDetectionCandidate(first_start, score, "subtitle-first"))
+
+    for previous, current in zip(merged, merged[1:]):
+        previous_end = previous[1]
+        current_start = current[0]
+        gap = current_start - previous_end
+        if gap < 35.0 or gap > 210.0:
+            continue
+        if not intro_candidate_is_valid(current_start, duration_seconds):
+            continue
+        score = 72.0 + min(gap, 120.0) / 6.0 + intro_common_time_bonus(current_start)
+        if previous_end >= 12.0:
+            score += 4.0
+        candidates.append(
+            IntroDetectionCandidate(
+                current_start,
+                score * forced_multiplier,
+                "subtitle-gap",
+            )
+        )
+
+    return top_intro_candidates(candidates, duration_seconds)
+
+
+def intro_item_paths(
+    items: list[TrackItem],
+    *,
+    track_type: int,
+    media_kind: str,
+    limit: int = 1,
+) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for item in items:
+        if track_type_value(item) != track_type and media_kind_from_path(item.path) != media_kind:
+            continue
+        key = path_identity_key(item.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(item.path)
+        if len(paths) >= limit:
+            break
+    return paths
+
+
+def parse_ffmpeg_float(value: str) -> float | None:
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def run_intro_ffmpeg_analysis(
+    args: list[str],
+    *,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> str:
+    process = run_cancellable_capture(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=third_party_subprocess_env(),
+        executable=third_party_subprocess_executable(args),
+        cancel_event=cancel_event,
+        register_process=register_process,
+        unregister_process=unregister_process,
+    )
+    if process.returncode != 0:
+        return ""
+    return f"{process.stdout}\n{process.stderr}"
+
+
+def blackdetect_intro_candidates(
+    path: Path,
+    duration_seconds: float = 0.0,
+    *,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> list[IntroDetectionCandidate]:
+    if path.suffix.lower() in VIDEO_EXTENSIONS:
+        return []
+
+    ffmpeg = ffmpeg_path()
+    args = [
+        ffmpeg,
+        "-hide_banner",
+        "-nostats",
+        "-t",
+        str(INTRO_DETECTION_WINDOW_SECONDS),
+        "-i",
+        str(path),
+        "-map",
+        "0:v:0?",
+        "-an",
+        "-sn",
+        "-vf",
+        "blackdetect=d=0.10:pic_th=0.98:pix_th=0.10",
+        "-f",
+        "null",
+        "-",
+    ]
+    output = run_intro_ffmpeg_analysis(
+        args,
+        cancel_event=cancel_event,
+        register_process=register_process,
+        unregister_process=unregister_process,
+    )
+    candidates: list[IntroDetectionCandidate] = []
+    for match in re.finditer(
+        r"black_start:(\d+(?:\.\d+)?)\s+black_end:(\d+(?:\.\d+)?)\s+black_duration:(\d+(?:\.\d+)?)",
+        output,
+    ):
+        black_start = parse_ffmpeg_float(match.group(1))
+        black_end = parse_ffmpeg_float(match.group(2))
+        black_duration = parse_ffmpeg_float(match.group(3))
+        if black_start is None or black_end is None or black_duration is None:
+            continue
+        if black_start < 18.0 or black_duration < 0.10:
+            continue
+        if not intro_candidate_is_valid(black_end, duration_seconds):
+            continue
+        score = 46.0 + min(black_duration, 2.0) * 8.0 + intro_common_time_bonus(black_end)
+        if black_duration >= 0.35:
+            score += 8.0
+        candidates.append(IntroDetectionCandidate(black_end, score, "blackdetect"))
+    return top_intro_candidates(candidates, duration_seconds)
+
+
+def silencedetect_intro_candidates(
+    path: Path,
+    duration_seconds: float = 0.0,
+    *,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> list[IntroDetectionCandidate]:
+    ffmpeg = ffmpeg_path()
+    args = [
+        ffmpeg,
+        "-hide_banner",
+        "-nostats",
+        "-t",
+        str(INTRO_DETECTION_WINDOW_SECONDS),
+        "-i",
+        str(path),
+        "-map",
+        "0:a:0?",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-af",
+        "silencedetect=noise=-35dB:d=0.45",
+        "-f",
+        "null",
+        "-",
+    ]
+    output = run_intro_ffmpeg_analysis(
+        args,
+        cancel_event=cancel_event,
+        register_process=register_process,
+        unregister_process=unregister_process,
+    )
+    candidates: list[IntroDetectionCandidate] = []
+    silence_start: float | None = None
+    for line in output.splitlines():
+        start_match = re.search(r"silence_start:\s*(\d+(?:\.\d+)?)", line)
+        if start_match is not None:
+            silence_start = parse_ffmpeg_float(start_match.group(1))
+            continue
+        end_match = re.search(
+            r"silence_end:\s*(\d+(?:\.\d+)?)\s*\|\s*silence_duration:\s*(\d+(?:\.\d+)?)",
+            line,
+        )
+        if end_match is None:
+            continue
+        silence_end = parse_ffmpeg_float(end_match.group(1))
+        silence_duration = parse_ffmpeg_float(end_match.group(2))
+        if silence_end is None or silence_duration is None:
+            continue
+        start = silence_start if silence_start is not None else silence_end - silence_duration
+        if start < 18.0 or silence_duration < 0.45 or silence_duration > 12.0:
+            continue
+        if not intro_candidate_is_valid(silence_end, duration_seconds):
+            continue
+        score = 34.0 + min(silence_duration, 2.5) * 8.0 + intro_common_time_bonus(silence_end)
+        if silence_duration >= 0.9:
+            score += 7.0
+        candidates.append(IntroDetectionCandidate(silence_end, score, "silencedetect"))
+    return top_intro_candidates(candidates, duration_seconds)
+
+
+def audio_rms_samples_for_intro(
+    path: Path,
+    *,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> list[tuple[float, float]]:
+    ffmpeg = ffmpeg_path()
+    args = [
+        ffmpeg,
+        "-hide_banner",
+        "-nostats",
+        "-t",
+        str(INTRO_DETECTION_WINDOW_SECONDS),
+        "-i",
+        str(path),
+        "-map",
+        "0:a:0?",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-af",
+        "aresample=8000,asetnsamples=n=8000:p=1,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level",
+        "-f",
+        "null",
+        "-",
+    ]
+    output = run_intro_ffmpeg_analysis(
+        args,
+        cancel_event=cancel_event,
+        register_process=register_process,
+        unregister_process=unregister_process,
+    )
+    samples: list[tuple[float, float]] = []
+    current_time: float | None = None
+    for line in output.splitlines():
+        time_match = re.search(r"pts_time:(\d+(?:\.\d+)?)", line)
+        if time_match is not None:
+            current_time = parse_ffmpeg_float(time_match.group(1))
+            continue
+        rms_match = re.search(
+            r"lavfi\.astats\.Overall\.RMS_level=([-+]?(?:inf|\d+(?:\.\d+)?))",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if rms_match is None or current_time is None:
+            continue
+        raw = rms_match.group(1).lower()
+        rms = -90.0 if raw == "-inf" else parse_ffmpeg_float(raw)
+        if rms is None:
+            continue
+        samples.append((current_time, max(-90.0, min(0.0, rms))))
+    return samples
+
+
+def mean_value(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def audio_energy_intro_candidates(
+    path: Path,
+    duration_seconds: float = 0.0,
+    *,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> list[IntroDetectionCandidate]:
+    samples = audio_rms_samples_for_intro(
+        path,
+        cancel_event=cancel_event,
+        register_process=register_process,
+        unregister_process=unregister_process,
+    )
+    if len(samples) < 80:
+        return []
+
+    candidates: list[IntroDetectionCandidate] = []
+    limit = intro_detection_limit_seconds(duration_seconds)
+    for seconds, _rms in samples:
+        if seconds < INTRO_DETECTION_MIN_SECONDS or seconds > limit:
+            continue
+        before = [rms for time_value, rms in samples if seconds - 55 <= time_value < seconds - 5]
+        after = [rms for time_value, rms in samples if seconds + 5 <= time_value < seconds + 55]
+        if len(before) < 20 or len(after) < 20:
+            continue
+        before_mean = mean_value(before)
+        after_mean = mean_value(after)
+        before_active = sum(1 for value in before if value > -42.0) / len(before)
+        after_active = sum(1 for value in after if value > -42.0) / len(after)
+        drop = before_mean - after_mean
+        active_drop = before_active - after_active
+        if drop < 3.0 and active_drop < 0.18:
+            continue
+        score = (
+            28.0
+            + max(0.0, drop) * 3.2
+            + max(0.0, active_drop) * 28.0
+            + intro_common_time_bonus(seconds)
+        )
+        candidates.append(IntroDetectionCandidate(seconds, min(score, 58.0), "audio-energy"))
+
+    return top_intro_candidates(candidates, duration_seconds)
+
+
+def select_intro_detection_candidate(
+    candidates: list[IntroDetectionCandidate],
+    duration_seconds: float = 0.0,
+) -> IntroDetectionCandidate | None:
+    valid = [
+        candidate
+        for candidate in candidates
+        if intro_candidate_is_valid(candidate.seconds, duration_seconds)
+    ]
+    if not valid:
+        return None
+
+    clusters: list[list[IntroDetectionCandidate]] = []
+    for candidate in sorted(valid, key=lambda item: item.seconds):
+        if not clusters:
+            clusters.append([candidate])
+            continue
+        cluster_seconds = mean_value([item.seconds for item in clusters[-1]])
+        if abs(candidate.seconds - cluster_seconds) <= INTRO_DETECTION_CLUSTER_SECONDS:
+            clusters[-1].append(candidate)
+        else:
+            clusters.append([candidate])
+
+    best: IntroDetectionCandidate | None = None
+    for cluster in clusters:
+        unique_sources = {item.source for item in cluster}
+        score = max(item.score for item in cluster)
+        score += sum(item.score for item in cluster if item.score != score) * 0.40
+        score += max(0, len(unique_sources) - 1) * 6.0
+        seconds = sum(item.seconds * item.score for item in cluster) / sum(
+            item.score for item in cluster
+        )
+        candidate = IntroDetectionCandidate(seconds, score, "+".join(sorted(unique_sources)))
+        if best is None or candidate.score > best.score:
+            best = candidate
+
+    if best is None or best.score < INTRO_DETECTION_MIN_CONFIDENCE:
+        return None
+    return best
+
+
+def detect_intro_chapter_start_seconds(
+    items: list[TrackItem],
+    duration_seconds: float = 0.0,
+    *,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> float:
+    candidates: list[IntroDetectionCandidate] = []
+
+    for item in items:
+        if track_type_value(item) == 2 or media_kind_from_path(item.path) == "subtitle":
+            candidates.extend(subtitle_intro_candidates(item, duration_seconds))
+
+    selected = select_intro_detection_candidate(candidates, duration_seconds)
+    if selected is not None and selected.score >= INTRO_DETECTION_FAST_CONFIDENCE:
+        return selected.seconds
+
+    audio_paths = intro_item_paths(items, track_type=0, media_kind="audio")
+    video_paths = intro_item_paths(items, track_type=1, media_kind="video")
+
+    try:
+        for path in video_paths:
+            candidates.extend(
+                blackdetect_intro_candidates(
+                    path,
+                    duration_seconds,
+                    cancel_event=cancel_event,
+                    register_process=register_process,
+                    unregister_process=unregister_process,
+                )
+            )
+        for path in audio_paths:
+            candidates.extend(
+                silencedetect_intro_candidates(
+                    path,
+                    duration_seconds,
+                    cancel_event=cancel_event,
+                    register_process=register_process,
+                    unregister_process=unregister_process,
+                )
+            )
+            candidates.extend(
+                audio_energy_intro_candidates(
+                    path,
+                    duration_seconds,
+                    cancel_event=cancel_event,
+                    register_process=register_process,
+                    unregister_process=unregister_process,
+                )
+            )
+    except OperationCancelled:
+        raise
+    except UserVisibleError:
+        pass
+
+    selected = select_intro_detection_candidate(candidates, duration_seconds)
+    return selected.seconds if selected is not None else 0.0
+
+
 def write_auto_chapters_file(
     path: Path,
     options: ChapterOptions,
     duration_seconds: float,
+    intro_start_seconds: float = 0.0,
 ) -> Path:
     name = options.name.strip()
     if not name:
@@ -4447,18 +5096,27 @@ def write_auto_chapters_file(
             raise UserVisibleError(ui_text("error_auto_chapter_end_required"))
         end_minutes = duration_seconds / 60
 
-    current_minutes = interval_minutes * start_number
-    if current_minutes > end_minutes:
+    interval_seconds = interval_minutes * 60
+    end_seconds = end_minutes * 60
+    fallback_start_seconds = interval_seconds * start_number
+    if intro_start_seconds > 0:
+        current_seconds = intro_start_seconds + interval_seconds * (start_number - 1)
+    else:
+        current_seconds = fallback_start_seconds
+
+    if current_seconds > end_seconds and intro_start_seconds > 0:
+        current_seconds = fallback_start_seconds
+    if current_seconds > end_seconds:
         raise UserVisibleError(ui_text("error_chapter_start_after_end"))
 
     lines: list[str] = []
     chapter_number = start_number
-    while current_minutes <= end_minutes + 1e-9:
+    while current_seconds <= end_seconds + 1e-9:
         marker = f"CHAPTER{chapter_number:02d}"
-        lines.append(f"{marker}={format_chapter_timestamp(current_minutes * 60)}")
+        lines.append(f"{marker}={format_chapter_timestamp(current_seconds)}")
         lines.append(f"{marker}NAME= {name} {chapter_number}")
         chapter_number += 1
-        current_minutes += interval_minutes
+        current_seconds += interval_seconds
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -4495,7 +5153,22 @@ def resolve_chapter_path(
                 unregister_process=unregister_process,
             )
 
-        return write_auto_chapters_file(chapters_path, options, duration_seconds), []
+        intro_start_seconds = 0.0
+        if options.detect_intro:
+            intro_start_seconds = detect_intro_chapter_start_seconds(
+                items,
+                duration_seconds,
+                cancel_event=cancel_event,
+                register_process=register_process,
+                unregister_process=unregister_process,
+            )
+
+        return write_auto_chapters_file(
+            chapters_path,
+            options,
+            duration_seconds,
+            intro_start_seconds,
+        ), []
 
     return None, [chapters_name]
 
@@ -6112,7 +6785,7 @@ def find_tmdb_match_from_folder(
     found_year = result_year(best)
     if not tmdb_id:
         raise UserVisibleError(ui_text("error_tmdb_missing_id"))
-    if source_name:
+    if source_name and normalise_title_for_match(source_name) != normalise_title_for_match(query):
         query = f"{query} [{source_name}]"
     return tmdb_id, title, found_year, query
 
@@ -6190,13 +6863,13 @@ def ffprobe_path(auto_install: bool = True) -> str | None:
     return third_party_tool_path("ffprobe", required=False, auto_install=auto_install)
 
 
-def parse_seconds_delta(value: str) -> float:
+def parse_milliseconds_delta(value: str) -> float:
     raw = value.strip().replace(",", ".")
     if not raw:
         return 0.0
     if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", raw):
         raise UserVisibleError(ui_text("error_audio_adjust_numeric"))
-    return float(raw)
+    return float(raw) / 1000
 
 
 def dedupe_sidecar_path(path: Path, marker: str) -> Path:
@@ -6958,6 +7631,13 @@ def track_output_extension(track: dict[str, Any]) -> str:
     if track_type == "subtitles":
         if "UTF8" in codec_id or "subrip" in codec or "srt" in codec:
             return "srt"
+        if (
+            "MOV_TEXT" in codec_id
+            or "TX3G" in codec_id
+            or "timed text" in codec
+            or "mov_text" in codec
+        ):
+            return "srt"
         if "ASS" in codec_id or "ass" in codec:
             return "ass"
         if "SSA" in codec_id or "ssa" in codec:
@@ -7008,12 +7688,104 @@ def format_fps_value(fps: float) -> str:
     return f"{fps:.3f}".rstrip("0").rstrip(".")
 
 
+def parse_fps_rate(value: Any) -> float:
+    raw = str(value or "").strip().lower()
+    if not raw or raw in {"0/0", "n/a", "none"}:
+        return 0.0
+    if re.fullmatch(r"\d+(?:\.\d+)?", raw):
+        fps = float(raw)
+        return fps if fps > 0 else 0.0
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)", raw)
+    if not match:
+        return 0.0
+    numerator, denominator = (float(part) for part in match.groups())
+    if numerator <= 0 or denominator <= 0:
+        return 0.0
+    return numerator / denominator
+
+
+def fps_from_rate(value: Any) -> str:
+    fps = parse_fps_rate(value)
+    return format_fps_value(fps) if fps > 0 else ""
+
+
 def fps_from_track(track: dict[str, Any]) -> str:
     properties = track.get("properties", {})
     duration_seconds = parse_duration_seconds(properties.get("default_duration"))
-    if duration_seconds <= 0:
-        return ""
-    return format_fps_value(1 / duration_seconds)
+    if duration_seconds > 0:
+        return format_fps_value(1 / duration_seconds)
+    for key in ("frame_rate", "frames_per_second", "fps", "video_frame_rate"):
+        fps = fps_from_rate(properties.get(key) or track.get(key))
+        if fps:
+            return fps
+    return ""
+
+
+def ffprobe_video_fps_for_source(source: Path) -> tuple[dict[int, str], list[str]]:
+    ffprobe = ffprobe_path(auto_install=False)
+    if not ffprobe:
+        return {}, []
+    args = [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "v",
+        "-show_entries",
+        "stream=index,avg_frame_rate,r_frame_rate",
+        "-of",
+        "json",
+        str(source),
+    ]
+    process = subprocess.run(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **subprocess_common_kwargs(),
+        check=False,
+        env=third_party_subprocess_env(),
+        executable=third_party_subprocess_executable(args),
+    )
+    if process.returncode != 0 or not process.stdout.strip():
+        return {}, []
+    try:
+        payload = json.loads(process.stdout)
+    except json.JSONDecodeError:
+        return {}, []
+
+    by_stream_index: dict[int, str] = {}
+    by_video_order: list[str] = []
+    for stream in payload.get("streams", []):
+        fps = fps_from_rate(stream.get("avg_frame_rate")) or fps_from_rate(
+            stream.get("r_frame_rate")
+        )
+        if not fps:
+            continue
+        by_video_order.append(fps)
+        try:
+            stream_index = int(stream.get("index"))
+        except (TypeError, ValueError):
+            continue
+        by_stream_index[stream_index] = fps
+    return by_stream_index, by_video_order
+
+
+def video_fps_from_track(
+    track: dict[str, Any],
+    track_id: int,
+    video_index: int,
+    ffprobe_fps_by_stream_index: dict[int, str],
+    ffprobe_fps_by_video_order: list[str],
+) -> str:
+    fps = fps_from_track(track)
+    if fps:
+        return fps
+    fps = ffprobe_fps_by_stream_index.get(track_id, "")
+    if fps:
+        return fps
+    if video_index < len(ffprobe_fps_by_video_order):
+        return ffprobe_fps_by_video_order[video_index]
+    return ""
 
 
 def is_truthy_property(properties: dict[str, Any], *names: str) -> bool:
@@ -7057,11 +7829,11 @@ def make_numbered_track_name(
     if counters[key] == 1:
         candidate = f"{base}.{extension}"
     else:
-        candidate = f"{base}.{counters[key]}.{extension}"
+        candidate = f"{base}.({counters[key]}).{extension}"
 
     while candidate.lower() in used_names:
         counters[key] += 1
-        candidate = f"{base}.{counters[key]}.{extension}"
+        candidate = f"{base}.({counters[key]}).{extension}"
     used_names.add(candidate.lower())
     return candidate
 
@@ -7071,6 +7843,13 @@ def build_extract_items(identify_payload: dict[str, Any], source: Path | None = 
     counters: dict[tuple[str, str], int] = {}
     used_names: set[str] = set()
     use_mkvextract = source is None or source_uses_mkvextract(source)
+    ffprobe_fps_by_stream_index: dict[int, str] = {}
+    ffprobe_fps_by_video_order: list[str] = []
+    if source is not None and not use_mkvextract:
+        ffprobe_fps_by_stream_index, ffprobe_fps_by_video_order = ffprobe_video_fps_for_source(
+            source
+        )
+    video_index = 0
 
     for track in identify_payload.get("tracks", []):
         track_id = int(track.get("id"))
@@ -7085,9 +7864,16 @@ def build_extract_items(identify_payload: dict[str, Any], source: Path | None = 
             if is_sdh_extract_track(track):
                 prefix_parts.append("sdh")
         if track_type == "video":
-            fps = fps_from_track(track)
+            fps = video_fps_from_track(
+                track,
+                track_id,
+                video_index,
+                ffprobe_fps_by_stream_index,
+                ffprobe_fps_by_video_order,
+            )
             if fps:
                 suffix_parts.append(fps)
+            video_index += 1
 
         output_name = make_numbered_track_name(
             [*prefix_parts, language, *suffix_parts],
@@ -7112,6 +7898,7 @@ def build_extract_items(identify_payload: dict[str, Any], source: Path | None = 
                 output_name=output_name,
                 language=language,
                 extension=extension,
+                track_type=track_type,
                 name_prefix_parts=tuple(prefix_parts),
                 name_suffix_parts=tuple(suffix_parts),
             )
@@ -7175,7 +7962,10 @@ def first_video_fps_from_items(items: list[ExtractItem]) -> str:
     for item in items:
         if item.kind != "track":
             continue
-        match = re.search(r"(?:^|\.)(\d{2,3}(?:\.\d+)?)(?:\.[^.]+)$", item.output_name)
+        match = re.search(
+            r"(?:^|\.)(\d{2,3}(?:\.\d+)?)(?:\.\(\d+\))?(?:\.[^.]+)$",
+            item.output_name,
+        )
         if match:
             return match.group(1)
     return ""
@@ -7297,6 +8087,21 @@ def ffmpeg_video_bsf_for_extension(extension: str) -> str:
     return ""
 
 
+def item_is_subtitle_track(item: ExtractItem) -> bool:
+    if item.track_type == "subtitles":
+        return True
+    return "| subtitles |" in item.label.lower()
+
+
+def ffmpeg_subtitle_encoder_for_extension(extension: str) -> str:
+    ext = extension.lower().lstrip(".")
+    return {
+        "srt": "srt",
+        "vtt": "webvtt",
+        "ass": "ass",
+    }.get(ext, "")
+
+
 def build_ffmpeg_extract_args(
     source: Path,
     output_dir: Path,
@@ -7320,10 +8125,19 @@ def build_ffmpeg_extract_args(
             continue
         output_path = ffmpeg_extract_output_path(output_dir, item, used_paths)
         output_extension = output_path.suffix.lower().lstrip(".")
-        args.extend(["-map", f"0:{item.item_id}", "-c", "copy"])
-        bsf = ffmpeg_video_bsf_for_extension(output_extension)
-        if bsf:
-            args.extend(["-bsf:v", bsf])
+        args.extend(["-map", f"0:{item.item_id}"])
+        subtitle_encoder = (
+            ffmpeg_subtitle_encoder_for_extension(output_extension)
+            if item_is_subtitle_track(item)
+            else ""
+        )
+        if subtitle_encoder:
+            args.extend(["-c:s", subtitle_encoder])
+        else:
+            args.extend(["-c", "copy"])
+            bsf = ffmpeg_video_bsf_for_extension(output_extension)
+            if bsf:
+                args.extend(["-bsf:v", bsf])
         args.append(str(output_path))
 
     for item in selected:
@@ -7469,6 +8283,9 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.mux_tracks_download_missing_assets_var = tk.BooleanVar(value=False)
         self.auto_chapters_var = tk.BooleanVar(
             value=self.saved_preferences.get("auto_chapters", "false") == "true"
+        )
+        self.auto_chapter_detect_intro_var = tk.BooleanVar(
+            value=self.saved_preferences.get("auto_chapter_detect_intro", "false") == "true"
         )
         self.chapter_interval_var = tk.StringVar(
             value=self.saved_preferences.get("chapter_interval_minutes", "10")
@@ -8448,6 +9265,13 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             "label_chapter_end",
         ).grid(row=0, column=4, padx=(12, 4))
         ttk.Entry(chapter_options_row, textvariable=self.chapter_end_var, width=8).grid(row=0, column=5)
+        self.localize_widget(
+            ttk.Checkbutton(
+                chapter_options_row,
+                variable=self.auto_chapter_detect_intro_var,
+            ),
+            "option_detect_intro_end",
+        ).grid(row=0, column=6, padx=(12, 0))
 
         actions = ttk.Frame(outer, style="Toolbar.TFrame")
         actions.grid(row=3, column=0, sticky="ew", pady=(0, 14))
@@ -8639,6 +9463,9 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     "audio_language_order": self.audio_language_order_var.get().strip(),
                     "subtitle_language_order": self.subtitle_language_order_var.get().strip(),
                     "auto_chapters": "true" if self.auto_chapters_var.get() else "false",
+                    "auto_chapter_detect_intro": (
+                        "true" if self.auto_chapter_detect_intro_var.get() else "false"
+                    ),
                     "chapter_interval_minutes": self.chapter_interval_var.get().strip(),
                     "chapter_name": self.chapter_name_var.get().strip(),
                     "chapter_start_number": self.chapter_start_var.get().strip(),
@@ -8868,6 +9695,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         audio_language_order = self.audio_language_order_var.get().strip()
         subtitle_language_order = self.subtitle_language_order_var.get().strip()
         auto_chapters = self.auto_chapters_var.get()
+        auto_chapter_detect_intro = self.auto_chapter_detect_intro_var.get()
         chapter_interval_minutes = self.chapter_interval_var.get().strip()
         chapter_name = self.chapter_name_var.get().strip()
         chapter_start_number = self.chapter_start_var.get().strip()
@@ -8918,6 +9746,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             include_extra_subtitles=self.include_extra_subs_var.get(),
             download_before_mux=self.download_before_mux_var.get(),
             auto_chapters=auto_chapters,
+            auto_chapter_detect_intro=auto_chapter_detect_intro,
             chapter_interval_minutes=chapter_interval_minutes,
             chapter_name=chapter_name,
             chapter_start_number=chapter_start_number,
@@ -8927,6 +9756,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
     def chapter_options_from_settings(self, settings: AppSettings) -> ChapterOptions:
         return ChapterOptions(
             enabled=settings.auto_chapters,
+            detect_intro=settings.auto_chapter_detect_intro,
             interval_minutes=settings.chapter_interval_minutes,
             name=settings.chapter_name,
             start_number=settings.chapter_start_number,
@@ -10041,6 +10871,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             include_extra_subtitles=self.include_extra_subs_var.get(),
             download_before_mux=download_before_mux,
             auto_chapters=self.auto_chapters_var.get(),
+            auto_chapter_detect_intro=self.auto_chapter_detect_intro_var.get(),
             chapter_interval_minutes=self.chapter_interval_var.get().strip(),
             chapter_name=self.chapter_name_var.get().strip(),
             chapter_start_number=self.chapter_start_var.get().strip(),
@@ -10755,7 +11586,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         for row in self.audio_adjust_rows:
             if not row["selected"].get():
                 continue
-            delta = parse_seconds_delta(row["delta"].get())
+            delta = parse_milliseconds_delta(row["delta"].get())
             codec = row["codec"].get().strip().lower()
             speed_label = row["speed"].get().strip()
             speed_label_to_key = {
@@ -11114,6 +11945,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 excluded_track_keys,
             ) = self.mux_track_customizations()
             if settings.auto_chapters and auto_chapter_end:
+                self.queue_log(self.tr("log_detecting_chapter_end"))
                 chapter_end = detect_chapter_end_minutes_for_media_dir(
                     config,
                     settings.media_dir,
@@ -11126,6 +11958,8 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 if chapter_end:
                     settings.chapter_end_minutes = chapter_end
                     self.log_queue.put(("set_chapter_end_auto", chapter_end))
+            if settings.auto_chapters and settings.auto_chapter_detect_intro:
+                self.queue_log(self.tr("log_detecting_intro_end"))
             settings.output_path.parent.mkdir(parents=True, exist_ok=True)
             generated = write_generated_config(
                 config,
@@ -11233,6 +12067,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     ) from exc
 
             if settings.auto_chapters and auto_chapter_end:
+                self.queue_log(self.tr("log_detecting_chapter_end"))
                 chapter_end = detect_chapter_end_minutes_for_media_dir(
                     config,
                     settings.media_dir,
@@ -11246,6 +12081,8 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     settings.chapter_end_minutes = chapter_end
                     self.log_queue.put(("set_chapter_end_auto", chapter_end))
 
+            if settings.auto_chapters and settings.auto_chapter_detect_intro:
+                self.queue_log(self.tr("log_detecting_intro_end"))
             args, missing_optional = build_mkvmerge_args(
                 config,
                 settings.media_dir,
@@ -11874,6 +12711,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     episode_settings.media_dir,
                 )
                 if episode_settings.auto_chapters and auto_chapter_end:
+                    self.queue_log(self.tr("log_detecting_chapter_end"))
                     episode_settings.chapter_end_minutes = ""
                     chapter_end = detect_chapter_end_minutes_for_source(task.source)
                     if not chapter_end:
@@ -11891,6 +12729,8 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                         if index == 1:
                             self.log_queue.put(("set_chapter_end_auto", chapter_end))
                 episode_settings.output_path.parent.mkdir(parents=True, exist_ok=True)
+                if episode_settings.auto_chapters and episode_settings.auto_chapter_detect_intro:
+                    self.queue_log(self.tr("log_detecting_intro_end"))
                 mux_args, missing_optional = build_mkvmerge_args(
                     config,
                     episode_settings.media_dir,
