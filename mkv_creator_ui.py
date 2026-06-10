@@ -77,6 +77,10 @@ def bundled_resource_path(name: str) -> Path:
 APP_DIR = app_runtime_dir()
 APP_NAME = "G-TMCE"
 APP_REPOSITORY_URL = "https://github.com/G-grbz/G-TMCE"
+APP_TAG_SIMPLE_TAGS = (
+    ("G_TMCE", APP_NAME),
+    ("G_TMCE_URL", APP_REPOSITORY_URL),
+)
 APP_RELEASE_API_URL = "https://api.github.com/repos/G-grbz/G-TMCE/releases/latest"
 APP_LATEST_RELEASE_URL = f"{APP_REPOSITORY_URL}/releases/latest"
 DEFAULT_APP_VERSION = "source"
@@ -200,7 +204,7 @@ UI_TEXT = {
         "log_file_not_found_skipped": "{name} was not found; skipped.",
         "log_file_prepare_skipped": "{name} could not be prepared; skipped: {error}",
         "log_file_exists_skipped": "{name} already exists; skipped.",
-        "log_tags_exists": "tags.xml already exists; skipped.",
+        "log_tags_exists": "tags.xml already exists; checked.",
         "log_tags_ready": "tags.xml is ready.",
         "log_tmdb_title": "TMDB title: {title}",
         "log_cover_ready": "cover.jpg is ready.",
@@ -515,7 +519,7 @@ UI_TEXT = {
         "log_file_not_found_skipped": "{name} bulunamadı, atlandı.",
         "log_file_prepare_skipped": "{name} hazırlanamadı, atlandı: {error}",
         "log_file_exists_skipped": "{name} zaten var, atlandı.",
-        "log_tags_exists": "tags.xml zaten var, atlandı.",
+        "log_tags_exists": "tags.xml zaten var, kontrol edildi.",
         "log_tags_ready": "tags.xml hazır.",
         "log_tmdb_title": "TMDB içerik: {title}",
         "log_cover_ready": "cover.jpg hazır.",
@@ -3434,6 +3438,34 @@ def is_forced_track_item(item: TrackItem) -> bool:
     return truthy_flag(item.track.get("forcedTrackFlag"))
 
 
+def is_sdh_track_item(item: TrackItem) -> bool:
+    if truthy_flag(item.track.get("hearingImpairedFlag")):
+        return True
+    name = str(item.track.get("name") or "").strip().lower()
+    if re.search(r"\b(sdh|hi|cc|hearing impaired|closed captions?)\b", name):
+        return True
+    tokens = {token for token in re.split(r"[._\-\s]+", item.path.stem.lower()) if token}
+    return bool(
+        tokens
+        & {
+            "sdh",
+            "hi",
+            "cc",
+            "hearing",
+            "impaired",
+            "closed",
+            "caption",
+            "captions",
+        }
+    )
+
+
+def is_regular_subtitle_track_item(item: TrackItem) -> bool:
+    if track_type_value(item) != 2 and media_kind_from_path(item.path) != "subtitle":
+        return False
+    return not is_forced_track_item(item) and not is_sdh_track_item(item)
+
+
 def first_preferred_track_item(
     items: list[TrackItem],
     track_type: int,
@@ -3762,16 +3794,27 @@ def normalise_append_paths_for_track(base_path: Path, append_paths: tuple[Path, 
     return tuple(result)
 
 
-def infer_video_fps_from_filename(path: Path) -> str:
-    if media_kind_from_path(path) != "video":
-        return ""
+def infer_video_fps_from_text(value: str) -> str:
     pattern = (
         r"(?:^|[._\-\s])"
-        r"(23\.976|23\.98|24|25|29\.970|29\.97|30|50|59\.940|59\.94|60|24000/1001|30000/1001|60000/1001)"
+        r"(24000/1001|30000/1001|60000/1001|23\.976|23\.98|24|25|29\.970|29\.97|30|50|59\.940|59\.94|60)"
         r"(?:$|[._\-\s])"
     )
-    match = re.search(pattern, path.stem)
+    match = re.search(pattern, str(value or ""), flags=re.IGNORECASE)
     return match.group(1) if match else ""
+
+
+def infer_video_fps_from_filename(path: Path) -> str:
+    # Raw elementary streams such as und.25.h264 / und.24000-1001.h265 do not
+    # always expose FPS through ffprobe/mkvmerge. Prefer explicit FPS tokens in
+    # the actual raw video filename before falling back to metadata probing.
+    if media_kind_from_path(path) != "video" and path.suffix.lower() not in VIDEO_CONTAINER_EXTENSIONS:
+        return ""
+    fps = infer_video_fps_from_text(path.stem)
+    if fps:
+        return fps
+    # Some release folders keep the FPS only in the parent/title folder name.
+    return infer_video_fps_from_text(path.parent.name)
 
 
 def track_type_for_kind(kind: str) -> int:
@@ -3829,7 +3872,7 @@ def apply_track_metadata_from_filename(entry: dict[str, Any], path: Path, unknow
     track["type"] = track_type_for_kind(kind)
     track["language"] = infer_language_from_filename(path, unknown_language)
     if kind == "video":
-        fps = infer_video_fps_from_filename(path)
+        fps = detect_video_fps_from_media_path(path)
         if fps:
             track["defaultDuration"] = normalize_video_fps(fps)
     if kind == "subtitle":
@@ -3868,7 +3911,7 @@ def make_minimal_track_entry(path: Path, object_id_seed: int, unknown_language: 
         "trackEnabledFlag": 1,
         "trackEnabledFlagWasSet": True,
     }
-    fps = infer_video_fps_from_filename(path)
+    fps = detect_video_fps_from_media_path(path)
     if kind == "video" and fps:
         track["defaultDuration"] = normalize_video_fps(fps)
     if kind == "subtitle":
@@ -3904,7 +3947,7 @@ def make_track_entry_from_path(
         track["language"] = infer_language_from_filename(path, unknown_language)
         track["muxThis"] = True
         if kind == "video":
-            fps = infer_video_fps_from_filename(path)
+            fps = detect_video_fps_from_media_path(path)
             if fps:
                 track["defaultDuration"] = normalize_video_fps(fps)
         if kind == "subtitle":
@@ -4696,6 +4739,26 @@ def subtitle_intro_candidates(
     return top_intro_candidates(candidates, duration_seconds)
 
 
+def subtitle_first_start_seconds(item: TrackItem) -> float:
+    starts = [
+        start
+        for start, _end in parse_subtitle_intro_events(item.path)
+        if start >= 0
+    ]
+    return min(starts, default=0.0)
+
+
+def regular_subtitle_intro_start_seconds(items: list[TrackItem]) -> float:
+    starts = [
+        start
+        for item in items
+        if is_regular_subtitle_track_item(item)
+        for start in [subtitle_first_start_seconds(item)]
+        if start > 0
+    ]
+    return min(starts, default=0.0)
+
+
 def intro_item_paths(
     items: list[TrackItem],
     *,
@@ -5020,6 +5083,10 @@ def detect_intro_chapter_start_seconds(
     register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
     unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
 ) -> float:
+    subtitle_start = regular_subtitle_intro_start_seconds(items)
+    if subtitle_start > 0:
+        return subtitle_start
+
     candidates: list[IntroDetectionCandidate] = []
 
     for item in items:
@@ -6468,6 +6535,60 @@ def add_repeated_simple_tags(
         add_simple_tag(parent, name, value, language)
 
 
+def simple_tag_child_text(simple: ET.Element, child_name: str) -> str:
+    return str(simple.findtext(child_name) or "").strip()
+
+
+def simple_tag_exists(root: ET.Element, name: str, value: str) -> bool:
+    for simple in root.iter("Simple"):
+        if (
+            simple_tag_child_text(simple, "Name") == name
+            and simple_tag_child_text(simple, "String") == value
+        ):
+            return True
+    return False
+
+
+def has_empty_targets(targets: ET.Element | None) -> bool:
+    return targets is not None and not list(targets) and not str(targets.text or "").strip()
+
+
+def find_or_create_global_tag(root: ET.Element) -> ET.Element:
+    for tag in root.findall("Tag"):
+        if has_empty_targets(tag.find("Targets")):
+            return tag
+
+    tag = ET.SubElement(root, "Tag")
+    ET.SubElement(tag, "Targets")
+    return tag
+
+
+def ensure_app_credit_tags(root: ET.Element, language: str) -> bool:
+    added = False
+    target_tag: ET.Element | None = None
+    for name, value in APP_TAG_SIMPLE_TAGS:
+        if simple_tag_exists(root, name, value):
+            continue
+        if target_tag is None:
+            target_tag = find_or_create_global_tag(root)
+        add_simple_tag(target_tag, name, value, language)
+        added = True
+    return added
+
+
+def ensure_app_credit_tags_file(path: Path, language: str) -> bool:
+    tree = ET.parse(path)
+    root = tree.getroot()
+    if root.tag != "Tags":
+        raise ValueError("root element is not Tags")
+    if not ensure_app_credit_tags(root, language):
+        return False
+
+    ET.indent(root, space="  ")
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+    return True
+
+
 def write_tmdb_tags_file(
     path: Path,
     details: dict[str, Any],
@@ -6514,6 +6635,7 @@ def write_tmdb_tags_file(
     add_simple_tag(tag, "TMDB_ID", tmdb_id, language)
     add_simple_tag(tag, "URL", f"https://www.themoviedb.org/{media_type}/{tmdb_id}", language)
     add_simple_tag(tag, "IMDB", imdb_id_from_details(details), language)
+    ensure_app_credit_tags(root, language)
 
     ET.indent(root, space="  ")
     tree = ET.ElementTree(root)
@@ -6588,6 +6710,7 @@ def write_tmdb_episode_tags_file(
         first_non_empty(imdb_id_from_details(episode_details), imdb_id_from_details(series_details)),
         language,
     )
+    ensure_app_credit_tags(root, language)
 
     ET.indent(root, space="  ")
     tree = ET.ElementTree(root)
@@ -6610,6 +6733,11 @@ def ensure_tmdb_tags_file(
     tags_path = settings.media_dir / "tags.xml"
     if tags_path.exists() and not replace_existing:
         log(ui_text("log_tags_exists"))
+        try:
+            if ensure_app_credit_tags_file(tags_path, language):
+                log(ui_text("log_tags_ready"))
+        except (OSError, ValueError, ET.ParseError) as exc:
+            log(ui_text("log_file_prepare_skipped", name=tags_path.name, error=exc))
         return
 
     details = client.get_json(
@@ -7786,6 +7914,105 @@ def video_fps_from_track(
     if video_index < len(ffprobe_fps_by_video_order):
         return ffprobe_fps_by_video_order[video_index]
     return ""
+
+
+def first_video_fps_from_identify_payload(identify_payload: dict[str, Any], source: Path | None = None) -> str:
+    ffprobe_fps_by_stream_index: dict[int, str] = {}
+    ffprobe_fps_by_video_order: list[str] = []
+    if source is not None:
+        ffprobe_fps_by_stream_index, ffprobe_fps_by_video_order = ffprobe_video_fps_for_source(source)
+
+    video_index = 0
+    for track in identify_payload.get("tracks", []):
+        if str(track.get("type") or "").lower() != "video":
+            continue
+        try:
+            track_id = int(track.get("id"))
+        except (TypeError, ValueError):
+            track_id = video_index
+        fps = video_fps_from_track(
+            track,
+            track_id,
+            video_index,
+            ffprobe_fps_by_stream_index,
+            ffprobe_fps_by_video_order,
+        )
+        if fps:
+            return fps
+        video_index += 1
+    return ""
+
+
+def detect_video_fps_from_media_path(path: Path) -> str:
+    if media_kind_from_path(path) != "video" and path.suffix.lower() not in VIDEO_CONTAINER_EXTENSIONS:
+        return ""
+
+    # Priority order:
+    # 1) explicit FPS token in raw/video filename, e.g. und.25.h264
+    # 2) real media metadata through ffprobe / mkvmerge identify
+    # 3) fallback FPS token from parent/release title
+    filename_fps = infer_video_fps_from_text(path.stem)
+    if filename_fps:
+        return filename_fps
+
+    _ffprobe_by_stream, ffprobe_by_order = ffprobe_video_fps_for_source(path)
+    if ffprobe_by_order:
+        return ffprobe_by_order[0]
+
+    if path.suffix.lower() in VIDEO_CONTAINER_EXTENSIONS:
+        try:
+            fps = first_video_fps_from_identify_payload(identify_mkv(path), path)
+        except UserVisibleError:
+            fps = ""
+        if fps:
+            return fps
+
+    return infer_video_fps_from_text(path.parent.name)
+
+
+def discover_video_fps_candidate_paths(media_dir: Path) -> list[Path]:
+    """Return video/container files that can carry a reliable FPS value.
+
+    Track folders can contain extracted elementary video streams such as .h264/.h265,
+    but users also often point the app at a folder that still contains the original
+    .mkv/.mp4 source.  ID lookup must therefore scan both groups instead of relying
+    only on raw track extensions or release-name tokens.
+    """
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        key = str(path).lower()
+        if key not in seen:
+            seen.add(key)
+            candidates.append(path)
+
+    for path in discover_media_track_paths(media_dir):
+        if media_kind_from_path(path) == "video":
+            add(path)
+    for path in video_sources_in_folder(media_dir):
+        add(path)
+
+    return sorted(candidates, key=natural_path_sort_key)
+
+
+def detect_first_video_fps_from_media_dir(media_dir: Path) -> str:
+    # First pass: extracted raw tracks commonly store FPS only in filenames
+    # like und.25.h264. Read those tokens before any metadata probing.
+    for track_path in discover_video_fps_candidate_paths(media_dir):
+        if media_kind_from_path(track_path) == "video":
+            fps = infer_video_fps_from_text(track_path.stem)
+            if fps:
+                return fps
+
+    # Second pass: use actual media metadata when available.
+    for track_path in discover_video_fps_candidate_paths(media_dir):
+        fps = detect_video_fps_from_media_path(track_path)
+        if fps:
+            return fps
+
+    # Final fallback: release/folder title. Do not reuse UI's previous FPS here.
+    return infer_video_fps_from_text(media_dir.name)
 
 
 def is_truthy_property(properties: dict[str, Any], *names: str) -> bool:
@@ -11790,6 +12017,12 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
+        # ID Bul her çalıştığında FPS alanı bu klasörün videosuna göre yenilenmeli.
+        # Eski klasörden kalan FPS değeri burada referans alınmaz; önce alan temizlenir,
+        # sonra mevcut medya dosyalarından bulunan yeni FPS değeri UI'ye yazılır.
+        self.video_fps_var.set("")
+        settings.video_fps = ""
+
         def work() -> None:
             try:
                 tmdb_id, title, found_year, query = find_tmdb_match_from_folder(settings)
@@ -11799,6 +12032,11 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     return
                 raise
             self.log_queue.put(("set_tmdb_id", tmdb_id))
+            fps = detect_first_video_fps_from_media_dir(settings.media_dir)
+            self.log_queue.put(("set_video_fps", fps))
+            if fps:
+                settings.video_fps = fps
+                self.queue_log(self.tr("log_video_fps_detected", fps=fps))
             episode_ref = episode_ref_from_settings(settings)
             image_title = tmdb_output_title_for_language(
                 settings,
@@ -12636,14 +12874,12 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 )
                 self.queue_log(self.tr("log_batch_extract_dir", path=task.extract_dir))
 
-                fps = settings.video_fps
-                if not fps:
-                    for track_path in discover_media_track_paths(task.extract_dir):
-                        fps = infer_video_fps_from_filename(track_path)
-                        if fps:
-                            break
-                if fps and not settings.video_fps:
-                    self.queue_log(self.tr("log_video_fps_detected", fps=fps))
+                # Batch mux must use each episode folder's own video FPS.
+                # The UI value is only a fallback when the episode FPS cannot be detected.
+                detected_fps = detect_first_video_fps_from_media_dir(task.extract_dir)
+                fps = detected_fps or settings.video_fps
+                if detected_fps:
+                    self.queue_log(self.tr("log_video_fps_detected", fps=detected_fps))
 
                 episode_settings = copy.copy(settings)
                 episode_settings.media_dir = task.extract_dir
@@ -12827,7 +13063,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             )
             if chapter_end:
                 self.log_queue.put(("set_chapter_end_auto", chapter_end))
-            fps = first_video_fps_from_items(items)
+            fps = first_video_fps_from_identify_payload(payload, source) or first_video_fps_from_items(items)
             if fps:
                 self.log_queue.put(("set_video_fps", fps))
                 self.queue_log(self.tr("log_video_fps_detected", fps=fps))
@@ -12888,7 +13124,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             if return_code == 1:
                 self.queue_log(self.tr("log_mkvextract_warnings"))
 
-            fps = first_video_fps_from_items(items)
+            fps = first_video_fps_from_identify_payload(identify_mkv(source), source) or first_video_fps_from_items(items)
             if fps:
                 self.log_queue.put(("set_video_fps", fps))
             self.log_queue.put(("set_folder", str(output_dir)))

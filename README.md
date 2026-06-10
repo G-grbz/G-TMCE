@@ -382,7 +382,7 @@ cover.jpg   small_cover.jpg   cover_land.jpg   small_cover_land.jpg   logo.png
 
 It can also automatically generate `tags.xml`.
 
-If `tags.xml` already exists it is not overwritten. Existing artwork files are also kept and skipped by the TMDB download step. During muxing, `--global-tags` is automatically applied.
+If `tags.xml` already exists it is not overwritten, but missing G-TMCE app tags are added. Existing artwork files are also kept and skipped by the TMDB download step. During muxing, `--global-tags` is automatically applied.
 
 ---
 
