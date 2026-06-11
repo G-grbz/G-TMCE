@@ -1,12 +1,42 @@
 # G-TMCE
 
-G-TMCE is a Tkinter application for extracting and creating MKV files, available on Linux and Windows.
+Create professional MKV remuxes with TMDB metadata, artwork, chapters, language handling, and MKVToolNix automation — without manually building `mkvmerge` commands.
 
-It generates a `tags.xml` using the TMDB API, enriches MKV files with titles and visuals, and ensures MKV files are always created with a consistent structure.
+G-TMCE is a cross-platform GUI application for creating, extracting, and managing MKV files on Linux and Windows.
+
+It combines MKVToolNix, FFmpeg, and TMDB into a single workflow and automatically handles tasks that are normally performed manually:
+
+* 🎬 MKV remuxing and extraction
+* 🏷️ Automatic TMDB metadata (`tags.xml`) generation
+* 🖼️ Automatic poster, backdrop, and logo downloads
+* 🌐 Audio and subtitle language management
+* 📖 Automatic chapter generation
+* 🎯 Forced and SDH subtitle detection
+* 🔊 Audio synchronization between different frame rates (23.976 ↔ 24 ↔ 25 FPS)
+* 📦 Consistent MKV structure and output naming
+
+Perfect for media archivists, remux creators, home media server users, and anyone who regularly works with MKVToolNix.
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/694c61ad-c62e-4067-b8a7-50ac4fa2b057" width="900">
 </p>
+
+---
+
+## Why G-TMCE?
+
+Creating a properly tagged MKV often requires multiple tools and many manual steps:
+
+1. Search TMDB
+2. Download artwork
+3. Create `tags.xml`
+4. Configure tracks
+5. Set default audio/subtitle flags
+6. Handle forced or SDH subtitles
+7. Create chapters
+8. Build the final `mkvmerge` command
+
+G-TMCE automates the entire process and keeps every MKV organized using predictable naming rules and metadata handling.
 
 ---
 
@@ -25,36 +55,43 @@ It generates a `tags.xml` using the TMDB API, enriches MKV files with titles and
 
 ## Features
 
-### MKV Creation
+### 🎬 MKV Creation
 
-- Automatic MKVToolNix config generation from track folders
-- Optional TMDB artwork download
+- Automatic MKVToolNix config generation
+- TMDB metadata and artwork integration
 - Automatic `tags.xml` generation
-- Automatic output title generation from TMDB metadata
+- Automatic output naming from TMDB titles
 - Automatic chapter generation
-- Default audio/subtitle selection by language priority
-- Forced/SDH subtitle detection
-- Audio append support (`eng.ac3` + `eng.1.ac3` etc.)
-- Automatic FPS detection and override support
+- Language-aware audio and subtitle ordering
+- Default audio/subtitle selection rules
+- Forced and SDH subtitle detection
+- Audio and video append support
+- Automatic FPS detection
 - Generated `.generated.mtxcfg` audit file for every mux
 
-### MKV Extraction
+### 📤 MKV Extraction
 
-- Video, audio, and subtitle tracks
-- Attachments
-- Chapters
-- Tags
-- Automatic output naming
+- Video, audio, subtitle, attachment, chapter, and tag extraction
+- Automatic track naming
 - Forced/SDH subtitle naming
-- FPS detection for extracted video tracks
+- FPS-aware video extraction
+- Extraction output ready for re-muxing
 
-### Audio Adjustment
+### 🔊 Audio Processing
 
-- Delay or cut audio tracks
+- Delay adjustment
+- Audio trimming/cutting
 - Codec conversion
-- Bitrate / sample-rate / channel-layout adjustment
+- Bitrate and sample-rate conversion
+- Channel-layout conversion
 - Volume boost
-- FPS speed synchronization presets
+
+### 🎯 FPS Synchronization
+
+- PAL speedup presets
+- NTSC ↔ PAL audio synchronization
+- 23.976 ↔ 24 ↔ 25 FPS conversion workflows
+- Audio speed correction for remux projects
 
 ---
 
