@@ -18,7 +18,13 @@ It combines MKVToolNix, FFmpeg, and TMDB into a single workflow and automaticall
 Perfect for media archivists, remux creators, home media server users, and anyone who regularly works with MKVToolNix.
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/694c61ad-c62e-4067-b8a7-50ac4fa2b057" width="900">
+  <a href="https://github.com/user-attachments/assets/ab4245a7-1770-4fec-b54c-768d4a8f4357">
+    <img src="https://github.com/user-attachments/assets/694c61ad-c62e-4067-b8a7-50ac4fa2b057" width="900">
+  </a>
+</p>
+
+<p align="center">
+  <b>▶ Click the image above to watch the demo</b>
 </p>
 
 ---
