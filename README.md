@@ -1,4 +1,6 @@
-# G-TMCE
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/438cb661-dbe0-4201-955e-1dab84e62668" alt="logo" width="200" style="background: transparent; display: inline-block;" />
+</p>
 
 Create professional MKV remuxes with TMDB metadata, artwork, chapters, language handling, and MKVToolNix automation — without manually building `mkvmerge` commands.
 
