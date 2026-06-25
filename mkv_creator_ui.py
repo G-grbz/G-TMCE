@@ -1314,16 +1314,18 @@ MUX_METADATA_FILE_PATTERNS = (
 MUX_ADD_FILE_PATTERNS = f"{TRACK_FILE_PATTERNS} {MUX_METADATA_FILE_PATTERNS}"
 NORMAL_COVER_SMALLEST_SIDE = 600
 SMALL_COVER_SMALLEST_SIDE = 120
+TMDB_LOGO_CANVAS_SIZE = (800, 320)
+TMDB_LOGO_CONTENT_SIZE = (760, 280)
+TMDB_LOGO_MAX_BYTES = 512 * 1024
 FONT_ATTACHMENT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"}
 MUX_UNKNOWN_LANGUAGE = "und"
 DEFAULT_OUTPUT_NAME = "output.mkv"
 INTRO_DETECTION_WINDOW_SECONDS = 4 * 60
 INTRO_DETECTION_MIN_SECONDS = 35.0
 INTRO_DETECTION_MAX_SECONDS = 4 * 60
-INTRO_DETECTION_CLUSTER_SECONDS = 10.0
-INTRO_DETECTION_MIN_CONFIDENCE = 65.0
-INTRO_DETECTION_FAST_CONFIDENCE = 90.0
-INTRO_DETECTION_TOP_CANDIDATES = 5
+INTRO_DETECTION_CLUSTER_SECONDS = 4.0
+INTRO_DETECTION_MIN_CONFIDENCE = 88.0
+INTRO_DETECTION_TOP_CANDIDATES = 12
 RELEASE_STOP_TOKENS = {
     "2160p",
     "1080p",
@@ -1832,6 +1834,7 @@ class ChapterOptions:
     name: str
     start_number: str
     end_minutes: str
+    analysis_source: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -3520,16 +3523,37 @@ def select_default_track_item(
 def select_default_subtitle_item(
     ordered: list[TrackItem],
     language_order: list[str],
+    audio_language_order: list[str] | None = None,
 ) -> TrackItem | None:
     candidates = [item for item in ordered if track_type_value(item) == 2]
     if not candidates or not language_order:
         return None
 
+    audio_language_order = list(audio_language_order or [])
     audio_languages = {
         track_language_value(item)
         for item in ordered
         if track_type_value(item) == 0
     }
+
+    # Keep all existing forced/SDH behavior, but do not fall through to a
+    # different regular subtitle language when the audio and subtitle priority
+    # lists start with the same language and that subtitle language is absent.
+    shared_primary_language = ""
+    if (
+        audio_language_order
+        and language_order
+        and audio_language_order[0] == language_order[0]
+    ):
+        shared_primary_language = language_order[0]
+
+    shared_primary_subtitle_missing = bool(
+        shared_primary_language
+        and not any(
+            track_language_value(item) == shared_primary_language
+            for item in candidates
+        )
+    )
 
     for language in language_order:
         matches = [item for item in candidates if track_language_value(item) == language]
@@ -3538,6 +3562,8 @@ def select_default_subtitle_item(
         forced_matches = [item for item in matches if is_forced_track_item(item)]
         if forced_matches:
             return forced_matches[0]
+        if shared_primary_subtitle_missing:
+            continue
         if language in audio_languages:
             return None
         return matches[0]
@@ -3553,6 +3579,8 @@ def select_default_subtitle_item(
         return None
     if is_forced_track_item(fallback_item):
         return fallback_item
+    if shared_primary_subtitle_missing:
+        return None
     if track_language_value(fallback_item) in audio_languages:
         return None
     return fallback_item
@@ -3636,7 +3664,11 @@ def apply_default_track_preferences(
         fallback_to_first=True,
         label=ui_text("track_type_audio"),
     )
-    selected_subtitle = select_default_subtitle_item(ordered, subtitle_order)
+    selected_subtitle = select_default_subtitle_item(
+        ordered,
+        subtitle_order,
+        audio_order,
+    )
 
     set_default_track_flags(items, 0, selected_audio)
     set_default_track_flags(items, 2, selected_subtitle)
@@ -4701,62 +4733,75 @@ def subtitle_intro_candidates(
     item: TrackItem,
     duration_seconds: float = 0.0,
 ) -> list[IntroDetectionCandidate]:
+    """Return post-intro dialogue hints, never a raw first-subtitle guess.
+
+    A valid subtitle hint must begin a sustained run of cues and must either
+    follow a real subtitle gap or represent a clear density increase. This
+    prevents logos, translator notes, song lyrics, and cold-open dialogue from
+    being treated as the end of the opening sequence.
+    """
     events = [
         event
         for event in parse_subtitle_intro_events(item.path)
-        if event[0] <= intro_detection_limit_seconds(duration_seconds) + 20
+        if event[0] <= intro_detection_limit_seconds(duration_seconds) + 50
     ]
     if not events:
         return []
 
-    forced_multiplier = 0.55 if is_forced_track_item(item) else 1.0
+    forced_multiplier = 0.40 if is_forced_track_item(item) else 1.0
     merged = merge_subtitle_events(events)
     candidates: list[IntroDetectionCandidate] = []
-    first_start = merged[0][0]
-    if intro_candidate_is_valid(first_start, duration_seconds):
-        score = (64.0 + intro_common_time_bonus(first_start)) * forced_multiplier
-        candidates.append(IntroDetectionCandidate(first_start, score, "subtitle-first"))
 
-    for previous, current in zip(merged, merged[1:]):
-        previous_end = previous[1]
+    for index, current in enumerate(merged):
         current_start = current[0]
-        gap = current_start - previous_end
-        if gap < 35.0 or gap > 210.0:
-            continue
         if not intro_candidate_is_valid(current_start, duration_seconds):
             continue
-        score = 72.0 + min(gap, 120.0) / 6.0 + intro_common_time_bonus(current_start)
-        if previous_end >= 12.0:
-            score += 4.0
+
+        previous_end = merged[index - 1][1] if index > 0 else 0.0
+        gap = max(0.0, current_start - previous_end)
+        after_events = [
+            event
+            for event in merged
+            if current_start <= event[0] < current_start + 55.0
+        ]
+        before_events = [
+            event
+            for event in merged
+            if current_start - 55.0 <= event[0] < current_start
+        ]
+        after_count = len(after_events)
+        before_count = len(before_events)
+        after_coverage = sum(
+            max(0.0, min(end, current_start + 55.0) - max(start, current_start))
+            for start, end in after_events
+        )
+
+        # The first subtitle is not evidence by itself. It only becomes useful
+        # when several subsequent cues prove that normal dialogue has started.
+        sustained_dialogue = after_count >= 3 and after_coverage >= 5.0
+        density_increase = after_count >= before_count + 2
+        meaningful_gap = gap >= 18.0
+        if not sustained_dialogue or not (meaningful_gap or density_increase):
+            continue
+
+        score = (
+            34.0
+            + min(gap, 90.0) * 0.28
+            + min(after_count, 9) * 2.8
+            + min(after_coverage, 24.0) * 0.55
+            + max(0, after_count - before_count) * 1.8
+            + intro_common_time_bonus(current_start)
+        )
+        source = "subtitle-gap" if gap >= 35.0 else "subtitle-dialogue"
         candidates.append(
             IntroDetectionCandidate(
                 current_start,
                 score * forced_multiplier,
-                "subtitle-gap",
+                source,
             )
         )
 
     return top_intro_candidates(candidates, duration_seconds)
-
-
-def subtitle_first_start_seconds(item: TrackItem) -> float:
-    starts = [
-        start
-        for start, _end in parse_subtitle_intro_events(item.path)
-        if start >= 0
-    ]
-    return min(starts, default=0.0)
-
-
-def regular_subtitle_intro_start_seconds(items: list[TrackItem]) -> float:
-    starts = [
-        start
-        for item in items
-        if is_regular_subtitle_track_item(item)
-        for start in [subtitle_first_start_seconds(item)]
-        if start > 0
-    ]
-    return min(starts, default=0.0)
 
 
 def intro_item_paths(
@@ -4810,6 +4855,18 @@ def run_intro_ffmpeg_analysis(
     return f"{process.stdout}\n{process.stderr}"
 
 
+def intro_ffmpeg_input_args(path: Path) -> list[str]:
+    """Build an FFmpeg input that also works for extracted raw video."""
+    args = ["-fflags", "+genpts"]
+    suffix = path.suffix.lower()
+    if suffix in {".h264", ".avc"}:
+        args.extend(["-f", "h264"])
+    elif suffix in {".h265", ".hevc"}:
+        args.extend(["-f", "hevc"])
+    args.extend(["-i", str(path)])
+    return args
+
+
 def blackdetect_intro_candidates(
     path: Path,
     duration_seconds: float = 0.0,
@@ -4818,9 +4875,6 @@ def blackdetect_intro_candidates(
     register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
     unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
 ) -> list[IntroDetectionCandidate]:
-    if path.suffix.lower() in VIDEO_EXTENSIONS:
-        return []
-
     ffmpeg = ffmpeg_path()
     args = [
         ffmpeg,
@@ -4828,8 +4882,7 @@ def blackdetect_intro_candidates(
         "-nostats",
         "-t",
         str(INTRO_DETECTION_WINDOW_SECONDS),
-        "-i",
-        str(path),
+        *intro_ffmpeg_input_args(path),
         "-map",
         "0:v:0?",
         "-an",
@@ -4867,6 +4920,56 @@ def blackdetect_intro_candidates(
     return top_intro_candidates(candidates, duration_seconds)
 
 
+def scenechange_intro_candidates(
+    path: Path,
+    duration_seconds: float = 0.0,
+    *,
+    cancel_event: threading.Event | None = None,
+    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+) -> list[IntroDetectionCandidate]:
+    """Find exact video cut timestamps that can refine another intro signal."""
+    ffmpeg = ffmpeg_path()
+    args = [
+        ffmpeg,
+        "-hide_banner",
+        "-nostats",
+        "-t",
+        str(INTRO_DETECTION_WINDOW_SECONDS),
+        *intro_ffmpeg_input_args(path),
+        "-map",
+        "0:v:0?",
+        "-an",
+        "-sn",
+        "-vf",
+        "select='gt(scene,0.32)',showinfo",
+        "-f",
+        "null",
+        "-",
+    ]
+    output = run_intro_ffmpeg_analysis(
+        args,
+        cancel_event=cancel_event,
+        register_process=register_process,
+        unregister_process=unregister_process,
+    )
+
+    candidates: list[IntroDetectionCandidate] = []
+    seen_milliseconds: set[int] = set()
+    for match in re.finditer(r"pts_time:(\d+(?:\.\d+)?)", output):
+        seconds = parse_ffmpeg_float(match.group(1))
+        if seconds is None or not intro_candidate_is_valid(seconds, duration_seconds):
+            continue
+        key = int(round(seconds * 1000))
+        if key in seen_milliseconds:
+            continue
+        seen_milliseconds.add(key)
+        score = 27.0 + intro_common_time_bonus(seconds)
+        candidates.append(IntroDetectionCandidate(seconds, score, "scenechange"))
+
+    return candidates
+
+
 def silencedetect_intro_candidates(
     path: Path,
     duration_seconds: float = 0.0,
@@ -4882,8 +4985,7 @@ def silencedetect_intro_candidates(
         "-nostats",
         "-t",
         str(INTRO_DETECTION_WINDOW_SECONDS),
-        "-i",
-        str(path),
+        *intro_ffmpeg_input_args(path),
         "-map",
         "0:a:0?",
         "-vn",
@@ -4944,8 +5046,7 @@ def audio_rms_samples_for_intro(
         "-nostats",
         "-t",
         str(INTRO_DETECTION_WINDOW_SECONDS),
-        "-i",
-        str(path),
+        *intro_ffmpeg_input_args(path),
         "-map",
         "0:a:0?",
         "-vn",
@@ -5034,6 +5135,47 @@ def audio_energy_intro_candidates(
     return top_intro_candidates(candidates, duration_seconds)
 
 
+def intro_candidate_group(candidate: IntroDetectionCandidate) -> str:
+    if candidate.source.startswith("subtitle"):
+        return "subtitle"
+    if candidate.source in {"blackdetect", "scenechange"}:
+        return "video"
+    if candidate.source in {"silencedetect", "audio-energy"}:
+        return "audio"
+    return "other"
+
+
+def intro_candidate_is_media_boundary(candidate: IntroDetectionCandidate) -> bool:
+    return intro_candidate_group(candidate) in {"video", "audio"}
+
+
+def intro_boundary_anchor(
+    cluster: list[IntroDetectionCandidate],
+) -> IntroDetectionCandidate:
+    """Choose an actual cut/end timestamp rather than averaging clocks."""
+    non_scene = [item for item in cluster if item.source != "scenechange"]
+    center_items = non_scene or cluster
+    center = sum(item.seconds * max(item.score, 1.0) for item in center_items) / sum(
+        max(item.score, 1.0) for item in center_items
+    )
+
+    # blackdetect reports black_end and silencedetect reports silence_end; both
+    # are already end boundaries. Prefer them over a scene cut at the *start*
+    # of the transition, which would place the chapter slightly too early.
+    priority = {
+        "blackdetect": 0,
+        "silencedetect": 1,
+        "scenechange": 2,
+        "subtitle-gap": 3,
+        "subtitle-dialogue": 4,
+        "audio-energy": 5,
+    }
+    return min(
+        cluster,
+        key=lambda item: (priority.get(item.source, 9), abs(item.seconds - center)),
+    )
+
+
 def select_intro_detection_candidate(
     candidates: list[IntroDetectionCandidate],
     duration_seconds: float = 0.0,
@@ -5048,57 +5190,103 @@ def select_intro_detection_candidate(
 
     clusters: list[list[IntroDetectionCandidate]] = []
     for candidate in sorted(valid, key=lambda item: item.seconds):
-        if not clusters:
-            clusters.append([candidate])
-            continue
-        cluster_seconds = mean_value([item.seconds for item in clusters[-1]])
-        if abs(candidate.seconds - cluster_seconds) <= INTRO_DETECTION_CLUSTER_SECONDS:
-            clusters[-1].append(candidate)
-        else:
+        placed = False
+        for cluster in reversed(clusters):
+            center = mean_value([item.seconds for item in cluster])
+            if abs(candidate.seconds - center) <= INTRO_DETECTION_CLUSTER_SECONDS:
+                cluster.append(candidate)
+                placed = True
+                break
+            if candidate.seconds - center > INTRO_DETECTION_CLUSTER_SECONDS:
+                break
+        if not placed:
             clusters.append([candidate])
 
-    best: IntroDetectionCandidate | None = None
+    scored: list[IntroDetectionCandidate] = []
     for cluster in clusters:
-        unique_sources = {item.source for item in cluster}
-        score = max(item.score for item in cluster)
-        score += sum(item.score for item in cluster if item.score != score) * 0.40
-        score += max(0, len(unique_sources) - 1) * 6.0
-        seconds = sum(item.seconds * item.score for item in cluster) / sum(
-            item.score for item in cluster
-        )
-        candidate = IntroDetectionCandidate(seconds, score, "+".join(sorted(unique_sources)))
-        if best is None or candidate.score > best.score:
-            best = candidate
+        group_best: dict[str, IntroDetectionCandidate] = {}
+        for item in cluster:
+            group = intro_candidate_group(item)
+            current = group_best.get(group)
+            if current is None or item.score > current.score:
+                group_best[group] = item
 
-    if best is None or best.score < INTRO_DETECTION_MIN_CONFIDENCE:
+        evidence_groups = {group for group in group_best if group != "other"}
+        media_groups = evidence_groups & {"video", "audio"}
+
+        # One black frame, one silence, or one RMS drop is not enough. A valid
+        # boundary needs independent agreement from at least two evidence
+        # groups, one of which must come from the media itself.
+        if len(evidence_groups) < 2 or not media_groups:
+            continue
+
+        ordered = sorted(
+            (item.score for group, item in group_best.items() if group != "other"),
+            reverse=True,
+        )
+        score = ordered[0]
+        if len(ordered) > 1:
+            score += ordered[1] * 0.48
+        if len(ordered) > 2:
+            score += ordered[2] * 0.24
+        score += (len(evidence_groups) - 1) * 8.0
+
+        cluster_time = mean_value([item.seconds for item in cluster])
+        if 45.0 <= cluster_time <= 180.0:
+            score += 8.0
+        elif cluster_time > 210.0:
+            score -= 14.0
+
+        anchor = intro_boundary_anchor(cluster)
+        scored.append(
+            IntroDetectionCandidate(
+                anchor.seconds,
+                score,
+                "+".join(sorted({item.source for item in cluster})),
+            )
+        )
+
+    if not scored:
         return None
-    return best
+
+    strongest = max(candidate.score for candidate in scored)
+    threshold = max(INTRO_DETECTION_MIN_CONFIDENCE, strongest - 10.0)
+    plausible = [candidate for candidate in scored if candidate.score >= threshold]
+    if not plausible:
+        return None
+
+    # The intro end is normally the first strongly corroborated transition.
+    # Choosing the earliest near-best cluster prevents a later commercial-like
+    # silence or dark scene from replacing the real opening boundary.
+    return min(plausible, key=lambda candidate: candidate.seconds)
 
 
 def detect_intro_chapter_start_seconds(
     items: list[TrackItem],
     duration_seconds: float = 0.0,
     *,
+    analysis_source: Path | None = None,
     cancel_event: threading.Event | None = None,
     register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
     unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
 ) -> float:
-    subtitle_start = regular_subtitle_intro_start_seconds(items)
-    if subtitle_start > 0:
-        return subtitle_start
-
     candidates: list[IntroDetectionCandidate] = []
 
+    # Subtitle timestamps are collected only as supporting hints.  Media
+    # analysis is always performed, even when subtitles exist.
     for item in items:
         if track_type_value(item) == 2 or media_kind_from_path(item.path) == "subtitle":
             candidates.extend(subtitle_intro_candidates(item, duration_seconds))
 
-    selected = select_intro_detection_candidate(candidates, duration_seconds)
-    if selected is not None and selected.score >= INTRO_DETECTION_FAST_CONFIDENCE:
-        return selected.seconds
-
-    audio_paths = intro_item_paths(items, track_type=0, media_kind="audio")
-    video_paths = intro_item_paths(items, track_type=1, media_kind="video")
+    source = analysis_source if analysis_source is not None and analysis_source.is_file() else None
+    if source is not None:
+        # In batch mode this is the original MKV/MP4. It preserves exact
+        # timestamps and avoids guessing from elementary .h264/.h265 streams.
+        audio_paths = [source]
+        video_paths = [source]
+    else:
+        audio_paths = intro_item_paths(items, track_type=0, media_kind="audio")
+        video_paths = intro_item_paths(items, track_type=1, media_kind="video")
 
     try:
         for path in video_paths:
@@ -5130,6 +5318,29 @@ def detect_intro_chapter_start_seconds(
                     unregister_process=unregister_process,
                 )
             )
+
+        # Scene cuts are numerous, so use them only when they are close to an
+        # independently detected subtitle/audio/video signal.  This refines an
+        # approximate energy transition to the exact video frame boundary.
+        reference_candidates = [
+            candidate
+            for candidate in candidates
+            if intro_candidate_is_media_boundary(candidate)
+        ]
+        for path in video_paths:
+            for scene_candidate in scenechange_intro_candidates(
+                path,
+                duration_seconds,
+                cancel_event=cancel_event,
+                register_process=register_process,
+                unregister_process=unregister_process,
+            ):
+                if any(
+                    abs(scene_candidate.seconds - reference.seconds)
+                    <= INTRO_DETECTION_CLUSTER_SECONDS
+                    for reference in reference_candidates
+                ):
+                    candidates.append(scene_candidate)
     except OperationCancelled:
         raise
     except UserVisibleError:
@@ -5167,7 +5378,9 @@ def write_auto_chapters_file(
     end_seconds = end_minutes * 60
     fallback_start_seconds = interval_seconds * start_number
     if intro_start_seconds > 0:
-        current_seconds = intro_start_seconds + interval_seconds * (start_number - 1)
+        # The start number controls the chapter label only.  The first generated
+        # chapter must be placed exactly at the detected end of the intro.
+        current_seconds = intro_start_seconds
     else:
         current_seconds = fallback_start_seconds
 
@@ -5225,6 +5438,7 @@ def resolve_chapter_path(
             intro_start_seconds = detect_intro_chapter_start_seconds(
                 items,
                 duration_seconds,
+                analysis_source=options.analysis_source,
                 cancel_event=cancel_event,
                 register_process=register_process,
                 unregister_process=unregister_process,
@@ -6374,6 +6588,82 @@ def write_original_or_convert(data: bytes, file_path: str, destination: Path, im
             image.save(destination, image_format)
 
 
+def prepare_fixed_tmdb_logo(data: bytes, file_path: str, destination: Path) -> None:
+    """Create a fixed-size, compact PNG logo while preserving transparency."""
+    suffix = Path(file_path).suffix.lower()
+    if suffix == ".svg":
+        raise UserVisibleError(ui_text("error_tmdb_svg_logo", name=destination.name))
+    if Image is None or ImageOps is None:
+        raise UserVisibleError(ui_text("error_pillow_image_convert"))
+
+    try:
+        with Image.open(io.BytesIO(data)) as opened:
+            logo = ImageOps.exif_transpose(opened).convert("RGBA")
+    except (OSError, ValueError) as exc:
+        raise UserVisibleError(str(exc)) from exc
+
+    alpha = logo.getchannel("A")
+    visible_bounds = alpha.getbbox()
+    if visible_bounds is None:
+        logo = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+    else:
+        logo = logo.crop(visible_bounds)
+
+    max_width, max_height = TMDB_LOGO_CONTENT_SIZE
+    width, height = logo.size
+    scale = min(max_width / max(1, width), max_height / max(1, height))
+    resized_size = (
+        max(1, round(width * scale)),
+        max(1, round(height * scale)),
+    )
+    if resized_size != logo.size:
+        logo = logo.resize(resized_size, Image.Resampling.LANCZOS)
+
+    canvas_width, canvas_height = TMDB_LOGO_CANVAS_SIZE
+    canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
+    offset = (
+        (canvas_width - logo.width) // 2,
+        (canvas_height - logo.height) // 2,
+    )
+    canvas.alpha_composite(logo, offset)
+
+    candidates: list[bytes] = []
+
+    rgba_buffer = io.BytesIO()
+    canvas.save(
+        rgba_buffer,
+        "PNG",
+        optimize=True,
+        compress_level=9,
+    )
+    candidates.append(rgba_buffer.getvalue())
+
+    if len(candidates[0]) > TMDB_LOGO_MAX_BYTES:
+        quantize_method = getattr(getattr(Image, "Quantize", object()), "FASTOCTREE", 2)
+        dither_none = getattr(getattr(Image, "Dither", object()), "NONE", 0)
+        for colour_count in (256, 192, 128, 96, 64, 48, 32):
+            paletted = canvas.quantize(
+                colors=colour_count,
+                method=quantize_method,
+                dither=dither_none,
+            )
+            palette_buffer = io.BytesIO()
+            paletted.save(
+                palette_buffer,
+                "PNG",
+                optimize=True,
+                compress_level=9,
+            )
+            encoded = palette_buffer.getvalue()
+            candidates.append(encoded)
+            if len(encoded) <= TMDB_LOGO_MAX_BYTES:
+                break
+
+    acceptable = [item for item in candidates if len(item) <= TMDB_LOGO_MAX_BYTES]
+    output_bytes = acceptable[0] if acceptable else min(candidates, key=len)
+    destination.write_bytes(output_bytes)
+
+
 def resize_jpeg_cover_art(source: Path, destination: Path, smallest_side: int) -> None:
     if Image is None:
         raise UserVisibleError(ui_text("error_pillow_small_cover"))
@@ -6406,6 +6696,7 @@ def download_optional_tmdb_image(
     ready_message: str | None,
     *,
     replace_existing: bool = False,
+    fixed_tmdb_logo: bool = False,
 ) -> bool:
     if destination.exists() and not replace_existing:
         log(ui_text("log_file_exists_skipped", name=destination.name))
@@ -6417,7 +6708,10 @@ def download_optional_tmdb_image(
     file_path = str(image["file_path"])
     try:
         image_bytes = client.download_bytes(file_path)
-        write_original_or_convert(image_bytes, file_path, destination, image_format)
+        if fixed_tmdb_logo:
+            prepare_fixed_tmdb_logo(image_bytes, file_path, destination)
+        else:
+            write_original_or_convert(image_bytes, file_path, destination, image_format)
     except UserVisibleError as exc:
         log(ui_text("log_file_prepare_skipped", name=destination.name, error=exc))
         return False
@@ -6858,6 +7152,7 @@ def download_tmdb_assets(
         log,
         ui_text("log_logo_ready"),
         replace_existing=replace_existing,
+        fixed_tmdb_logo=True,
     )
 
     ensure_tmdb_tags_file(
@@ -12967,6 +13262,8 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 episode_settings.output_path.parent.mkdir(parents=True, exist_ok=True)
                 if episode_settings.auto_chapters and episode_settings.auto_chapter_detect_intro:
                     self.queue_log(self.tr("log_detecting_intro_end"))
+                episode_chapter_options = self.chapter_options_from_settings(episode_settings)
+                episode_chapter_options.analysis_source = task.source
                 mux_args, missing_optional = build_mkvmerge_args(
                     config,
                     episode_settings.media_dir,
@@ -12974,7 +13271,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     mux_title,
                     episode_settings.include_extra_subtitles,
                     episode_settings.video_fps,
-                    self.chapter_options_from_settings(episode_settings),
+                    episode_chapter_options,
                     episode_settings.audio_language_order,
                     episode_settings.subtitle_language_order,
                     episode_settings.tag_language,
@@ -12990,7 +13287,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     mux_title,
                     episode_settings.include_extra_subtitles,
                     episode_settings.video_fps,
-                    self.chapter_options_from_settings(episode_settings),
+                    episode_chapter_options,
                     episode_settings.audio_language_order,
                     episode_settings.subtitle_language_order,
                     episode_settings.tag_language,
