@@ -76,6 +76,7 @@ def bundled_resource_path(name: str) -> Path:
 
 APP_DIR = app_runtime_dir()
 APP_NAME = "G-TMCE"
+APP_ID = "g-tmce"
 APP_REPOSITORY_URL = "https://github.com/G-grbz/G-TMCE"
 APP_TAG_SIMPLE_TAGS = (
     ("G_TMCE", APP_NAME),
@@ -97,9 +98,67 @@ def read_app_version() -> str:
     return version or DEFAULT_APP_VERSION
 
 
+def xdg_data_dirs() -> list[Path]:
+    data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    candidates = [
+        Path(data_home).expanduser()
+        if data_home
+        else Path.home() / ".local" / "share"
+    ]
+    for raw_path in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(
+        os.pathsep
+    ):
+        raw_path = raw_path.strip()
+        if raw_path:
+            candidates.append(Path(raw_path).expanduser())
+
+    unique_candidates: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = os.fspath(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_candidates.append(candidate)
+    return unique_candidates
+
+
+def installed_icon_paths() -> list[Path]:
+    icon_names = (f"{APP_ID}.png", f"{APP_NAME}.png")
+    icon_sizes = (
+        "1024x1024",
+        "512x512",
+        "256x256",
+        "128x128",
+        "64x64",
+        "48x48",
+        "32x32",
+        "24x24",
+        "16x16",
+    )
+    candidates: list[Path] = []
+    for data_dir in xdg_data_dirs():
+        for size in icon_sizes:
+            for icon_name in icon_names:
+                candidates.append(data_dir / "icons" / "hicolor" / size / "apps" / icon_name)
+        for icon_name in icon_names:
+            candidates.append(data_dir / "pixmaps" / icon_name)
+    return candidates
+
+
+def app_logo_path() -> Path:
+    bundled = bundled_resource_path("logo.png")
+    if bundled.exists():
+        return bundled
+    for candidate in installed_icon_paths():
+        if candidate.exists():
+            return candidate
+    return bundled
+
+
 DEFAULT_TEMPLATE = bundled_resource_path("mkv.mtxcfg")
 APP_VERSION = read_app_version()
-LOGO_PATH = bundled_resource_path("logo.png")
+LOGO_PATH = app_logo_path()
 MAIN_WINDOW_WIDTH = 1360
 MAIN_WINDOW_HEIGHT = 820
 MAIN_WINDOW_MIN_WIDTH = 1040

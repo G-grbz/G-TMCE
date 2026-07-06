@@ -299,7 +299,7 @@ install_icon() {
     return
   fi
 
-  for size in 16 24 32 48 64 128 256 512; do
+  for size in 16 24 32 48 64 128 256 512 1024; do
     icon_dir="/usr/share/icons/hicolor/${size}x${size}/apps"
     mkdir -p "$icon_dir"
     cp "$INSTALL_DIR/logo.png" "$icon_dir/${APP_ID}.png"
@@ -331,7 +331,7 @@ Comment=Create MKV files with TMDB metadata and extract tracks, subtitles, chapt
 Comment[tr]=TMDB verileriyle MKV oluşturur; parça, altyazı, chapter ve ekleri çıkarır
 
 Exec=${BIN_LINK} %F
-Icon=${INSTALL_DIR}/logo.png
+Icon=${APP_ID}
 Path=${INSTALL_DIR}
 
 StartupWMClass=G-TMCE
@@ -405,7 +405,7 @@ ServiceTypes=KonqPopupMenu/Plugin
 X-KDE-ServiceTypes=KonqPopupMenu/Plugin
 X-KDE-Priority=TopLevel
 
-Icon=${INSTALL_DIR}/logo.png
+Icon=${APP_ID}
 
 Actions=openWithGTMCEExtract;
 
@@ -413,7 +413,7 @@ Actions=openWithGTMCEExtract;
 Name=Open with G-TMCE Extract
 Name[tr]=G-TMCE Extract ile Aç
 
-Icon=${INSTALL_DIR}/logo.png
+Icon=${APP_ID}
 Exec=${BIN_LINK} %F
 EOF
 
@@ -441,7 +441,7 @@ uninstall_application() {
   rm -f "$APP_DESKTOP_DIR/${APP_ID}.desktop"
   rm -f "$PIXMAP_DIR/${APP_ID}.png"
 
-  for size in 16 24 32 48 64 128 256 512; do
+  for size in 16 24 32 48 64 128 256 512 1024; do
     rm -f "/usr/share/icons/hicolor/${size}x${size}/apps/${APP_ID}.png"
   done
 
