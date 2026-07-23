@@ -288,6 +288,7 @@ UI_TEXT = {
         "path_track_folder": "Track folder",
         "path_output_mkv": "Output MKV",
         "label_output_name_extra": "Output name suffix",
+        "option_output_name_year": "Year",
         "button_browse": "Browse",
         "button_show": "Show",
         "button_update_third_party": "Update Tools",
@@ -603,6 +604,7 @@ UI_TEXT = {
         "path_track_folder": "Parça klasörü",
         "path_output_mkv": "Çıktı MKV",
         "label_output_name_extra": "Çıktı adı eki",
+        "option_output_name_year": "Yıl",
         "button_browse": "Seç",
         "button_show": "Göster",
         "button_update_third_party": "Araçları Güncelle",
@@ -1813,6 +1815,7 @@ class AppSettings:
     media_dir: Path
     output_path: Path
     output_name_extra: str
+    output_name_year: bool
     api_key: str
     tmdb_id: str
     media_type: str
@@ -2963,6 +2966,70 @@ def output_path_without_name_extra(output_path: Path, extra: str) -> Path:
         return output_path
     stem = stem[: -len(cleaned_extra)] or "output"
     return output_path.with_name(f"{stem}{suffix}")
+
+
+def release_year_from_text(value: str) -> str:
+    match = re.search(r"(?:^|[ ._\-\[\(])((?:19|20)\d{2})(?:$|[ ._\-\]\)])", str(value or ""))
+    return match.group(1) if match else ""
+
+
+def local_release_year(media_dir: Path, output_path: Path | None = None, extra: str = "") -> str:
+    candidates: list[str] = []
+    if output_path is not None:
+        base_output = output_path_without_name_extra(output_path, extra)
+        candidates.append(base_output.stem if base_output.suffix else base_output.name)
+
+    for directory in (media_dir, media_dir.parent):
+        try:
+            name = directory.name
+        except Exception:
+            name = ""
+        if name:
+            candidates.append(name)
+
+    try:
+        for path in media_dir.iterdir():
+            if not path.is_file():
+                continue
+            if path.suffix.lower() in VIDEO_CONTAINER_EXTENSIONS or path.suffix.lower() in VIDEO_EXTENSIONS:
+                candidates.append(path.stem)
+    except OSError:
+        pass
+
+    for candidate in candidates:
+        year = release_year_from_text(candidate)
+        if year:
+            return year
+    return ""
+
+
+def output_path_with_year(output_path: Path, year: str, extra: str = "") -> Path:
+    year = str(year or "").strip()
+    if not re.fullmatch(r"(?:19|20)\d{2}", year):
+        return output_path_with_name_extra(output_path, extra)
+
+    base_output = output_path_without_name_extra(output_path, extra)
+    suffix = base_output.suffix or ".mkv"
+    stem = base_output.stem if base_output.suffix else base_output.name
+    if not release_year_from_text(stem):
+        stem = f"{stem.rstrip()} ({year})"
+    base_output = base_output.with_name(f"{stem}{suffix}")
+    return output_path_with_name_extra(base_output, extra)
+
+
+def output_path_with_optional_year(
+    output_path: Path,
+    *,
+    enabled: bool,
+    media_type: str,
+    media_dir: Path,
+    extra: str,
+    tmdb_year: str = "",
+) -> Path:
+    if not enabled or normalise_tmdb_media_type(media_type) != "movie":
+        return output_path_with_name_extra(output_path, extra)
+    year = local_release_year(media_dir, output_path, extra) or str(tmdb_year or "").strip()
+    return output_path_with_year(output_path, year, extra)
 
 
 def tmdb_output_path(media_dir: Path, title: str) -> Path:
@@ -7127,7 +7194,7 @@ def download_tmdb_assets(
     episode_ref: EpisodeRef | None = None,
     *,
     replace_existing: bool = False,
-) -> str:
+) -> tuple[str, str]:
     client = TMDBClient(settings.api_key)
     language = normalise_language(settings.image_language)
     tag_language = normalise_language(settings.tag_language)
@@ -7230,13 +7297,16 @@ def download_tmdb_assets(
             f"/tv/{tmdb_id}/season/{episode_ref.season}/episode/{episode_ref.episode}",
             {"language": detail_language(language)},
         )
-        return tv_episode_output_title(
-            title,
-            episode_ref,
-            tv_episode_title_from_details(episode_details),
+        return (
+            tv_episode_output_title(
+                title,
+                episode_ref,
+                tv_episode_title_from_details(episode_details),
+            ),
+            result_year(details),
         )
 
-    return title
+    return title, result_year(details)
 
 
 def find_tmdb_match_from_folder(
@@ -8807,6 +8877,9 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.output_name_extra_var = tk.StringVar(
             value=self.saved_preferences.get("output_name_extra", "")
         )
+        self.output_name_year_var = tk.BooleanVar(
+            value=self.saved_preferences.get("output_name_year", "false") == "true"
+        )
         self.current_output_name_extra = self.output_name_extra_var.get()
         self.extract_source_var = tk.StringVar()
         self.extract_output_dir_var = tk.StringVar()
@@ -9684,16 +9757,24 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         ).grid(row=row, column=0, sticky="w", pady=5)
         name_row = ttk.Frame(form)
         name_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
-        name_row.columnconfigure(0, weight=1)
-        name_row.columnconfigure(2, weight=2)
-        ttk.Entry(name_row, textvariable=self.output_name_extra_var).grid(row=0, column=0, sticky="ew")
+        name_row.columnconfigure(1, weight=1)
+        name_row.columnconfigure(3, weight=2)
+        self.localize_widget(
+            ttk.Checkbutton(
+                name_row,
+                variable=self.output_name_year_var,
+                command=self.on_output_name_year_changed,
+            ),
+            "option_output_name_year",
+        ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(name_row, textvariable=self.output_name_extra_var).grid(row=0, column=1, sticky="ew")
         self.localize_widget(
             ttk.Label(name_row),
             "label_mkv_title",
-        ).grid(row=0, column=1, sticky="w", padx=(16, 8))
+        ).grid(row=0, column=2, sticky="w", padx=(16, 8))
         ttk.Entry(name_row, textvariable=self.title_var).grid(
             row=0,
-            column=2,
+            column=3,
             sticky="ew",
         )
         row += 1
@@ -10000,7 +10081,38 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.update_download_before_mux_state()
 
     def output_path_with_current_name_extra(self, output_path: Path) -> Path:
-        return output_path_with_name_extra(output_path, self.output_name_extra_var.get())
+        output_path = output_path_with_name_extra(output_path, self.output_name_extra_var.get())
+        folder_raw = self.folder_var.get().strip()
+        if not self.output_name_year_var.get() or not folder_raw:
+            return output_path
+        media_type = self.tmdb_media_type_from_display(self.media_type_display_var.get())
+        if not media_type:
+            media_type = self.media_type_var.get().strip()
+        return output_path_with_optional_year(
+            output_path,
+            enabled=True,
+            media_type=media_type,
+            media_dir=Path(folder_raw).expanduser(),
+            extra=self.output_name_extra_var.get(),
+        )
+
+    def on_output_name_year_changed(self) -> None:
+        if self.output_name_year_var.get():
+            output_raw = self.output_var.get().strip()
+            folder_raw = self.folder_var.get().strip()
+            if output_raw and folder_raw:
+                output_path = self.output_path_with_current_name_extra(Path(output_raw).expanduser())
+                self.output_var.set(str(output_path))
+                if (
+                    not local_release_year(
+                        Path(folder_raw).expanduser(),
+                        output_path,
+                        self.output_name_extra_var.get(),
+                    )
+                    and self.api_key_var.get().strip()
+                ):
+                    self.start_find_tmdb_id(auto=True)
+        self.save_preferences()
 
     def on_output_name_extra_changed(self, *_args: str) -> None:
         output_raw = self.output_var.get().strip()
@@ -10040,6 +10152,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     or self.language_var.get().strip()
                     or "en",
                     "output_name_extra": self.output_name_extra_var.get(),
+                    "output_name_year": "true" if self.output_name_year_var.get() else "false",
                     "video_fps": self.video_fps_var.get().strip(),
                     "audio_language_order": self.audio_language_order_var.get().strip(),
                     "subtitle_language_order": self.subtitle_language_order_var.get().strip(),
@@ -10264,6 +10377,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         media_dir = Path(folder_raw).expanduser()
         output_raw = self.output_var.get().strip()
         output_name_extra = self.output_name_extra_var.get()
+        output_name_year = self.output_name_year_var.get()
         api_key = self.api_key_var.get().strip()
         tmdb_id = self.tmdb_id_var.get().strip()
         media_type = self.tmdb_media_type_from_display(self.media_type_display_var.get())
@@ -10293,12 +10407,24 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         else:
             config = load_or_create_template_config(template_path, media_dir)
             output_path = default_output_path(config, media_dir)
-            output_path = output_path_with_name_extra(output_path, output_name_extra)
+            output_path = output_path_with_optional_year(
+                output_path,
+                enabled=output_name_year,
+                media_type=media_type,
+                media_dir=media_dir,
+                extra=output_name_extra,
+            )
             self.log_queue.put(
                 ("log", self.tr("log_output_default_used", path=output_path))
             )
             self.output_var.set(str(output_path))
-        output_path = output_path_with_name_extra(output_path, output_name_extra)
+        output_path = output_path_with_optional_year(
+            output_path,
+            enabled=output_name_year,
+            media_type=media_type,
+            media_dir=media_dir,
+            extra=output_name_extra,
+        )
         if media_type not in {"movie", "tv"}:
             raise UserVisibleError(ui_text("error_tmdb_media_type"))
         normalize_video_fps(video_fps)
@@ -10315,6 +10441,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             media_dir=media_dir,
             output_path=output_path,
             output_name_extra=output_name_extra,
+            output_name_year=output_name_year,
             api_key=api_key,
             tmdb_id=tmdb_id,
             media_type=media_type,
@@ -11438,6 +11565,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             media_dir=source_dir,
             output_path=source_dir / "output.mkv",
             output_name_extra=self.output_name_extra_var.get(),
+            output_name_year=self.output_name_year_var.get(),
             api_key=api_key,
             tmdb_id=tmdb_id,
             media_type=media_type,
@@ -12399,9 +12527,13 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 episode_ref,
             )
             if image_title:
-                output_path = output_path_with_name_extra(
+                output_path = output_path_with_optional_year(
                     tmdb_output_path(settings.media_dir, image_title),
-                    settings.output_name_extra,
+                    enabled=settings.output_name_year,
+                    media_type=settings.media_type,
+                    media_dir=settings.media_dir,
+                    extra=settings.output_name_extra,
+                    tmdb_year=found_year,
                 )
                 self.log_queue.put(("set_output", str(output_path)))
                 self.queue_log(
@@ -12505,11 +12637,19 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             return
 
         def work() -> None:
-            title = download_tmdb_assets(settings, self.queue_log, replace_existing=True)
+            title, tmdb_year = download_tmdb_assets(
+                settings,
+                self.queue_log,
+                replace_existing=True,
+            )
             if title:
-                output_path = output_path_with_name_extra(
+                output_path = output_path_with_optional_year(
                     tmdb_output_path(settings.media_dir, title),
-                    settings.output_name_extra,
+                    enabled=settings.output_name_year,
+                    media_type=settings.media_type,
+                    media_dir=settings.media_dir,
+                    extra=settings.output_name_extra,
+                    tmdb_year=tmdb_year,
                 )
                 self.log_queue.put(("set_output", str(output_path)))
                 self.queue_log(
@@ -12624,11 +12764,15 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             settings.output_path.parent.mkdir(parents=True, exist_ok=True)
 
             if settings.download_before_mux:
-                title = download_tmdb_assets(settings, self.queue_log)
+                title, tmdb_year = download_tmdb_assets(settings, self.queue_log)
                 if title:
-                    settings.output_path = output_path_with_name_extra(
+                    settings.output_path = output_path_with_optional_year(
                         tmdb_output_path(settings.media_dir, title),
-                        settings.output_name_extra,
+                        enabled=settings.output_name_year,
+                        media_type=settings.media_type,
+                        media_dir=settings.media_dir,
+                        extra=settings.output_name_extra,
+                        tmdb_year=tmdb_year,
                     )
                     settings.output_path.parent.mkdir(parents=True, exist_ok=True)
                     self.log_queue.put(("set_output", str(settings.output_path)))
@@ -13256,7 +13400,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     )
 
                 if episode_settings.download_before_mux:
-                    output_title = download_tmdb_assets(
+                    output_title, _tmdb_year = download_tmdb_assets(
                         episode_settings,
                         self.queue_log,
                         episode_ref=task.episode_ref,
