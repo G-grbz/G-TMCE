@@ -299,6 +299,21 @@ UI_TEXT = {
         "media_type_movie": "Movie",
         "media_type_tv": "TV",
         "button_find_id": "Find ID",
+        "window_tmdb_search_title": "Search TMDB",
+        "label_tmdb_search_query": "Movie / TV title",
+        "button_tmdb_search": "Search",
+        "label_tmdb_search_status_ready": "Enter a title to search movies and TV shows.",
+        "label_tmdb_search_status_searching": "Searching TMDB...",
+        "label_tmdb_search_status_no_results": "No movie or TV results were found.",
+        "label_tmdb_search_status_results": "Found {count} movie / TV results.",
+        "error_tmdb_search_query_empty": "Enter a movie or TV title.",
+        "error_tmdb_search_no_selection": "Select a TMDB result.",
+        "heading_tmdb_search_type": "Type",
+        "heading_tmdb_search_title": "Title",
+        "heading_tmdb_search_original_title": "Original title",
+        "heading_tmdb_search_year": "Year",
+        "heading_tmdb_search_id": "TMDB ID",
+        "button_tmdb_use_selected": "Use Selected",
         "label_mkv_title": "MKV title",
         "label_default_tracks": "Default tracks",
         "label_audio_order": "Audio priority",
@@ -615,6 +630,21 @@ UI_TEXT = {
         "media_type_movie": "Film",
         "media_type_tv": "Dizi",
         "button_find_id": "ID Bul",
+        "window_tmdb_search_title": "TMDB'de Ara",
+        "label_tmdb_search_query": "Film / dizi adı",
+        "button_tmdb_search": "Ara",
+        "label_tmdb_search_status_ready": "Film veya dizi adı girerek arama yap.",
+        "label_tmdb_search_status_searching": "TMDB aranıyor...",
+        "label_tmdb_search_status_no_results": "Film veya dizi sonucu bulunamadı.",
+        "label_tmdb_search_status_results": "{count} film / dizi sonucu bulundu.",
+        "error_tmdb_search_query_empty": "Film veya dizi adı gir.",
+        "error_tmdb_search_no_selection": "Bir TMDB sonucu seç.",
+        "heading_tmdb_search_type": "Tür",
+        "heading_tmdb_search_title": "Başlık",
+        "heading_tmdb_search_original_title": "Orijinal başlık",
+        "heading_tmdb_search_year": "Yıl",
+        "heading_tmdb_search_id": "TMDB ID",
+        "button_tmdb_use_selected": "Seçileni Kullan",
         "label_mkv_title": "MKV başlığı",
         "label_default_tracks": "Varsayılan iz",
         "label_audio_order": "Ses sırası",
@@ -3324,6 +3354,15 @@ def result_year(result: dict[str, Any]) -> str:
     return date_value[:4] if re.match(r"\d{4}", date_value) else ""
 
 
+def result_original_title(result: dict[str, Any]) -> str:
+    return str(
+        result.get("original_title")
+        or result.get("original_name")
+        or result_title(result)
+        or ""
+    )
+
+
 def score_tmdb_result(result: dict[str, Any], query: str, year: str) -> float:
     query_key = normalise_title_for_match(query)
     title_key = normalise_title_for_match(result_title(result))
@@ -5873,6 +5912,26 @@ class TMDBClient:
         fallback_params.pop("primary_release_year", None)
         fallback_params.pop("first_air_date_year", None)
         return self.get_json(path, fallback_params).get("results") or []
+
+    def search_multi(self, query: str, language: str) -> list[dict[str, Any]]:
+        payload = self.get_json(
+            "/search/multi",
+            {
+                "query": query,
+                "include_adult": "false",
+                "language": language,
+                "page": "1",
+            },
+        )
+        results: list[dict[str, Any]] = []
+        for result in payload.get("results") or []:
+            media_type = str(result.get("media_type") or "")
+            if media_type not in TMDB_MEDIA_TYPES:
+                continue
+            if not result.get("id") or not result_title(result):
+                continue
+            results.append(result)
+        return results
 
     def download_bytes(self, file_path: str) -> bytes:
         url = f"{TMDB_IMAGE_BASE}{file_path}"
@@ -8911,6 +8970,8 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.subtitle_query_var = tk.StringVar()
         self.subtitle_status_var = tk.StringVar()
         self.subtitle_show_password_var = tk.BooleanVar(value=False)
+        self.tmdb_search_query_var = tk.StringVar()
+        self.tmdb_search_status_var = tk.StringVar()
         self.tmdb_id_var = tk.StringVar()
         self.media_type_var = tk.StringVar(
             value=normalise_tmdb_media_type(self.saved_preferences.get("media_type", "movie"))
@@ -8968,6 +9029,11 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.subtitle_window: tk.Toplevel | None = None
         self.subtitle_results_tree: ttk.Treeview | None = None
         self.subtitle_search_button: ttk.Button | None = None
+        self.tmdb_search_window: tk.Toplevel | None = None
+        self.tmdb_search_tree: ttk.Treeview | None = None
+        self.tmdb_lookup_button: ttk.Button | None = None
+        self.tmdb_search_action_button: ttk.Button | None = None
+        self.tmdb_search_results: list[dict[str, Any]] = []
         self.subtitle_download_button: ttk.Button | None = None
         self.subtitle_best_button: ttk.Button | None = None
         self.subtitle_password_entry: ttk.Entry | None = None
@@ -9136,6 +9202,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             pass
 
         for window in (
+            self.tmdb_search_window,
             self.subtitle_window,
             self.audio_adjust_window,
             self.mux_tracks_window,
@@ -9267,6 +9334,23 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         if self.subtitle_window is not None and self.subtitle_window.winfo_exists():
             self.subtitle_window.title(f"{APP_NAME} - {self.tr('window_subtitle_download_title')}")
             self.set_subtitle_results(list(self.subtitle_results.values()))
+        if self.tmdb_search_window is not None and self.tmdb_search_window.winfo_exists():
+            self.tmdb_search_window.title(
+                f"{APP_NAME} - {self.tr('window_tmdb_search_title')}"
+            )
+            self.set_tmdb_search_results(self.tmdb_search_results)
+            status_groups = (
+                ("label_tmdb_search_status_ready",),
+                ("label_tmdb_search_status_searching",),
+                ("label_tmdb_search_status_no_results",),
+            )
+            current_tmdb_status = self.tmdb_search_status_var.get()
+            for (status_key,) in status_groups:
+                if current_tmdb_status in {
+                    texts[status_key] for texts in UI_TEXT.values()
+                }:
+                    self.tmdb_search_status_var.set(self.tr(status_key))
+                    break
         if self.log_window is not None and self.log_window.winfo_exists():
             self.log_window.title(self.tr("window_log_title", app=APP_NAME))
 
@@ -9824,6 +9908,13 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.find_tmdb_button = ttk.Button(tmdb_row, command=self.start_find_tmdb_id)
         self.localize_widget(self.find_tmdb_button, "button_find_id")
         self.find_tmdb_button.grid(row=0, column=7, padx=(8, 0))
+        self.tmdb_lookup_button = ttk.Button(
+            tmdb_row,
+            text="🔍",
+            width=3,
+            command=self.open_tmdb_search_window,
+        )
+        self.tmdb_lookup_button.grid(row=0, column=8, padx=(4, 0))
         row += 1
 
         ttk.Label(form, text="Video FPS").grid(row=row, column=0, sticky="w", pady=5)
@@ -12486,6 +12577,226 @@ class MkvCreatorApp(TK_ROOT_CLASS):
 
         self.run_background(work, self.tr("status_scanning_tracks"))
 
+    def close_tmdb_search_window(self) -> None:
+        if self.tmdb_search_window is not None:
+            try:
+                if self.tmdb_search_window.winfo_exists():
+                    self.tmdb_search_window.destroy()
+            except tk.TclError:
+                pass
+        self.tmdb_search_window = None
+        self.tmdb_search_tree = None
+        self.tmdb_search_action_button = None
+        self.tmdb_search_results = []
+
+    def open_tmdb_search_window(self) -> None:
+        if not self.api_key_var.get().strip():
+            self.show_error(
+                self.tr("dialog_missing_info"),
+                self.tr("error_tmdb_api_empty"),
+            )
+            return
+
+        self.save_preferences()
+        self.close_tmdb_search_window()
+        self.tmdb_search_results = []
+        self.tmdb_search_status_var.set(self.tr("label_tmdb_search_status_ready"))
+        if not self.tmdb_search_query_var.get().strip() and self.title_var.get().strip():
+            self.tmdb_search_query_var.set(self.title_var.get().strip())
+
+        window = tk.Toplevel(self)
+        self.tmdb_search_window = window
+        window.configure(background=UI_COLORS["window"])
+        window.title(f"{APP_NAME} - {self.tr('window_tmdb_search_title')}")
+        self.apply_window_icon(window)
+        window.geometry("960x580")
+        window.minsize(760, 430)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(1, weight=1)
+        window.protocol("WM_DELETE_WINDOW", self.close_tmdb_search_window)
+
+        form = ttk.Frame(window, padding=(18, 18, 18, 8), style="Root.TFrame")
+        form.grid(row=0, column=0, sticky="ew")
+        form.columnconfigure(1, weight=1)
+        self.localize_widget(ttk.Label(form), "label_tmdb_search_query").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=4,
+        )
+        query_entry = ttk.Entry(form, textvariable=self.tmdb_search_query_var)
+        query_entry.grid(row=0, column=1, sticky="ew", padx=8, pady=4)
+        query_entry.bind("<Return>", lambda _event: self.start_tmdb_name_search())
+        self.tmdb_search_action_button = ttk.Button(
+            form,
+            command=self.start_tmdb_name_search,
+        )
+        self.localize_widget(self.tmdb_search_action_button, "button_tmdb_search")
+        self.tmdb_search_action_button.grid(row=0, column=2, sticky="ew", pady=4)
+        ttk.Label(
+            form,
+            textvariable=self.tmdb_search_status_var,
+            style="Root.TLabel",
+            foreground=UI_COLORS["muted"],
+        ).grid(row=1, column=1, columnspan=2, sticky="ew", padx=8, pady=(0, 4))
+
+        tree_frame = ttk.Frame(window, padding=(18, 0, 18, 8), style="Root.TFrame")
+        tree_frame.grid(row=1, column=0, sticky="nsew")
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(
+            tree_frame,
+            columns=("type", "title", "original_title", "year", "tmdb_id"),
+            show="headings",
+            height=16,
+            selectmode="browse",
+        )
+        self.localize_tree_heading(tree, "type", "heading_tmdb_search_type")
+        self.localize_tree_heading(tree, "title", "heading_tmdb_search_title")
+        self.localize_tree_heading(
+            tree,
+            "original_title",
+            "heading_tmdb_search_original_title",
+        )
+        self.localize_tree_heading(tree, "year", "heading_tmdb_search_year")
+        self.localize_tree_heading(tree, "tmdb_id", "heading_tmdb_search_id")
+        tree.column("type", width=90, minwidth=75, stretch=False, anchor="center")
+        tree.column("title", width=300, minwidth=180, stretch=True)
+        tree.column("original_title", width=300, minwidth=180, stretch=True)
+        tree.column("year", width=80, minwidth=65, stretch=False, anchor="center")
+        tree.column("tmdb_id", width=100, minwidth=85, stretch=False, anchor="center")
+        tree.grid(row=0, column=0, sticky="nsew")
+        tree.bind("<Double-1>", lambda _event: self.use_selected_tmdb_search_result())
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+        self.tmdb_search_tree = tree
+
+        actions = ttk.Frame(window, padding=(18, 8, 18, 18), style="Root.TFrame")
+        actions.grid(row=2, column=0, sticky="ew")
+        actions.columnconfigure(0, weight=1)
+        actions.columnconfigure(1, weight=1)
+        use_button = ttk.Button(
+            actions,
+            command=self.use_selected_tmdb_search_result,
+            style="Accent.TButton",
+        )
+        self.localize_widget(use_button, "button_tmdb_use_selected")
+        use_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.localize_widget(
+            ttk.Button(actions, command=self.close_tmdb_search_window),
+            "button_cancel",
+        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        self.center_window(window, self)
+        query_entry.focus_set()
+        query_entry.selection_range(0, "end")
+
+    def start_tmdb_name_search(self) -> None:
+        query = self.tmdb_search_query_var.get().strip()
+        api_key = self.api_key_var.get().strip()
+        if not api_key:
+            self.show_error(self.tr("dialog_missing_info"), self.tr("error_tmdb_api_empty"))
+            return
+        if not query:
+            self.show_error(
+                self.tr("dialog_missing_info"),
+                self.tr("error_tmdb_search_query_empty"),
+            )
+            return
+
+        language = detail_language(self.ui_language_var.get())
+        self.tmdb_search_status_var.set(self.tr("label_tmdb_search_status_searching"))
+
+        def work() -> None:
+            results = TMDBClient(api_key).search_multi(query, language)
+            self.log_queue.put(("set_tmdb_search_results", results))
+            if results:
+                status = self.tr("label_tmdb_search_status_results", count=len(results))
+            else:
+                status = self.tr("label_tmdb_search_status_no_results")
+            self.log_queue.put(("set_tmdb_search_status", status))
+
+        self.run_background(work, self.tr("label_tmdb_search_status_searching"))
+
+    def set_tmdb_search_results(self, results: list[dict[str, Any]]) -> None:
+        self.tmdb_search_results = list(results)
+        tree = self.tmdb_search_tree
+        if tree is None:
+            return
+        try:
+            if not tree.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        selected_key = ""
+        selected = tree.selection()
+        if selected:
+            selected_key = selected[0]
+        for iid in tree.get_children():
+            tree.delete(iid)
+
+        for index, result in enumerate(self.tmdb_search_results):
+            media_type = normalise_tmdb_media_type(str(result.get("media_type") or ""))
+            tmdb_id = str(result.get("id") or "")
+            iid = f"{media_type}:{tmdb_id}:{index}"
+            tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    self.tr(f"media_type_{media_type}"),
+                    result_title(result),
+                    result_original_title(result),
+                    result_year(result),
+                    tmdb_id,
+                ),
+            )
+
+        if selected_key and tree.exists(selected_key):
+            tree.selection_set(selected_key)
+            tree.see(selected_key)
+        elif tree.get_children():
+            first = tree.get_children()[0]
+            tree.selection_set(first)
+            tree.focus(first)
+
+    def use_selected_tmdb_search_result(self) -> None:
+        tree = self.tmdb_search_tree
+        if tree is None:
+            return
+        selected = tree.selection()
+        if not selected:
+            self.show_error(
+                self.tr("dialog_missing_info"),
+                self.tr("error_tmdb_search_no_selection"),
+            )
+            return
+
+        values = tree.item(selected[0], "values")
+        if len(values) < 5:
+            return
+        display_type, title, _original_title, year, tmdb_id = values
+        media_type = self.tmdb_media_type_from_display(str(display_type))
+        if not media_type:
+            media_type = "movie"
+        self.tmdb_id_var.set(str(tmdb_id))
+        self.media_type_var.set(media_type)
+        self.refresh_tmdb_media_type_display()
+        self.save_preferences()
+        year_text = f" ({year})" if year else ""
+        self.queue_log(
+            self.tr(
+                "log_tmdb_id_found",
+                tmdb_id=tmdb_id,
+                title=title,
+                year_text=year_text,
+            )
+        )
+        self.close_tmdb_search_window()
+
     def start_find_tmdb_id(self, auto: bool = False) -> None:
         try:
             settings = self.collect_settings()
@@ -13735,6 +14046,8 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         buttons = (
             self.scan_button,
             self.find_tmdb_button,
+            self.tmdb_lookup_button,
+            self.tmdb_search_action_button,
             self.download_button,
             self.subtitle_button,
             self.config_button,
@@ -13868,6 +14181,10 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 )
             elif kind == "set_tmdb_id":
                 self.tmdb_id_var.set(str(value))
+            elif kind == "set_tmdb_search_results":
+                self.set_tmdb_search_results(list(value))
+            elif kind == "set_tmdb_search_status":
+                self.tmdb_search_status_var.set(str(value))
             elif kind == "set_title":
                 self.title_var.set(str(value))
             elif kind == "set_title_if_empty":
