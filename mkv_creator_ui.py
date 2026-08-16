@@ -12782,20 +12782,87 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         media_type = self.tmdb_media_type_from_display(str(display_type))
         if not media_type:
             media_type = "movie"
-        self.tmdb_id_var.set(str(tmdb_id))
+
+        tmdb_id = str(tmdb_id).strip()
+        title = str(title).strip()
+        found_year = str(year).strip()
+        if not tmdb_id:
+            return
+
+        # A manually selected TMDB result must behave like the manual "Find ID"
+        # action: keep the exact selected ID/type, then refresh every field that
+        # depends on that TMDB record instead of updating the ID alone.
+        self.tmdb_id_var.set(tmdb_id)
         self.media_type_var.set(media_type)
         self.refresh_tmdb_media_type_display()
+
+        try:
+            settings = self.collect_settings()
+        except UserVisibleError as exc:
+            self.save_preferences()
+            self.close_tmdb_search_window()
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
+            return
+
+        settings.tmdb_id = tmdb_id
+        settings.media_type = media_type
         self.save_preferences()
-        year_text = f" ({year})" if year else ""
-        self.queue_log(
-            self.tr(
-                "log_tmdb_id_found",
-                tmdb_id=tmdb_id,
-                title=title,
-                year_text=year_text,
-            )
-        )
         self.close_tmdb_search_window()
+
+        # Match start_find_tmdb_id(): refresh FPS for the current source instead
+        # of leaving a value that may belong to the previously selected title.
+        self.video_fps_var.set("")
+        settings.video_fps = ""
+
+        def work() -> None:
+            fps = detect_first_video_fps_from_media_dir(settings.media_dir)
+            self.log_queue.put(("set_video_fps", fps))
+            if fps:
+                settings.video_fps = fps
+                self.queue_log(self.tr("log_video_fps_detected", fps=fps))
+
+            episode_ref = episode_ref_from_settings(settings)
+            image_title = tmdb_output_title_for_language(
+                settings,
+                tmdb_id,
+                settings.image_language,
+                episode_ref,
+            )
+            if image_title:
+                output_path = output_path_with_optional_year(
+                    tmdb_output_path(settings.media_dir, image_title),
+                    enabled=settings.output_name_year,
+                    media_type=settings.media_type,
+                    media_dir=settings.media_dir,
+                    extra=settings.output_name_extra,
+                    tmdb_year=found_year,
+                )
+                self.log_queue.put(("set_output", str(output_path)))
+                self.queue_log(
+                    self.tr("log_output_from_artwork_language", name=output_path.name)
+                )
+
+            tag_title = tmdb_output_title_for_language(
+                settings,
+                tmdb_id,
+                settings.tag_language,
+                episode_ref,
+            )
+            if tag_title:
+                self.log_queue.put(("set_title", tag_title))
+                self.queue_log(self.tr("log_title_from_tag_language", title=tag_title))
+
+            year_text = f" ({found_year})" if found_year else ""
+            self.queue_log(
+                self.tr(
+                    "log_tmdb_id_found",
+                    tmdb_id=tmdb_id,
+                    title=image_title or tag_title or title,
+                    year_text=year_text,
+                )
+            )
+
+        self.run_background(work, self.tr("status_finding_tmdb"))
 
     def start_find_tmdb_id(self, auto: bool = False) -> None:
         try:
