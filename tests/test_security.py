@@ -186,5 +186,19 @@ class ReleaseSecurityTests(unittest.TestCase):
             self.assertIn(requirement, build_script)
 
 
+class WindowsReleaseEncodingTests(unittest.TestCase):
+    def test_release_windows_build_uses_utf8_stdio(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        windows_block = workflow.split("\n  windows:\n", 1)[1].split("\n  linux:\n", 1)[0]
+        self.assertIn('PYTHONUTF8: "1"', windows_block)
+        self.assertIn('PYTHONIOENCODING: "utf-8"', windows_block)
+
+    def test_windows_builder_ci_output_is_ascii_safe(self) -> None:
+        source = (ROOT / "build_windows_exe.py").read_text(encoding="utf-8")
+        self.assertNotIn("Hazır:", source)
+        self.assertNotIn("Bulunamadı:", source)
+        self.assertNotIn("çıktısı", source)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -60,7 +60,7 @@ def main() -> int:
     root = Path(__file__).resolve().parent
     entry = root / ENTRY_FILE
     if not entry.exists():
-        print(f"Bulunamadı: {entry}")
+        print(f"Missing: {entry}")
         return 1
 
     python = sys.executable
@@ -108,9 +108,9 @@ def main() -> int:
     exe_name = f"{APP_NAME}.exe" if os.name == "nt" else APP_NAME
     built = root / "dist" / exe_name
     if built.exists():
-        print(f"Hazır: {built}")
+        print(f"Built: {built}")
     else:
-        print("Build tamamlandı ama dist çıktısı bulunamadı.")
+        print("Build completed but dist output was not found.")
         return 1
     return 0
 
