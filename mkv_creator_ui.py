@@ -948,22 +948,61 @@ def dialog_initial_dir(value: str | Path | None) -> str:
     return str(path)
 
 
-def run_dialog_command(args: list[str]) -> str:
+def system_gui_subprocess_env() -> dict[str, str]:
+    """Return a host-safe environment for kdialog/zenity from frozen builds."""
+    env = os.environ.copy()
+
+    # PyInstaller prepends its extraction directory to LD_LIBRARY_PATH. System
+    # GUI programs such as kdialog/zenity must use the host libraries instead
+    # of the bundled copies, otherwise they can fail before showing a dialog.
+    if os.name == "posix":
+        original_ld_path = env.get("LD_LIBRARY_PATH_ORIG")
+        if original_ld_path is not None:
+            env["LD_LIBRARY_PATH"] = original_ld_path
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+        env.pop("LD_PRELOAD", None)
+
+    for key in (
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "TMDB_API_KEY",
+        "OPENSUBTITLES_API_KEY",
+        "OPENSUBTITLES_USERNAME",
+        "OPENSUBTITLES_PASSWORD",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+    ):
+        env.pop(key, None)
+
+    return env
+
+
+def run_dialog_command(args: list[str]) -> str | None:
+    """Run a host file-dialog helper. None means failure; empty means cancel."""
     try:
         process = subprocess.run(
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
+            env=system_gui_subprocess_env(),
         )
     except OSError:
+        return None
+
+    if process.returncode == 0:
+        return (process.stdout or "").strip()
+    if process.returncode == 1:
+        # kdialog and zenity both use 1 for a normal user cancellation.
         return ""
 
-    if process.returncode != 0:
-        return ""
-
-    return (process.stdout or "").strip()
+    # Any other status is an execution failure. Returning None lets callers
+    # fall back to tkinter.filedialog instead of silently doing nothing.
+    return None
 
 
 def kdialog_filter_string(filetypes: tuple[tuple[str, str], ...]) -> str:
@@ -1046,6 +1085,8 @@ def native_open_files(
     else:
         return None
 
+    if result is None:
+        return None
     if not result:
         return ()
     return tuple(path for path in result.splitlines() if path)

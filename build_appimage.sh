@@ -112,9 +112,9 @@ validate_project() {
 
   ensure_build_venv
 
-  ensure_python_package "PyInstaller" "PyInstaller>=6.15,<7"
-  ensure_python_package "PIL" "Pillow>=10,<13"
-  ensure_python_package "tkinterdnd2" "tkinterdnd2>=0.4,<1"
+  ensure_python_package "PyInstaller" "PyInstaller>=6.22.2,<7"
+  ensure_python_package "PIL" "Pillow>=12.3.0,<13"
+  ensure_python_package "tkinterdnd2" "tkinterdnd2>=0.6.2,<1"
 }
 
 build_binary() {

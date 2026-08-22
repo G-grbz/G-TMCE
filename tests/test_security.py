@@ -186,6 +186,41 @@ class ReleaseSecurityTests(unittest.TestCase):
             self.assertIn(requirement, build_script)
 
 
+class LinuxFileDialogTests(unittest.TestCase):
+    def test_system_gui_environment_restores_host_library_path(self) -> None:
+        values = {
+            "LD_LIBRARY_PATH": "/tmp/_MEI-frozen",
+            "LD_LIBRARY_PATH_ORIG": "/usr/local/lib:/usr/lib",
+            "LD_PRELOAD": "/tmp/injected.so",
+            "TMDB_API_KEY": "secret",
+        }
+        with mock.patch.dict(os.environ, values, clear=False):
+            env = app.system_gui_subprocess_env()
+        if os.name == "posix":
+            self.assertEqual(env.get("LD_LIBRARY_PATH"), "/usr/local/lib:/usr/lib")
+            self.assertNotIn("LD_PRELOAD", env)
+        self.assertNotIn("TMDB_API_KEY", env)
+
+    def test_native_dialog_execution_failure_falls_back(self) -> None:
+        failed = mock.Mock(returncode=127, stdout="")
+        with mock.patch.object(app.subprocess, "run", return_value=failed):
+            self.assertIsNone(app.run_dialog_command(["kdialog", "--getopenfilename"]))
+
+    def test_native_dialog_cancel_does_not_open_second_dialog(self) -> None:
+        cancelled = mock.Mock(returncode=1, stdout="")
+        with mock.patch.object(app.subprocess, "run", return_value=cancelled):
+            self.assertEqual(app.run_dialog_command(["kdialog", "--getopenfilename"]), "")
+
+    def test_appimage_build_dependencies_match_current_minimums(self) -> None:
+        script = (ROOT / "build_appimage.sh").read_text(encoding="utf-8")
+        for requirement in (
+            "PyInstaller>=6.22.2,<7",
+            "Pillow>=12.3.0,<13",
+            "tkinterdnd2>=0.6.2,<1",
+        ):
+            self.assertIn(requirement, script)
+
+
 class WindowsReleaseEncodingTests(unittest.TestCase):
     def test_release_windows_build_uses_utf8_stdio(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
