@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Windows EXE Smoke Build
 
 on:
   workflow_dispatch:
@@ -7,6 +7,19 @@ on:
         description: "Branch, tag, or commit to build. Leave empty for the selected branch."
         required: false
         default: ""
+  push:
+    branches:
+      - main
+    paths:
+      - "mkv_creator_ui.py"
+      - "build_windows_exe.py"
+      - "G-TMCE.spec"
+      - "requirements.txt"
+      - "requirements-build.txt"
+      - "VERSION"
+      - "logo.png"
+      - "mkv.mtxcfg"
+      - ".github/workflows/build-windows-exe.yml"
 
 permissions:
   contents: read
@@ -22,7 +35,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -46,7 +59,7 @@ jobs:
         run: |
           $version = (Get-Content VERSION | Select-Object -First 1).Trim()
           if (-not $version) { $version = 'manual' }
-          $exeName = "G-TMCE_${version}_win-x64.exe"
+          $exeName = "G-TMCE-${version}-win-x64.exe"
           Move-Item -Force "dist/G-TMCE.exe" "dist/$exeName"
           "EXE_NAME=$exeName" | Out-File -FilePath $env:GITHUB_ENV -Append
 

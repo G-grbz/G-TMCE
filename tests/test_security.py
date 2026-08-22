@@ -160,10 +160,30 @@ class ReleaseSecurityTests(unittest.TestCase):
         self.assertIn("sha256sum -c", script)
         self.assertNotIn("releases/latest/download", script)
 
-    def test_legacy_windows_workflow_is_manual_only(self) -> None:
+    def test_windows_smoke_build_runs_manually_and_on_relevant_main_pushes(self) -> None:
         workflow = (ROOT / ".github/workflows/build-windows-exe.yml").read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("push:", workflow)
+        self.assertIn("- main", workflow)
+        for watched_path in (
+            '"mkv_creator_ui.py"',
+            '"build_windows_exe.py"',
+            '"requirements.txt"',
+            '"requirements-build.txt"',
+            '"VERSION"',
+        ):
+            self.assertIn(watched_path, workflow)
         self.assertNotIn("tags:\n", workflow)
+        self.assertNotIn("gh release create", workflow)
+
+    def test_windows_build_fallback_dependencies_match_pinned_minimums(self) -> None:
+        build_script = (ROOT / "build_windows_exe.py").read_text(encoding="utf-8")
+        for requirement in (
+            "PyInstaller>=6.22.2,<7",
+            "Pillow>=12.3.0,<13",
+            "tkinterdnd2>=0.6.2,<1",
+        ):
+            self.assertIn(requirement, build_script)
 
 
 if __name__ == "__main__":
