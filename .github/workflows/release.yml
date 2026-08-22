@@ -1,0 +1,197 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '\r\n' < VERSION)"
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$GITHUB_REF_NAME" = "$VERSION"
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q -f mkv_creator_ui.py build_windows_exe.py tests
+
+      - name: Run security regression tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Audit Python dependencies
+        run: pip-audit -r requirements.txt
+
+  windows:
+    needs: verify
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Build Windows EXE
+        run: python build_windows_exe.py
+
+      - name: Package Windows artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          $source = 'dist/G-TMCE.exe'
+          if (-not (Test-Path $source)) { throw 'dist/G-TMCE.exe was not created' }
+          Copy-Item $source "release/G-TMCE-$env:VERSION-win-x64.exe"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-windows
+          path: release/*
+          if-no-files-found: error
+
+  linux:
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Build AppImage
+        run: ./build_appimage.sh
+
+      - name: Package Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          test -f dist/G-TMCE-x86_64.AppImage
+          cp dist/G-TMCE-x86_64.AppImage "release/G-TMCE-${VERSION}-x86_64.AppImage"
+          chmod +x "release/G-TMCE-${VERSION}-x86_64.AppImage"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    needs: [verify, windows, linux]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install SBOM tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      - name: Create source archive, SBOM, and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=zip --prefix="G-TMCE-${VERSION}/" -o "release/G-TMCE-${VERSION}-source.zip" "$GITHUB_SHA"
+          pip-audit -r requirements.txt --format cyclonedx-json --output "release/G-TMCE-${VERSION}.sbom.cdx.json"
+          cd release
+          sha256sum G-TMCE-* > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Attest release artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: "release/G-TMCE-*"
+
+      - name: Attach SBOM attestation to source archive
+        uses: actions/attest@v4
+        with:
+          subject-path: release/G-TMCE-${{ env.VERSION }}-source.zip
+          sbom-path: release/G-TMCE-${{ env.VERSION }}.sbom.cdx.json
+
+      - name: Publish immutable GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; refusing to overwrite published assets." >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --generate-notes --title "G-TMCE $GITHUB_REF_NAME"

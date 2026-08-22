@@ -29,9 +29,15 @@ BUILD_DIR="build"
 TOOLS_DIR=".build-tools"
 BUILD_VENV="${TOOLS_DIR}/python-venv"
 BUILD_PYTHON="${BUILD_VENV}/bin/python"
+APPIMAGETOOL_VERSION="1.9.1"
 APPIMAGETOOL="${TOOLS_DIR}/appimagetool-x86_64.AppImage"
-APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/latest/download/appimagetool-x86_64.AppImage"
-OUTPUT_PATTERN="${APP_NAME}-*.AppImage"
+APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+APPIMAGE_RUNTIME_TAG="20251108"
+APPIMAGE_RUNTIME="${TOOLS_DIR}/runtime-x86_64"
+APPIMAGE_RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/${APPIMAGE_RUNTIME_TAG}/runtime-x86_64"
+APPIMAGE_RUNTIME_SHA256="2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
+OUTPUT_FILE="${DIST_DIR}/${APP_NAME}-x86_64.AppImage"
 
 log() {
   printf '\033[1;34m[INFO]\033[0m %s\n' "$1"
@@ -91,8 +97,7 @@ cleanup_old_outputs() {
   log "Cleaning previous build artifacts..."
   rm -rf "$APPDIR" "$BUILD_DIR"
   rm -f "${APP_NAME}.spec"
-  rm -f $OUTPUT_PATTERN 2>/dev/null || true
-  rm -f "${DIST_DIR}"/${OUTPUT_PATTERN} 2>/dev/null || true
+  rm -f "$OUTPUT_FILE"
 }
 
 validate_project() {
@@ -107,9 +112,9 @@ validate_project() {
 
   ensure_build_venv
 
-  ensure_python_package "PyInstaller" "pyinstaller"
-  ensure_python_package "PIL" "Pillow>=10"
-  ensure_python_package "tkinterdnd2" "tkinterdnd2"
+  ensure_python_package "PyInstaller" "PyInstaller>=6.15,<7"
+  ensure_python_package "PIL" "Pillow>=10,<13"
+  ensure_python_package "tkinterdnd2" "tkinterdnd2>=0.4,<1"
 }
 
 build_binary() {
@@ -174,36 +179,68 @@ download_appimagetool() {
     return
   fi
 
-  log "Downloading appimagetool..."
+  log "Downloading pinned appimagetool ${APPIMAGETOOL_VERSION}..."
 
+  local temporary="${APPIMAGETOOL}.download"
+  rm -f "$temporary"
   if command_exists wget; then
-    wget -O "$APPIMAGETOOL" "$APPIMAGETOOL_URL"
+    wget --https-only --secure-protocol=TLSv1_2 --timeout=30 --tries=3 -O "$temporary" "$APPIMAGETOOL_URL"
   elif command_exists curl; then
-    curl -L -o "$APPIMAGETOOL" "$APPIMAGETOOL_URL"
+    curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 30 -o "$temporary" "$APPIMAGETOOL_URL"
   else
     fail "Neither wget nor curl is available. Please install one of them and try again."
   fi
 
-  chmod +x "$APPIMAGETOOL"
+  printf '%s  %s\n' "$APPIMAGETOOL_SHA256" "$temporary" | sha256sum -c - \
+    || fail "appimagetool SHA-256 verification failed."
+  mv -f "$temporary" "$APPIMAGETOOL"
+  chmod 0755 "$APPIMAGETOOL"
+}
+
+
+download_appimage_runtime() {
+  mkdir -p "$TOOLS_DIR"
+
+  if [[ -f "$APPIMAGE_RUNTIME" ]]; then
+    if printf '%s  %s
+' "$APPIMAGE_RUNTIME_SHA256" "$APPIMAGE_RUNTIME" | sha256sum -c - >/dev/null 2>&1; then
+      log "Using verified AppImage runtime: ${APPIMAGE_RUNTIME}"
+      return
+    fi
+    warn "Cached AppImage runtime failed verification; downloading a fresh copy."
+    rm -f "$APPIMAGE_RUNTIME"
+  fi
+
+  log "Downloading pinned AppImage runtime ${APPIMAGE_RUNTIME_TAG}..."
+  local temporary="${APPIMAGE_RUNTIME}.download"
+  rm -f "$temporary"
+  if command_exists wget; then
+    wget --https-only --secure-protocol=TLSv1_2 --timeout=30 --tries=3 -O "$temporary" "$APPIMAGE_RUNTIME_URL"
+  elif command_exists curl; then
+    curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 30 -o "$temporary" "$APPIMAGE_RUNTIME_URL"
+  else
+    fail "Neither wget nor curl is available. Please install one of them and try again."
+  fi
+
+  printf '%s  %s
+' "$APPIMAGE_RUNTIME_SHA256" "$temporary" | sha256sum -c -     || fail "AppImage runtime SHA-256 verification failed."
+  mv -f "$temporary" "$APPIMAGE_RUNTIME"
+  chmod 0644 "$APPIMAGE_RUNTIME"
 }
 
 build_appimage() {
   log "Generating AppImage package..."
 
   mkdir -p "$DIST_DIR"
+  rm -f "$OUTPUT_FILE"
 
-  ARCH=x86_64 "$APPIMAGETOOL" "$APPDIR"
+  ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN="${APPIMAGE_EXTRACT_AND_RUN:-1}" \
+    "$APPIMAGETOOL" --runtime-file "$APPIMAGE_RUNTIME" "$APPDIR" "$OUTPUT_FILE"
 
-  local generated_file
-  generated_file="$(ls -1 ${OUTPUT_PATTERN} 2>/dev/null | head -n 1 || true)"
+  [[ -f "$OUTPUT_FILE" ]] || fail "AppImage was not generated: ${OUTPUT_FILE}"
+  chmod 0755 "$OUTPUT_FILE"
 
-  [[ -n "$generated_file" ]] || fail "AppImage was not generated."
-
-  local final_file="${DIST_DIR}/${generated_file}"
-  mv -f "$generated_file" "$final_file"
-  chmod +x "$final_file"
-
-  success "AppImage build completed: ${final_file}"
+  success "AppImage build completed: ${OUTPUT_FILE}"
 }
 
 main() {
@@ -213,6 +250,7 @@ main() {
   build_binary
   create_appdir
   download_appimagetool
+  download_appimage_runtime
   build_appimage
   success "Done. You can now run the AppImage by double-clicking it or from the terminal."
 }

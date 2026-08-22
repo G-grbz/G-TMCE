@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+.build-tools/
+
+# Build outputs
+build/
+dist/
+*.spec.bak
+G-TMCE.AppDir/
+*.AppImage
+*.AppImage.zsync
+*.exe
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+settings.json
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local/runtime data
+3rdParty/
+*.log
+*.tmp
+*.download
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

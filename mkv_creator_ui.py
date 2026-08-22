@@ -12,7 +12,9 @@ import os
 import platform
 import queue
 import re
+import secrets
 import shlex
+import stat
 import shutil
 import subprocess
 import sys
@@ -188,6 +190,19 @@ MKVTOOLNIX_APPIMAGE_INDEX_URL = "https://mkvtoolnix.download/appimage/"
 MKVTOOLNIX_DOWNLOADS_URL = "https://mkvtoolnix.download/downloads.html"
 FFMPEG_RELEASE_API_URL = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
 THIRD_PARTY_USER_AGENT = f"{APP_NAME}/{APP_VERSION} Python/{sys.version_info.major}.{sys.version_info.minor}"
+THIRD_PARTY_ALLOWED_HOSTS = frozenset({
+    "api.github.com",
+    "github.com",
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "mkvtoolnix.download",
+})
+OPENSUBTITLES_ALLOWED_HOST_SUFFIX = ".opensubtitles.com"
+MAX_JSON_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_RESPONSE_BYTES = 25 * 1024 * 1024
+MAX_SUBTITLE_RESPONSE_BYTES = 25 * 1024 * 1024
+MAX_THIRD_PARTY_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
 
 UI_COLORS = {
     "window": "#f4f7fb",
@@ -2025,7 +2040,87 @@ def version_key(value: str) -> tuple[int, ...]:
     return tuple(parts + [0] * (4 - len(parts)))
 
 
+def host_matches(hostname: str, allowed_hosts: set[str] | frozenset[str], allowed_suffixes: tuple[str, ...] = ()) -> bool:
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    if host in allowed_hosts:
+        return True
+    return any(host.endswith(suffix) and host != suffix.lstrip(".") for suffix in allowed_suffixes)
+
+
+def validate_https_url(
+    url: str,
+    *,
+    allowed_hosts: set[str] | frozenset[str],
+    allowed_suffixes: tuple[str, ...] = (),
+) -> str:
+    value = str(url or "").strip()
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme.lower() != "https":
+        raise ValueError("only HTTPS URLs are allowed")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("credentials in URLs are not allowed")
+    if parsed.port not in (None, 443):
+        raise ValueError("non-standard HTTPS ports are not allowed")
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if not host_matches(hostname, allowed_hosts, allowed_suffixes):
+        raise ValueError(f"untrusted HTTPS host: {hostname or '<missing>'}")
+    return value
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, allowed_hosts: set[str] | frozenset[str], allowed_suffixes: tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self.allowed_hosts = allowed_hosts
+        self.allowed_suffixes = allowed_suffixes
+
+    def redirect_request(self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> urllib.request.Request | None:
+        validate_https_url(
+            newurl,
+            allowed_hosts=self.allowed_hosts,
+            allowed_suffixes=self.allowed_suffixes,
+        )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def safe_urlopen(
+    request: urllib.request.Request | str,
+    *,
+    timeout: int,
+    allowed_hosts: set[str] | frozenset[str],
+    allowed_suffixes: tuple[str, ...] = (),
+) -> Any:
+    url = request.full_url if isinstance(request, urllib.request.Request) else str(request)
+    validate_https_url(url, allowed_hosts=allowed_hosts, allowed_suffixes=allowed_suffixes)
+    opener = urllib.request.build_opener(SafeRedirectHandler(allowed_hosts, allowed_suffixes))
+    return opener.open(request, timeout=timeout)
+
+
+def read_response_limited(response: Any, max_bytes: int) -> bytes:
+    length_header = response.headers.get("Content-Length") if getattr(response, "headers", None) else None
+    if length_header:
+        try:
+            if int(length_header) > max_bytes:
+                raise ValueError("response exceeds maximum allowed size")
+        except ValueError as exc:
+            if str(exc) == "response exceeds maximum allowed size":
+                raise
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(min(1024 * 1024, max_bytes - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("response exceeds maximum allowed size")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def third_party_request(url: str, accept: str = "*/*") -> urllib.request.Request:
+    validate_https_url(url, allowed_hosts=THIRD_PARTY_ALLOWED_HOSTS)
     return urllib.request.Request(
         url,
         headers={
@@ -2035,17 +2130,25 @@ def third_party_request(url: str, accept: str = "*/*") -> urllib.request.Request
     )
 
 
+def open_third_party_request(request: urllib.request.Request, timeout: int) -> Any:
+    return safe_urlopen(
+        request,
+        timeout=timeout,
+        allowed_hosts=THIRD_PARTY_ALLOWED_HOSTS,
+    )
+
+
 def read_third_party_text(url: str) -> str:
-    with urllib.request.urlopen(third_party_request(url), timeout=45) as response:
-        return response.read().decode("utf-8", errors="replace")
+    with open_third_party_request(third_party_request(url), 45) as response:
+        return read_response_limited(response, MAX_JSON_RESPONSE_BYTES).decode("utf-8", errors="replace")
 
 
 def read_third_party_json(url: str) -> dict[str, Any]:
-    with urllib.request.urlopen(
+    with open_third_party_request(
         third_party_request(url, "application/vnd.github+json"),
-        timeout=45,
+        45,
     ) as response:
-        payload = response.read().decode("utf-8", errors="replace")
+        payload = read_response_limited(response, MAX_JSON_RESPONSE_BYTES).decode("utf-8", errors="replace")
     value = json.loads(payload)
     if not isinstance(value, dict):
         raise ValueError("JSON response is not an object")
@@ -2286,13 +2389,10 @@ def load_third_party_state() -> dict[str, Any]:
 
 
 def save_third_party_state(state: dict[str, Any]) -> None:
-    THIRD_PARTY_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = THIRD_PARTY_STATE_PATH.with_suffix(".json.tmp")
-    temporary.write_text(
+    atomic_write_private_text(
+        THIRD_PARTY_STATE_PATH,
         json.dumps(state, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
-    temporary.replace(THIRD_PARTY_STATE_PATH)
 
 
 def assert_third_party_child(path: Path) -> None:
@@ -2344,9 +2444,20 @@ def download_third_party_file(name: str, url: str, filename: str, digest: str = 
     temporary = destination.with_name(f"{destination.name}.download")
     remove_path(temporary)
     try:
-        with urllib.request.urlopen(third_party_request(url), timeout=300) as response:
-            with temporary.open("wb") as handle:
-                shutil.copyfileobj(response, handle, 1024 * 1024)
+        with open_third_party_request(third_party_request(url), 300) as response:
+            length_header = response.headers.get("Content-Length")
+            if length_header and int(length_header) > MAX_THIRD_PARTY_DOWNLOAD_BYTES:
+                raise ValueError("download exceeds maximum allowed size")
+            total = 0
+            with temporary.open("xb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_THIRD_PARTY_DOWNLOAD_BYTES:
+                        raise ValueError("download exceeds maximum allowed size")
+                    handle.write(chunk)
         verify_sha256(temporary, digest)
         temporary.replace(destination)
         return destination
@@ -2555,24 +2666,37 @@ def install_mkvtoolnix(latest: dict[str, str]) -> dict[str, str]:
 
 def safe_extract_tar(archive: tarfile.TarFile, destination: Path) -> None:
     root = destination.resolve()
-    for member in archive.getmembers():
+    members = archive.getmembers()
+    total_size = 0
+    for member in members:
+        if member.name.startswith(("/", "\\")):
+            raise ValueError(f"unsafe archive member: {member.name}")
         member_path = (destination / member.name).resolve()
         if member_path != root and root not in member_path.parents:
             raise ValueError(f"unsafe archive member: {member.name}")
-        if member.issym() or member.islnk():
-            link_path = (member_path.parent / member.linkname).resolve()
-            if link_path != root and root not in link_path.parents:
-                raise ValueError(f"unsafe archive link: {member.name}")
-    archive.extractall(destination)
-
+        if member.issym() or member.islnk() or member.isdev() or member.isfifo():
+            raise ValueError(f"unsupported archive member type: {member.name}")
+        total_size += max(0, int(member.size or 0))
+        if total_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+            raise ValueError("archive exceeds maximum allowed uncompressed size")
+    archive.extractall(destination, members=members)
 
 
 def safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
     root = destination.resolve()
+    total_size = 0
     for member in archive.infolist():
+        if member.filename.startswith(("/", "\\")):
+            raise ValueError(f"unsafe archive member: {member.filename}")
         member_path = (destination / member.filename).resolve()
         if member_path != root and root not in member_path.parents:
             raise ValueError(f"unsafe archive member: {member.filename}")
+        mode = (member.external_attr >> 16) & 0xFFFF
+        if stat.S_IFMT(mode) == stat.S_IFLNK:
+            raise ValueError(f"symlink archive member is not allowed: {member.filename}")
+        total_size += max(0, int(member.file_size or 0))
+        if total_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+            raise ValueError("archive exceeds maximum allowed uncompressed size")
     archive.extractall(destination)
 
 
@@ -2864,7 +2988,22 @@ def third_party_subprocess_executable(args: list[str]) -> str | None:
 def third_party_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PATH"] = str(THIRD_PARTY_BIN_DIR) + os.pathsep + env.get("PATH", "")
-    env.pop("APPIMAGE_EXTRACT_AND_RUN", None)
+    for key in (
+        "APPIMAGE_EXTRACT_AND_RUN",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "TMDB_API_KEY",
+        "OPENSUBTITLES_API_KEY",
+        "OPENSUBTITLES_USERNAME",
+        "OPENSUBTITLES_PASSWORD",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+    ):
+        env.pop(key, None)
     return env
 
 
@@ -3479,6 +3618,28 @@ def load_or_create_template_config(
     return create_auto_template_config(media_dir)
 
 
+def atomic_write_private_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def load_saved_preferences() -> dict[str, str]:
     try:
         payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -3492,15 +3653,10 @@ def load_saved_preferences() -> dict[str, str]:
 
 
 def save_saved_preferences(preferences: dict[str, str]) -> None:
-    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(
-        json.dumps(preferences, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    atomic_write_private_text(
+        SETTINGS_PATH,
+        json.dumps(preferences, ensure_ascii=False, indent=2) + "\n",
     )
-    try:
-        SETTINGS_PATH.chmod(0o600)
-    except OSError:
-        pass
 
 
 def template_output_name(config: dict[str, Any]) -> str:
@@ -5861,6 +6017,8 @@ class TMDBClient:
         self.timeout = timeout
 
     def get_json(self, path: str, params: dict[str, str]) -> dict[str, Any]:
+        if not path.startswith("/") or path.startswith("//") or "://" in path:
+            raise ValueError("invalid TMDB API path")
         params = dict(params)
         params["api_key"] = self.api_key
         query = urllib.parse.urlencode(params)
@@ -5870,8 +6028,12 @@ class TMDBClient:
             headers={"Accept": "application/json", "User-Agent": "g-tmce/1.0"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+            with safe_urlopen(
+                request,
+                timeout=self.timeout,
+                allowed_hosts=frozenset({"api.themoviedb.org"}),
+            ) as response:
+                return json.loads(read_response_limited(response, MAX_JSON_RESPONSE_BYTES).decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             try:
@@ -5934,14 +6096,20 @@ class TMDBClient:
         return results
 
     def download_bytes(self, file_path: str) -> bytes:
+        if not file_path.startswith("/") or file_path.startswith("//") or "://" in file_path:
+            raise ValueError("invalid TMDB image path")
         url = f"{TMDB_IMAGE_BASE}{file_path}"
         request = urllib.request.Request(
             url,
             headers={"User-Agent": "g-tmce/1.0"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return response.read()
+            with safe_urlopen(
+                request,
+                timeout=self.timeout,
+                allowed_hosts=frozenset({"image.tmdb.org"}),
+            ) as response:
+                return read_response_limited(response, MAX_IMAGE_RESPONSE_BYTES)
         except urllib.error.URLError as exc:
             raise UserVisibleError(
                 ui_text("error_image_download_failed", reason=exc.reason)
@@ -5992,8 +6160,13 @@ class OpenSubtitlesClient:
             method=method,
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                value = json.loads(response.read().decode("utf-8"))
+            with safe_urlopen(
+                request,
+                timeout=self.timeout,
+                allowed_hosts=frozenset({"opensubtitles.com"}),
+                allowed_suffixes=(OPENSUBTITLES_ALLOWED_HOST_SUFFIX,),
+            ) as response:
+                value = json.loads(read_response_limited(response, MAX_JSON_RESPONSE_BYTES).decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             message = opensubtitles_error_message(body) or str(exc)
@@ -6140,13 +6313,23 @@ class OpenSubtitlesClient:
         return link
 
     def download_bytes(self, link: str) -> tuple[bytes, str]:
+        validate_https_url(
+            link,
+            allowed_hosts=frozenset({"opensubtitles.com"}),
+            allowed_suffixes=(OPENSUBTITLES_ALLOWED_HOST_SUFFIX,),
+        )
         request = urllib.request.Request(
             link,
             headers={"User-Agent": OPENSUBTITLES_USER_AGENT},
         )
         try:
-            with urllib.request.urlopen(request, timeout=max(self.timeout, 60)) as response:
-                return response.read(), response.headers.get("Content-Type", "")
+            with safe_urlopen(
+                request,
+                timeout=max(self.timeout, 60),
+                allowed_hosts=frozenset({"opensubtitles.com"}),
+                allowed_suffixes=(OPENSUBTITLES_ALLOWED_HOST_SUFFIX,),
+            ) as response:
+                return read_response_limited(response, MAX_SUBTITLE_RESPONSE_BYTES), response.headers.get("Content-Type", "")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             message = opensubtitles_error_message(body) or str(exc)
@@ -6163,12 +6346,21 @@ def normalise_opensubtitles_base_url(base_url: str) -> str:
     value = str(base_url or "").strip()
     if not value:
         return OPENSUBTITLES_API_BASE
-    if not value.startswith(("http://", "https://")):
+    if "://" not in value:
         value = f"https://{value}"
-    value = value.rstrip("/")
-    if not value.endswith("/api/v1"):
-        value = f"{value}/api/v1"
-    return value
+    parsed = urllib.parse.urlsplit(value)
+    validate_https_url(
+        value,
+        allowed_hosts=frozenset({"opensubtitles.com"}),
+        allowed_suffixes=(OPENSUBTITLES_ALLOWED_HOST_SUFFIX,),
+    )
+    if parsed.query or parsed.fragment:
+        raise ValueError("OpenSubtitles base URL must not contain a query or fragment")
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    path = parsed.path.rstrip("/")
+    if path and path != "/api/v1":
+        raise ValueError("unexpected OpenSubtitles API base path")
+    return f"https://{hostname}/api/v1"
 
 
 def opensubtitles_error_message(body: str) -> str:
@@ -8097,26 +8289,29 @@ def identify_mkv(source: Path) -> dict[str, Any]:
             with tempfile.TemporaryDirectory(prefix="gtmce-mkvmerge-") as tmpdir:
                 out_path = Path(tmpdir) / "identify.json"
                 err_path = Path(tmpdir) / "identify.err"
-                quoted = " ".join(subprocess.list2cmdline([str(part)]) for part in args)
-                shell_command = f'{quoted} > {subprocess.list2cmdline([str(out_path)])} 2> {subprocess.list2cmdline([str(err_path)])}'
-                process = subprocess.run(
-                    shell_command,
-                    shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    **subprocess_common_kwargs(),
-                    check=False,
-                    env=env,
-                    cwd=cwd,
-                )
+                command = subprocess.list2cmdline([str(part) for part in args])
+                with out_path.open("w", encoding="utf-8", errors="replace") as stdout_handle, err_path.open(
+                    "w", encoding="utf-8", errors="replace"
+                ) as stderr_handle:
+                    process = subprocess.run(
+                        args,
+                        stdout=stdout_handle,
+                        stderr=stderr_handle,
+                        text=True,
+                        check=False,
+                        env=env,
+                        cwd=cwd,
+                        executable=third_party_subprocess_executable(args),
+                        **subprocess_window_kwargs(),
+                    )
                 stdout_file = out_path.read_text(encoding="utf-8-sig", errors="replace") if out_path.exists() else ""
                 stderr_file = err_path.read_text(encoding="utf-8-sig", errors="replace").strip() if err_path.exists() else ""
                 attempts.append(
                     f"redirect: returncode={process.returncode}; file_len={len(stdout_file.strip())}; "
-                    f"stderr={stderr_file or (process.stderr or '').strip() or '-'}; command={shell_command}"
+                    f"stderr={stderr_file or '-'}; command={command}"
                 )
                 if process.returncode <= 1:
-                    payload = parse_payload(stdout_file, shell_command)
+                    payload = parse_payload(stdout_file, command)
                     if payload is not None:
                         return payload
 

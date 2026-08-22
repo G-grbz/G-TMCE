@@ -2,6 +2,11 @@
   <img src="https://github.com/user-attachments/assets/438cb661-dbe0-4201-955e-1dab84e62668" alt="logo" width="200" style="background: transparent; display: inline-block;" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/G-grbz/G-TMCE/actions/workflows/ci.yml"><img src="https://github.com/G-grbz/G-TMCE/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/G-grbz/G-TMCE/actions/workflows/codeql.yml"><img src="https://github.com/G-grbz/G-TMCE/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+</p>
+
 Create professional MKV remuxes with TMDB metadata, artwork, chapters, language handling, and MKVToolNix automation — without manually building `mkvmerge` commands.
 
 G-TMCE is a cross-platform GUI application for creating, extracting, and managing MKV files on Linux and Windows.
@@ -169,9 +174,9 @@ Supported distributions: Debian / Ubuntu, Fedora, Arch Linux, openSUSE
 
 ## Releases & Downloads
 
-Pre-built executables and AppImages are available on the [Releases](../../releases) page.
+Pre-built Windows executables and Linux AppImages are available on the [Releases](../../releases) page.
 
-> **Windows support has been added.** A pre-built `.exe` is available for download on the Releases page.
+Version tags (`vX.Y.Z`) are built through the verified release workflow. Release assets include the Windows EXE, Linux AppImage, source archive, CycloneDX SBOM, and `SHA256SUMS`; GitHub artifact attestations are generated before publication.
 >
 > **VirusTotal Note:** A few antivirus engines may occasionally flag G-TMCE as suspicious. The application uses FFmpeg and MKVToolNix, works directly with media files, and launches external processes as part of its normal operation. Because of this, some machine learning–based antivirus solutions may generate false positives.
 >
@@ -204,7 +209,7 @@ chmod +x build_appimage.sh
 ./build_appimage.sh
 ```
 
-Output: `G-TMCE-x86_64.AppImage`
+Output: `dist/G-TMCE-x86_64.AppImage`
 
 ---
 
@@ -537,6 +542,14 @@ The following settings are saved automatically:
 - Chapter settings
 
 Location: `~/.config/g-tmce/settings.json`
+
+---
+
+## Security
+
+G-TMCE validates trusted HTTPS origins and redirects for metadata, subtitle, application-update, and third-party tool downloads; constrains archive extraction; avoids shell-based media tool execution; and removes API credentials and dangerous loader variables from third-party subprocess environments. Sensitive per-user settings are written atomically with private file permissions where supported.
+
+The repository uses CI, CodeQL `security-extended`, Dependabot, and dependency auditing. Please report vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md).
 
 ---
 

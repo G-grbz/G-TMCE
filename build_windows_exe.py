@@ -64,9 +64,9 @@ def main() -> int:
         return 1
 
     python = sys.executable
-    ensure_python_package("PyInstaller", "pyinstaller")
-    ensure_python_package("PIL", "Pillow")
-    ensure_python_package("tkinterdnd2", "tkinterdnd2")
+    ensure_python_package("PyInstaller", "PyInstaller>=6.15,<7")
+    ensure_python_package("PIL", "Pillow>=10,<13")
+    ensure_python_package("tkinterdnd2", "tkinterdnd2>=0.4,<1")
 
     hidden_imports = ["PIL", "PIL.Image", "PIL.ImageOps", "PIL.ImageTk", "tkinterdnd2"]
     command = [
