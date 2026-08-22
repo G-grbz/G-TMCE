@@ -1,2 +1,2 @@
 Pillow>=12.3.0,<13
-tkinterdnd2>=0.4,<1
+tkinterdnd2>=0.6.2,<1
