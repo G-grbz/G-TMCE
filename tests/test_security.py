@@ -182,8 +182,11 @@ class ReleaseSecurityTests(unittest.TestCase):
             "PyInstaller>=6.22.2,<7",
             "Pillow>=12.3.0,<13",
             "tkinterdnd2>=0.6.2,<1",
+            "certifi>=2024.8.30,<2027",
         ):
             self.assertIn(requirement, build_script)
+        self.assertIn('"--collect-data",', build_script)
+        self.assertIn('"certifi",', build_script)
 
 
 class LinuxFileDialogTests(unittest.TestCase):
@@ -217,8 +220,34 @@ class LinuxFileDialogTests(unittest.TestCase):
             "PyInstaller>=6.22.2,<7",
             "Pillow>=12.3.0,<13",
             "tkinterdnd2>=0.6.2,<1",
+            "certifi>=2024.8.30,<2027",
         ):
             self.assertIn(requirement, script)
+        self.assertIn("--collect-data certifi", script)
+
+
+class TlsCertificateTests(unittest.TestCase):
+    def test_tls_context_uses_bundled_certifi_ca_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "cacert.pem"
+            ca_file.write_text("test-ca", encoding="utf-8")
+            sentinel = object()
+            with mock.patch.object(app.certifi, "where", return_value=str(ca_file)), mock.patch.object(
+                app.ssl, "create_default_context", return_value=sentinel
+            ) as create_context:
+                self.assertIs(app.trusted_ssl_context(), sentinel)
+            create_context.assert_called_once_with(cafile=str(ca_file.resolve()))
+
+    def test_tls_context_fails_closed_when_ca_store_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.pem"
+            with mock.patch.object(app.certifi, "where", return_value=str(missing)):
+                with self.assertRaises(RuntimeError):
+                    app.trusted_ssl_context()
+
+    def test_runtime_requirements_include_certifi(self) -> None:
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("certifi>=2024.8.30,<2027", requirements)
 
 
 class WindowsReleaseEncodingTests(unittest.TestCase):

@@ -67,8 +67,9 @@ def main() -> int:
     ensure_python_package("PyInstaller", "PyInstaller>=6.22.2,<7")
     ensure_python_package("PIL", "Pillow>=12.3.0,<13")
     ensure_python_package("tkinterdnd2", "tkinterdnd2>=0.6.2,<1")
+    ensure_python_package("certifi", "certifi>=2024.8.30,<2027")
 
-    hidden_imports = ["PIL", "PIL.Image", "PIL.ImageOps", "PIL.ImageTk", "tkinterdnd2"]
+    hidden_imports = ["PIL", "PIL.Image", "PIL.ImageOps", "PIL.ImageTk", "tkinterdnd2", "certifi"]
     command = [
         python,
         "-m",
@@ -81,6 +82,8 @@ def main() -> int:
         APP_NAME,
         "--collect-all",
         "tkinterdnd2",
+        "--collect-data",
+        "certifi",
     ]
 
     logo = root / "logo.png"

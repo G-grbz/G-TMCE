@@ -14,6 +14,7 @@ import queue
 import re
 import secrets
 import shlex
+import ssl
 import stat
 import shutil
 import subprocess
@@ -32,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import certifi
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
@@ -2125,6 +2127,21 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def trusted_ssl_context() -> ssl.SSLContext:
+    """Return a portable TLS context backed by certifi's Mozilla CA bundle.
+
+    PyInstaller-built AppImages can otherwise inherit the build machine's
+    OpenSSL default CA path (for example Debian's /etc/ssl/certs layout),
+    which may not exist on the user's distribution.  Using the bundled
+    certifi store keeps certificate verification enabled while making HTTPS
+    behavior consistent across source, Windows, and AppImage builds.
+    """
+    ca_bundle = Path(certifi.where()).resolve()
+    if not ca_bundle.is_file():
+        raise RuntimeError(f"trusted CA bundle is missing: {ca_bundle}")
+    return ssl.create_default_context(cafile=os.fspath(ca_bundle))
+
+
 def safe_urlopen(
     request: urllib.request.Request | str,
     *,
@@ -2134,7 +2151,10 @@ def safe_urlopen(
 ) -> Any:
     url = request.full_url if isinstance(request, urllib.request.Request) else str(request)
     validate_https_url(url, allowed_hosts=allowed_hosts, allowed_suffixes=allowed_suffixes)
-    opener = urllib.request.build_opener(SafeRedirectHandler(allowed_hosts, allowed_suffixes))
+    opener = urllib.request.build_opener(
+        SafeRedirectHandler(allowed_hosts, allowed_suffixes),
+        urllib.request.HTTPSHandler(context=trusted_ssl_context()),
+    )
     return opener.open(request, timeout=timeout)
 
 

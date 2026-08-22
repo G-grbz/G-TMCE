@@ -115,6 +115,7 @@ validate_project() {
   ensure_python_package "PyInstaller" "PyInstaller>=6.22.2,<7"
   ensure_python_package "PIL" "Pillow>=12.3.0,<13"
   ensure_python_package "tkinterdnd2" "tkinterdnd2>=0.6.2,<1"
+  ensure_python_package "certifi" "certifi>=2024.8.30,<2027"
 }
 
 build_binary() {
@@ -131,6 +132,7 @@ build_binary() {
     --name "$APP_NAME" \
     --hidden-import tkinterdnd2 \
     --collect-all tkinterdnd2 \
+    --collect-data certifi \
     "${add_data_args[@]}" \
     "$ENTRY_FILE"
 
