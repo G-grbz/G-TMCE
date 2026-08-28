@@ -1985,6 +1985,7 @@ class ChapterOptions:
     start_number: str
     end_minutes: str
     analysis_source: Path | None = None
+    video_fps: str = ""
 
 
 @dataclass(frozen=True)
@@ -5237,14 +5238,41 @@ def run_intro_ffmpeg_analysis(
     return f"{process.stdout}\n{process.stderr}"
 
 
-def intro_ffmpeg_input_args(path: Path) -> list[str]:
+def intro_analysis_fps(video_fps: str) -> str:
+    """Return an FFmpeg-compatible frame rate for raw elementary streams.
+
+    Raw .h264/.h265 track files carry no container timing, so FFmpeg has to
+    guess a frame rate on its own (commonly defaulting to 25fps) when it
+    demuxes them. Every blackdetect/scenechange pts_time computed from that
+    guess then drifts away from real playback time whenever the guess is
+    wrong, which is why detected intro-end timestamps could land on the
+    wrong second. Reuse normalize_video_fps() for validation, then strip its
+    mkvmerge-style "fps" suffix since FFmpeg's -r wants a bare number or
+    fraction (e.g. "23.976" or "24000/1001").
+    """
+    try:
+        normalized = normalize_video_fps(video_fps)
+    except UserVisibleError:
+        return ""
+    return normalized.removesuffix("fps")
+
+
+def intro_ffmpeg_input_args(path: Path, video_fps: str = "") -> list[str]:
     """Build an FFmpeg input that also works for extracted raw video."""
     args = ["-fflags", "+genpts"]
     suffix = path.suffix.lower()
+    is_raw_video = suffix in {".h264", ".avc", ".h265", ".hevc"}
     if suffix in {".h264", ".avc"}:
         args.extend(["-f", "h264"])
     elif suffix in {".h265", ".hevc"}:
         args.extend(["-f", "hevc"])
+    if is_raw_video:
+        fps = intro_analysis_fps(video_fps)
+        if fps:
+            # As an input option, -r tells FFmpeg to generate timestamps for
+            # a constant frame rate instead of guessing one, giving accurate
+            # pts_time for a stream that has no timing info of its own.
+            args.extend(["-r", fps])
     args.extend(["-i", str(path)])
     return args
 
@@ -5253,6 +5281,7 @@ def blackdetect_intro_candidates(
     path: Path,
     duration_seconds: float = 0.0,
     *,
+    video_fps: str = "",
     cancel_event: threading.Event | None = None,
     register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
     unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
@@ -5264,7 +5293,7 @@ def blackdetect_intro_candidates(
         "-nostats",
         "-t",
         str(INTRO_DETECTION_WINDOW_SECONDS),
-        *intro_ffmpeg_input_args(path),
+        *intro_ffmpeg_input_args(path, video_fps),
         "-map",
         "0:v:0?",
         "-an",
@@ -5306,6 +5335,7 @@ def scenechange_intro_candidates(
     path: Path,
     duration_seconds: float = 0.0,
     *,
+    video_fps: str = "",
     cancel_event: threading.Event | None = None,
     register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
     unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
@@ -5318,7 +5348,7 @@ def scenechange_intro_candidates(
         "-nostats",
         "-t",
         str(INTRO_DETECTION_WINDOW_SECONDS),
-        *intro_ffmpeg_input_args(path),
+        *intro_ffmpeg_input_args(path, video_fps),
         "-map",
         "0:v:0?",
         "-an",
@@ -5648,6 +5678,7 @@ def detect_intro_chapter_start_seconds(
     duration_seconds: float = 0.0,
     *,
     analysis_source: Path | None = None,
+    video_fps: str = "",
     cancel_event: threading.Event | None = None,
     register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
     unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
@@ -5676,6 +5707,7 @@ def detect_intro_chapter_start_seconds(
                 blackdetect_intro_candidates(
                     path,
                     duration_seconds,
+                    video_fps=video_fps,
                     cancel_event=cancel_event,
                     register_process=register_process,
                     unregister_process=unregister_process,
@@ -5713,6 +5745,7 @@ def detect_intro_chapter_start_seconds(
             for scene_candidate in scenechange_intro_candidates(
                 path,
                 duration_seconds,
+                video_fps=video_fps,
                 cancel_event=cancel_event,
                 register_process=register_process,
                 unregister_process=unregister_process,
@@ -5821,6 +5854,7 @@ def resolve_chapter_path(
                 items,
                 duration_seconds,
                 analysis_source=options.analysis_source,
+                video_fps=options.video_fps,
                 cancel_event=cancel_event,
                 register_process=register_process,
                 unregister_process=unregister_process,
@@ -10688,14 +10722,34 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.last_mkv_dir = str(directory.expanduser())
         self.save_preferences()
 
+    @staticmethod
+    def default_extract_output_dir(source: Path) -> Path:
+        source = source.expanduser()
+        base_name = source.name if source.is_dir() else source.stem
+        return source.parent / f"{base_name}_tracks"
+
     def set_extract_source(self, source: Path, *, scan: bool) -> None:
         source = source.expanduser()
+
+        previous_source_raw = self.extract_source_var.get().strip()
+        previous_output_raw = self.extract_output_dir_var.get().strip()
+        update_output_dir = not previous_output_raw
+
+        # When the extraction folder still contains the automatically generated
+        # path for the previous source, follow a newly selected source as well.
+        # A folder chosen manually by the user is intentionally preserved.
+        if previous_source_raw and previous_output_raw:
+            previous_source = Path(previous_source_raw).expanduser()
+            previous_default = self.default_extract_output_dir(previous_source)
+            update_output_dir = (
+                os.path.normcase(os.path.abspath(previous_output_raw))
+                == os.path.normcase(os.path.abspath(os.fspath(previous_default)))
+            )
+
         self.extract_source_var.set(str(source))
-        if not self.extract_output_dir_var.get().strip():
-            if source.is_dir():
-                self.extract_output_dir_var.set(str(source.parent / f"{source.name}_tracks"))
-            else:
-                self.extract_output_dir_var.set(str(source.parent / f"{source.stem}_tracks"))
+        if update_output_dir:
+            self.extract_output_dir_var.set(str(self.default_extract_output_dir(source)))
+
         self.remember_mkv_dir(source)
         if scan and source.is_file():
             self.start_scan_extract()
@@ -10816,6 +10870,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             name=settings.chapter_name,
             start_number=settings.chapter_start_number,
             end_minutes=settings.chapter_end_minutes,
+            video_fps=settings.video_fps,
         )
 
     def chapter_end_needs_auto_detection(self, value: str) -> bool:
