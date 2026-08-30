@@ -4,8 +4,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import importlib.util
-import site
 from pathlib import Path
 
 
@@ -13,14 +11,14 @@ APP_NAME = "G-TMCE"
 ENTRY_FILE = "mkv_creator_ui.py"
 
 
-def ensure_python_package(module: str, package: str) -> None:
-    if importlib.util.find_spec(module) is not None:
-        return
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", package])
-    user_site = site.getusersitepackages()
-    if user_site and user_site not in sys.path:
-        site.addsitedir(user_site)
-    importlib.invalidate_caches()
+def install_build_requirements(root: Path) -> None:
+    requirements = root / "requirements-build.txt"
+    if not requirements.exists():
+        raise FileNotFoundError(f"Missing: {requirements}")
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "--upgrade", "-r", str(requirements)],
+        cwd=str(root),
+    )
 
 
 def create_windows_icon(root: Path) -> Path | None:
@@ -64,10 +62,7 @@ def main() -> int:
         return 1
 
     python = sys.executable
-    ensure_python_package("PyInstaller", "PyInstaller>=6.22.2,<7")
-    ensure_python_package("PIL", "Pillow>=12.3.0,<13")
-    ensure_python_package("tkinterdnd2", "tkinterdnd2>=0.6.2,<1")
-    ensure_python_package("certifi", "certifi>=2024.8.30,<2027")
+    install_build_requirements(root)
 
     hidden_imports = ["PIL", "PIL.Image", "PIL.ImageOps", "PIL.ImageTk", "tkinterdnd2", "certifi"]
     command = [

@@ -60,29 +60,6 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
-python_module_exists() {
-  "$BUILD_PYTHON" - "$1" >/dev/null 2>&1 <<'PY'
-import importlib.util
-import sys
-
-module = sys.argv[1]
-sys.exit(0 if importlib.util.find_spec(module) else 1)
-PY
-}
-
-ensure_python_package() {
-  local module="$1"
-  local package="$2"
-
-  if python_module_exists "$module"; then
-    return
-  fi
-
-  warn "Python module ${module} is not installed."
-  log "Installing ${package} into build virtual environment..."
-  "$BUILD_PYTHON" -m pip install --upgrade "$package"
-}
-
 ensure_build_venv() {
   if [[ -x "$BUILD_PYTHON" ]]; then
     return
@@ -110,12 +87,13 @@ validate_project() {
     fail "python3 is not installed or not available in PATH."
   fi
 
+  [[ -f "requirements.txt" ]] || fail "Runtime requirements file not found: requirements.txt"
+  [[ -f "requirements-build.txt" ]] || fail "Build requirements file not found: requirements-build.txt"
+
   ensure_build_venv
 
-  ensure_python_package "PyInstaller" "PyInstaller>=6.22.2,<7"
-  ensure_python_package "PIL" "Pillow>=12.3.0,<13"
-  ensure_python_package "tkinterdnd2" "tkinterdnd2>=0.6.2,<1"
-  ensure_python_package "certifi" "certifi>=2024.8.30,<2027"
+  log "Installing build and runtime requirements..."
+  "$BUILD_PYTHON" -m pip install --upgrade -r requirements-build.txt
 }
 
 build_binary() {

@@ -176,15 +176,12 @@ class ReleaseSecurityTests(unittest.TestCase):
         self.assertNotIn("tags:\n", workflow)
         self.assertNotIn("gh release create", workflow)
 
-    def test_windows_build_fallback_dependencies_match_pinned_minimums(self) -> None:
+    def test_windows_build_installs_shared_requirements(self) -> None:
         build_script = (ROOT / "build_windows_exe.py").read_text(encoding="utf-8")
-        for requirement in (
-            "PyInstaller>=6.22.2,<7",
-            "Pillow>=12.3.0,<13",
-            "tkinterdnd2>=0.6.2,<1",
-            "certifi>=2024.8.30,<2027",
-        ):
-            self.assertIn(requirement, build_script)
+        self.assertIn('root / "requirements-build.txt"', build_script)
+        self.assertIn('"-r", str(requirements)', build_script)
+        for duplicated_requirement in ("Pillow>=", "tkinterdnd2>=", "certifi>=", "PyInstaller>="):
+            self.assertNotIn(duplicated_requirement, build_script)
         self.assertIn('"--collect-data",', build_script)
         self.assertIn('"certifi",', build_script)
 
@@ -214,15 +211,11 @@ class LinuxFileDialogTests(unittest.TestCase):
         with mock.patch.object(app.subprocess, "run", return_value=cancelled):
             self.assertEqual(app.run_dialog_command(["kdialog", "--getopenfilename"]), "")
 
-    def test_appimage_build_dependencies_match_current_minimums(self) -> None:
+    def test_appimage_build_installs_shared_requirements(self) -> None:
         script = (ROOT / "build_appimage.sh").read_text(encoding="utf-8")
-        for requirement in (
-            "PyInstaller>=6.22.2,<7",
-            "Pillow>=12.3.0,<13",
-            "tkinterdnd2>=0.6.2,<1",
-            "certifi>=2024.8.30,<2027",
-        ):
-            self.assertIn(requirement, script)
+        self.assertIn('pip install --upgrade -r requirements-build.txt', script)
+        for duplicated_requirement in ("Pillow>=", "tkinterdnd2>=", "certifi>=", "PyInstaller>="):
+            self.assertNotIn(duplicated_requirement, script)
         self.assertIn("--collect-data certifi", script)
 
 
@@ -246,8 +239,17 @@ class TlsCertificateTests(unittest.TestCase):
                     app.trusted_ssl_context()
 
     def test_runtime_requirements_include_certifi(self) -> None:
-        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-        self.assertIn("certifi>=2024.8.30,<2027", requirements)
+        requirement_names = {
+            line.split(";", 1)[0].strip().split("[", 1)[0].split("=", 1)[0].split("<", 1)[0].split(">", 1)[0].strip().lower()
+            for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith(("#", "-"))
+        }
+        self.assertIn("certifi", requirement_names)
+
+    def test_build_requirements_include_runtime_requirements(self) -> None:
+        requirements = (ROOT / "requirements-build.txt").read_text(encoding="utf-8").splitlines()
+        normalized = {line.strip() for line in requirements if line.strip() and not line.lstrip().startswith("#")}
+        self.assertIn("-r requirements.txt", normalized)
 
 
 class WindowsReleaseEncodingTests(unittest.TestCase):
