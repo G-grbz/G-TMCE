@@ -207,16 +207,23 @@ MAX_THIRD_PARTY_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
 
 UI_COLORS = {
-    "window": "#f4f7fb",
+    "window": "#eef1f7",
     "surface": "#ffffff",
-    "surface_alt": "#eef3f9",
-    "border": "#d8e0ec",
-    "text": "#172033",
-    "muted": "#5d6978",
-    "accent": "#2563eb",
-    "accent_hover": "#1d4ed8",
-    "accent_pressed": "#1e40af",
-    "disabled": "#aeb8c6",
+    "surface_alt": "#f4f6fb",
+    "surface_hover": "#eef0fd",
+    "border": "#dfe3ed",
+    "border_strong": "#c7cede",
+    "text": "#161b2c",
+    "muted": "#66708a",
+    "accent": "#4f46e5",
+    "accent_hover": "#4338ca",
+    "accent_pressed": "#3730a3",
+    "accent_soft": "#eeecfc",
+    "disabled": "#b7bccb",
+    "shadow": "#ccd2e2",
+    "success": "#15803d",
+    "success_soft": "#dcfce7",
+    "danger": "#dc2626",
 }
 
 DEFAULT_UI_LANGUAGE = "en"
@@ -300,6 +307,7 @@ UI_TEXT = {
         "error_mkvextract_missing": "mkvextract is not available in 3rdParty.",
         "error_extract_none_selected": "No items are selected for extraction.",
         "label_ui_language": "Interface language",
+        "app_tagline": "MKV muxing, metadata & subtitle toolkit",
         "section_create_mkv": "Create MKV",
         "path_template": "Template config (optional)",
         "path_track_folder": "Track folder",
@@ -631,6 +639,7 @@ UI_TEXT = {
         "error_mkvextract_missing": "mkvextract 3rdParty içinde kullanıma hazır değil.",
         "error_extract_none_selected": "Çıkarılacak parça seçilmedi.",
         "label_ui_language": "Arayüz dili",
+        "app_tagline": "MKV birleştirme, metadata ve altyazı araç takımı",
         "section_create_mkv": "MKV Oluştur",
         "path_template": "Şablon config (opsiyonel)",
         "path_track_folder": "Parça klasörü",
@@ -9310,13 +9319,17 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.progress_status_var = tk.StringVar(value=self.tr("status_ready"))
         self.extract_window: tk.Toplevel | None = None
         self.extract_tree: ttk.Treeview | None = None
+        self.extract_progress_bar: ttk.Progressbar | None = None
+        self.extract_inactive_font: tkfont.Font | None = None
         self.extract_language_frame: ttk.Frame | None = None
         self.extract_language_vars: dict[str, tk.StringVar] = {}
         self.extract_language_output_vars: dict[str, tk.StringVar] = {}
         self.audio_adjust_window: tk.Toplevel | None = None
         self.audio_adjust_apply_button: ttk.Button | None = None
+        self.audio_adjust_progress_bar: ttk.Progressbar | None = None
         self.audio_adjust_rows: list[dict[str, Any]] = []
         self.subtitle_window: tk.Toplevel | None = None
+        self.subtitle_progress_bar: ttk.Progressbar | None = None
         self.subtitle_results_tree: ttk.Treeview | None = None
         self.subtitle_search_button: ttk.Button | None = None
         self.tmdb_search_window: tk.Toplevel | None = None
@@ -9568,23 +9581,6 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.media_type_var.set(media_type)
         self.refresh_tmdb_media_type_display()
         self.save_preferences()
-
-    def make_section(
-        self,
-        parent: ttk.Frame,
-        row: int,
-        title_key: str,
-        *,
-        pady: tuple[int, int] = (0, 12),
-    ) -> ttk.Frame:
-        self.localize_widget(
-            ttk.Label(parent, style="SectionTitle.TLabel"),
-            title_key,
-        ).grid(row=row, column=0, sticky="w", pady=(0, 6))
-        section = ttk.Frame(parent, padding=(16, 12, 16, 16), style="Section.TFrame")
-        section.grid(row=row + 1, column=0, sticky="ew", pady=pady)
-        section.columnconfigure(1, weight=1)
-        return section
 
     def on_ui_language_selected(self, _event: tk.Event | None = None) -> None:
         selected = self.ui_language_display_var.get()
@@ -9840,18 +9836,49 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         except (AttributeError, tk.TclError):
             pass
 
+    def _preferred_font_family(self, fallback: str) -> str:
+        system = platform.system()
+        if system == "Windows":
+            preferred = ["Segoe UI Variable Text", "Segoe UI", "Noto Sans", "Arial"]
+        elif system == "Darwin":
+            preferred = ["SF Pro Text", "Helvetica Neue", "Noto Sans", "Arial"]
+        else:
+            preferred = [
+                "Inter",
+                "Noto Sans",
+                "Cantarell",
+                "Ubuntu",
+                "DejaVu Sans",
+                "Segoe UI",
+                "Arial",
+            ]
+        try:
+            available = set(tkfont.families(self))
+        except tk.TclError:
+            available = set()
+        for name in preferred:
+            if name in available:
+                return name
+        return fallback
+
     def configure_ui_theme(self) -> None:
         self.configure(background=UI_COLORS["window"])
         self.option_add("*tearOff", False)
 
         default_font = tkfont.nametofont("TkDefaultFont")
-        default_font.configure(family="Noto Sans", size=10)
+        family = self._preferred_font_family(default_font.cget("family") or "Noto Sans")
+        default_font.configure(family=family, size=10)
         text_font = tkfont.nametofont("TkTextFont")
-        text_font.configure(family="Noto Sans", size=10)
+        text_font.configure(family=family, size=10)
         heading_font = tkfont.nametofont("TkHeadingFont")
-        heading_font.configure(family="Noto Sans", size=11, weight="bold")
+        heading_font.configure(family=family, size=11, weight="bold")
         fixed_font = tkfont.nametofont("TkFixedFont")
-        fixed_font.configure(size=10)
+        fixed_font.configure(family="Consolas" if platform.system() == "Windows" else fixed_font.cget("family"), size=10)
+
+        self.ui_font_family = family
+        self.ui_title_font = tkfont.Font(family=family, size=15, weight="bold")
+        self.ui_eyebrow_font = tkfont.Font(family=family, size=9, weight="bold")
+        self.ui_version_font = tkfont.Font(family=family, size=9)
 
         style = ttk.Style(self)
         if "clam" in style.theme_names():
@@ -9864,8 +9891,16 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             foreground=colors["text"],
             font=default_font,
         )
+
+        # --- Base layout surfaces -------------------------------------------------
         style.configure("Root.TFrame", background=colors["window"])
         style.configure("Toolbar.TFrame", background=colors["window"])
+        style.configure("Header.TFrame", background=colors["window"])
+        style.configure(
+            "HeaderDivider.TSeparator",
+            background=colors["border_strong"],
+        )
+        style.configure("CardShadow.TFrame", background=colors["shadow"])
         style.configure(
             "Section.TFrame",
             background=colors["surface"],
@@ -9875,7 +9910,13 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             borderwidth=1,
             relief="solid",
         )
+        style.configure(
+            "SectionAccent.TFrame",
+            background=colors["accent"],
+        )
         style.configure("TFrame", background=colors["surface"])
+
+        # --- Labels -----------------------------------------------------------------
         style.configure(
             "TLabel",
             background=colors["surface"],
@@ -9893,19 +9934,55 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             foreground=colors["text"],
         )
         style.configure(
+            "MutedRoot.TLabel",
+            background=colors["window"],
+            foreground=colors["muted"],
+        )
+        style.configure(
             "SectionTitle.TLabel",
             background=colors["window"],
             foreground=colors["text"],
             font=heading_font,
             padding=(0, 0),
         )
+        # Modal/table column headings should visually merge with the white
+        # content surface instead of looking like separate grey title chips.
+        style.configure(
+            "ModalTableHeading.TLabel",
+            background=colors["surface"],
+            foreground=colors["text"],
+            font=(family, 10, "bold"),
+            padding=(0, 0),
+        )
         style.configure(
             "AppName.TLabel",
             background=colors["window"],
             foreground=colors["text"],
-            font=(default_font.cget("family"), 18, "bold"),
+            font=self.ui_title_font,
             padding=(0, 0),
         )
+        style.configure(
+            "AppVersion.TLabel",
+            background=colors["window"],
+            foreground=colors["muted"],
+            font=self.ui_version_font,
+            padding=(0, 0),
+        )
+        style.configure(
+            "Eyebrow.TLabel",
+            background=colors["window"],
+            foreground=colors["accent"],
+            font=self.ui_eyebrow_font,
+            padding=(0, 0),
+        )
+        style.configure(
+            "StatusValue.TLabel",
+            background=colors["window"],
+            foreground=colors["text"],
+            font=heading_font,
+        )
+
+        # --- Label frames -------------------------------------------------------------
         style.configure(
             "TLabelframe",
             background=colors["surface"],
@@ -9921,67 +9998,128 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             font=heading_font,
             padding=(8, 2),
         )
+
+        # --- Inputs -----------------------------------------------------------------
         style.configure(
             "TEntry",
             fieldbackground=colors["surface"],
             foreground=colors["text"],
-            insertcolor=colors["text"],
+            insertcolor=colors["accent"],
             bordercolor=colors["border"],
             lightcolor=colors["border"],
             darkcolor=colors["border"],
-            padding=(8, 6),
+            padding=(9, 7),
         )
         style.map(
             "TEntry",
-            bordercolor=[("focus", colors["accent"])],
-            lightcolor=[("focus", colors["accent"])],
-            darkcolor=[("focus", colors["accent"])],
+            bordercolor=[("focus", colors["accent"]), ("!focus", colors["border"])],
+            lightcolor=[("focus", colors["accent"]), ("!focus", colors["border"])],
+            darkcolor=[("focus", colors["accent"]), ("!focus", colors["border"])],
+            fieldbackground=[("disabled", colors["surface_alt"])],
         )
         style.configure(
             "TCombobox",
             fieldbackground=colors["surface"],
+            background=colors["surface"],
             foreground=colors["text"],
             arrowcolor=colors["muted"],
             bordercolor=colors["border"],
             lightcolor=colors["border"],
             darkcolor=colors["border"],
-            padding=(8, 6),
+            padding=(9, 7),
+            arrowsize=13,
         )
         style.map(
             "TCombobox",
-            bordercolor=[("focus", colors["accent"])],
-            fieldbackground=[("readonly", colors["surface"])],
+            bordercolor=[("focus", colors["accent"]), ("!focus", colors["border"])],
+            arrowcolor=[("hover", colors["accent"]), ("pressed", colors["accent"])],
+            fieldbackground=[("readonly", colors["surface"]), ("disabled", colors["surface_alt"])],
             selectbackground=[("readonly", colors["surface"])],
             selectforeground=[("readonly", colors["text"])],
         )
+        self.option_add("*TCombobox*Listbox.background", colors["surface"])
+        self.option_add("*TCombobox*Listbox.foreground", colors["text"])
+        self.option_add("*TCombobox*Listbox.selectBackground", colors["accent"])
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        self.option_add("*TCombobox*Listbox.font", default_font)
+
         style.configure(
             "TCheckbutton",
             background=colors["surface"],
             foreground=colors["text"],
             indicatorcolor=colors["surface"],
+            indicatorbackground=colors["surface"],
+            indicatorforeground=colors["accent"],
+            indicatormargin=(0, 0, 6, 0),
             padding=(0, 4),
+            cursor="hand2",
         )
         style.map(
             "TCheckbutton",
             background=[("active", colors["surface"])],
             foreground=[("disabled", colors["disabled"])],
+            indicatorcolor=[
+                ("selected", colors["accent"]),
+                ("!selected", colors["surface"]),
+            ],
+            indicatorbackground=[
+                ("selected", colors["accent"]),
+                ("!selected", colors["surface"]),
+            ],
         )
+        # Checkbuttons placed directly on modal/root surfaces must not paint a
+        # white label rectangle behind their text.
+        style.configure(
+            "Root.TCheckbutton",
+            background=colors["window"],
+            foreground=colors["text"],
+            indicatorcolor=colors["window"],
+            indicatorbackground=colors["window"],
+            indicatorforeground=colors["accent"],
+            indicatormargin=(0, 0, 6, 0),
+            padding=(0, 4),
+            cursor="hand2",
+        )
+        style.map(
+            "Root.TCheckbutton",
+            background=[("active", colors["window"])],
+            foreground=[("disabled", colors["disabled"])],
+            indicatorcolor=[
+                ("selected", colors["accent"]),
+                ("!selected", colors["window"]),
+            ],
+            indicatorbackground=[
+                ("selected", colors["accent"]),
+                ("!selected", colors["window"]),
+            ],
+        )
+
+        # --- Buttons ------------------------------------------------------------------
         style.configure(
             "TButton",
             background=colors["surface_alt"],
             foreground=colors["text"],
-            borderwidth=0,
+            bordercolor=colors["border"],
+            borderwidth=1,
             focusthickness=1,
             focuscolor=colors["accent"],
-            padding=(12, 8),
+            padding=(14, 9),
             relief="flat",
+            font=default_font,
+            cursor="hand2",
         )
         style.map(
             "TButton",
             background=[
-                ("disabled", "#e4e9f0"),
-                ("pressed", "#d5dfec"),
-                ("active", "#dde6f2"),
+                ("disabled", colors["surface_alt"]),
+                ("pressed", colors["border_strong"]),
+                ("active", colors["surface_hover"]),
+            ],
+            bordercolor=[
+                ("disabled", colors["border"]),
+                ("pressed", colors["accent"]),
+                ("active", colors["accent"]),
+                ("!active", colors["border"]),
             ],
             foreground=[("disabled", colors["disabled"])],
         )
@@ -9989,28 +10127,58 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             "Accent.TButton",
             background=colors["accent"],
             foreground="#ffffff",
-            borderwidth=0,
+            bordercolor=colors["accent"],
+            borderwidth=1,
             focusthickness=1,
             focuscolor=colors["accent_pressed"],
-            padding=(12, 8),
+            padding=(14, 9),
             relief="flat",
+            font=(family, 10, "bold"),
+            cursor="hand2",
         )
         style.map(
             "Accent.TButton",
             background=[
-                ("disabled", "#9bb7f3"),
+                ("disabled", colors["disabled"]),
+                ("pressed", colors["accent_pressed"]),
+                ("active", colors["accent_hover"]),
+            ],
+            bordercolor=[
+                ("disabled", colors["disabled"]),
                 ("pressed", colors["accent_pressed"]),
                 ("active", colors["accent_hover"]),
             ],
             foreground=[("disabled", "#edf3ff"), ("active", "#ffffff")],
         )
         style.configure(
+            "Ghost.TButton",
+            background=colors["window"],
+            foreground=colors["text"],
+            bordercolor=colors["border_strong"],
+            borderwidth=1,
+            focusthickness=1,
+            focuscolor=colors["accent"],
+            padding=(12, 8),
+            relief="flat",
+            cursor="hand2",
+        )
+        style.map(
+            "Ghost.TButton",
+            background=[("pressed", colors["surface_alt"]), ("active", colors["surface_alt"])],
+            bordercolor=[("active", colors["accent"]), ("!active", colors["border_strong"])],
+            foreground=[("disabled", colors["disabled"])],
+        )
+
+        # --- Treeview -------------------------------------------------------------------
+        style.configure(
             "Treeview",
             background=colors["surface"],
             fieldbackground=colors["surface"],
             foreground=colors["text"],
             bordercolor=colors["border"],
-            rowheight=30,
+            borderwidth=1,
+            relief="solid",
+            rowheight=32,
         )
         style.map(
             "Treeview",
@@ -10020,11 +10188,118 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         style.configure(
             "Treeview.Heading",
             background=colors["surface_alt"],
-            foreground=colors["text"],
-            font=heading_font,
-            padding=(8, 7),
+            foreground=colors["muted"],
+            font=(family, 9, "bold"),
+            padding=(8, 8),
             relief="flat",
         )
+        style.map(
+            "Treeview.Heading",
+            background=[("active", colors["surface_hover"])],
+            foreground=[("active", colors["accent"])],
+        )
+        # Cleaner modal tables: keep the Treeview body white for readability,
+        # but let the heading row blend into the modal/root background.
+        style.configure(
+            "Modal.Treeview",
+            background=colors["surface"],
+            fieldbackground=colors["surface"],
+            foreground=colors["text"],
+            bordercolor=colors["border"],
+            borderwidth=1,
+            relief="solid",
+            rowheight=32,
+        )
+        style.map(
+            "Modal.Treeview",
+            background=[("selected", colors["accent"])],
+            foreground=[("selected", "#ffffff")],
+        )
+        style.configure(
+            "Modal.Treeview.Heading",
+            background=colors["window"],
+            foreground=colors["text"],
+            font=(family, 10, "bold"),
+            padding=(8, 8),
+            relief="flat",
+            borderwidth=0,
+        )
+        style.map(
+            "Modal.Treeview.Heading",
+            background=[("active", colors["window"])],
+            foreground=[("active", colors["accent"])],
+        )
+
+        # --- Progress bar -----------------------------------------------------------------
+        for progress_style in ("TProgressbar", "Horizontal.TProgressbar"):
+            style.configure(
+                progress_style,
+                troughcolor=colors["surface_alt"],
+                bordercolor=colors["surface_alt"],
+                background=colors["accent"],
+                lightcolor=colors["accent"],
+                darkcolor=colors["accent"],
+                thickness=10,
+            )
+
+        # --- Scrollbars -----------------------------------------------------------------
+        for scroll_style in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            style.configure(
+                scroll_style,
+                background=colors["border_strong"],
+                troughcolor=colors["window"],
+                bordercolor=colors["window"],
+                arrowcolor=colors["muted"],
+                arrowsize=13,
+                relief="flat",
+                gripcount=0,
+            )
+            style.map(
+                scroll_style,
+                background=[("pressed", colors["accent"]), ("active", colors["muted"])],
+            )
+
+        # --- Separator ---------------------------------------------------------------
+        style.configure("TSeparator", background=colors["border"])
+
+    def _card_container(
+        self,
+        parent: tk.Widget,
+        row: int,
+        *,
+        pady: tuple[int, int] = (0, 8),
+    ) -> ttk.Frame:
+        """Grid an elevated 'card' at ``row`` inside ``parent`` and return its inner frame.
+
+        A slightly darker frame is placed behind the actual content frame with a small
+        offset, producing a soft drop-shadow effect using only plain ttk frames.
+        """
+        shadow = ttk.Frame(parent, style="CardShadow.TFrame")
+        shadow.grid(row=row, column=0, sticky="ew", pady=pady)
+        shadow.columnconfigure(0, weight=1)
+        card = ttk.Frame(shadow, padding=(18, 10, 18, 12), style="Section.TFrame")
+        card.grid(row=0, column=0, sticky="ew", padx=(0, 3), pady=(0, 3))
+        card.columnconfigure(1, weight=1)
+        return card
+
+    def make_section(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        title_key: str,
+        *,
+        pady: tuple[int, int] = (0, 8),
+    ) -> ttk.Frame:
+        title_row = ttk.Frame(parent, style="Root.TFrame")
+        title_row.grid(row=row, column=0, sticky="w", pady=(0, 5))
+        ttk.Frame(title_row, style="SectionAccent.TFrame", width=4, height=17).grid(
+            row=0, column=0, sticky="ns", padx=(0, 8)
+        )
+        self.localize_widget(
+            ttk.Label(title_row, style="SectionTitle.TLabel"),
+            title_key,
+        ).grid(row=0, column=1, sticky="w")
+        return self._card_container(parent, row + 1, pady=pady)
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -10046,7 +10321,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
 
-        outer = ttk.Frame(canvas, padding=18, style="Root.TFrame")
+        outer = ttk.Frame(canvas, padding=(18, 10, 18, 18), style="Root.TFrame")
         outer_window = canvas.create_window((0, 0), window=outer, anchor="nw")
         outer.columnconfigure(0, weight=1)
 
@@ -10074,46 +10349,70 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 bind_main_scroll(child)
 
         header = ttk.Frame(outer, style="Root.TFrame")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         header.columnconfigure(1, weight=1)
+
         if self.logo_header_image is not None:
             ttk.Label(
                 header,
                 image=self.logo_header_image,
                 style="Root.TLabel",
-            ).grid(row=0, column=0, sticky="w", padx=(0, 12))
-        ttk.Label(
-            header,
-            text=APP_NAME,
-            style="AppName.TLabel",
-        ).grid(row=0, column=1, sticky="w")
+            ).grid(row=0, column=0, sticky="w", padx=(0, 14))
+
+        title_block = ttk.Frame(header, style="Root.TFrame")
+        title_block.grid(row=0, column=1, sticky="w")
+        name_row = ttk.Frame(title_block, style="Root.TFrame")
+        name_row.pack(anchor="w")
+        ttk.Label(name_row, text=APP_NAME, style="AppName.TLabel").pack(side="left")
+        display_version = APP_VERSION.lstrip("vV")
+        version_text = (
+            f"v{display_version}"
+            if display_version and APP_VERSION != DEFAULT_APP_VERSION
+            else ""
+        )
+        if version_text:
+            ttk.Label(name_row, text=version_text, style="AppVersion.TLabel").pack(
+                side="left", padx=(8, 0), pady=(4, 0)
+            )
         self.localize_widget(
-            ttk.Label(header, style="Root.TLabel"),
+            ttk.Label(title_block, style="MutedRoot.TLabel"),
+            "app_tagline",
+        ).pack(anchor="w", pady=(2, 0))
+
+        toolbar_block = ttk.Frame(header, style="Root.TFrame")
+        toolbar_block.grid(row=0, column=2, sticky="e")
+        self.localize_widget(
+            ttk.Label(toolbar_block, style="Root.TLabel"),
             "label_ui_language",
-        ).grid(row=0, column=2, sticky="e", padx=(12, 6))
+        ).grid(row=0, column=0, sticky="e", padx=(0, 6))
         language_select = ttk.Combobox(
-            header,
+            toolbar_block,
             textvariable=self.ui_language_display_var,
             values=tuple(UI_LANGUAGE_NAMES.values()),
             width=11,
             state="readonly",
         )
-        language_select.grid(row=0, column=3, sticky="e")
+        language_select.grid(row=0, column=1, sticky="e")
         language_select.bind("<<ComboboxSelected>>", self.on_ui_language_selected)
         self.third_party_button = ttk.Button(
-            header,
+            toolbar_block,
             command=self.start_update_third_party,
+            style="Ghost.TButton",
         )
         self.localize_widget(self.third_party_button, "button_update_third_party")
-        self.third_party_button.grid(row=0, column=4, sticky="e", padx=(8, 0))
+        self.third_party_button.grid(row=0, column=2, sticky="e", padx=(10, 0))
         self.app_update_button = ttk.Button(
-            header,
+            toolbar_block,
             command=self.open_app_update_release,
             style="Accent.TButton",
         )
         self.localize_widget(self.app_update_button, "button_app_update_available")
-        self.app_update_button.grid(row=0, column=5, sticky="e", padx=(8, 0))
+        self.app_update_button.grid(row=0, column=3, sticky="e", padx=(10, 0))
         self.app_update_button.grid_remove()
+
+        ttk.Separator(header, orient="horizontal", style="HeaderDivider.TSeparator").grid(
+            row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+        )
 
         form = self.make_section(outer, 1, "section_create_mkv")
 
@@ -10128,9 +10427,9 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.localize_widget(
             ttk.Label(form),
             "label_output_name_extra",
-        ).grid(row=row, column=0, sticky="w", pady=5)
+        ).grid(row=row, column=0, sticky="w", pady=3)
         name_row = ttk.Frame(form)
-        name_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
+        name_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=3)
         name_row.columnconfigure(1, weight=1)
         name_row.columnconfigure(3, weight=2)
         self.localize_widget(
@@ -10153,9 +10452,9 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         )
         row += 1
 
-        ttk.Label(form, text="TMDB API key").grid(row=row, column=0, sticky="w", pady=5)
+        ttk.Label(form, text="TMDB API key").grid(row=row, column=0, sticky="w", pady=3)
         self.api_key_entry = ttk.Entry(form, textvariable=self.api_key_var, show="*")
-        self.api_key_entry.grid(row=row, column=1, sticky="ew", padx=8, pady=5)
+        self.api_key_entry.grid(row=row, column=1, sticky="ew", padx=8, pady=3)
         self.localize_widget(
             ttk.Checkbutton(
                 form,
@@ -10163,13 +10462,13 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 command=self.toggle_api_key_visibility,
             ),
             "button_show",
-        ).grid(row=row, column=2, sticky="w", pady=5)
+        ).grid(row=row, column=2, sticky="w", pady=3)
         row += 1
 
         tmdb_row = ttk.Frame(form)
-        tmdb_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
+        tmdb_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=3)
         tmdb_row.columnconfigure(0, weight=1)
-        ttk.Label(form, text="TMDB").grid(row=row, column=0, sticky="w", pady=5)
+        ttk.Label(form, text="TMDB").grid(row=row, column=0, sticky="w", pady=3)
 
         ttk.Entry(tmdb_row, textvariable=self.tmdb_id_var).grid(row=0, column=0, sticky="ew")
         self.localize_widget(
@@ -10207,22 +10506,14 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.tmdb_lookup_button.grid(row=0, column=8, padx=(4, 0))
         row += 1
 
-        ttk.Label(form, text="Video FPS").grid(row=row, column=0, sticky="w", pady=5)
-        ttk.Combobox(
-            form,
-            textvariable=self.video_fps_var,
-            values=("", "23.976", "24", "25", "29.970", "30", "50", "60", "24000/1001"),
-        ).grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
-        row += 1
-
         default_track_row = ttk.Frame(form)
-        default_track_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
+        default_track_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=3)
         default_track_row.columnconfigure(1, weight=1)
         default_track_row.columnconfigure(3, weight=1)
         self.localize_widget(
             ttk.Label(form),
             "label_default_tracks",
-        ).grid(row=row, column=0, sticky="w", pady=5)
+        ).grid(row=row, column=0, sticky="w", pady=3)
         self.localize_widget(
             ttk.Label(default_track_row),
             "label_audio_order",
@@ -10241,12 +10532,23 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             row=0,
             column=3,
             sticky="ew",
-            padx=(6, 0),
+            padx=(6, 14),
         )
+        ttk.Label(default_track_row, text="Video FPS").grid(
+            row=0,
+            column=4,
+            sticky="w",
+        )
+        ttk.Combobox(
+            default_track_row,
+            textvariable=self.video_fps_var,
+            values=("", "23.976", "24", "25", "29.970", "30", "50", "60", "24000/1001"),
+            width=13,
+        ).grid(row=0, column=5, sticky="ew", padx=(6, 0))
         row += 1
 
         options = ttk.Frame(form)
-        options.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
+        options.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=3)
         self.localize_widget(
             ttk.Checkbutton(
                 options,
@@ -10272,12 +10574,12 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         row += 1
 
         chapter_row = ttk.Frame(form)
-        chapter_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=5)
+        chapter_row.grid(row=row, column=1, columnspan=2, sticky="ew", padx=8, pady=3)
         chapter_row.columnconfigure(2, weight=1)
         self.localize_widget(
             ttk.Label(form),
             "label_auto_chapters",
-        ).grid(row=row, column=0, sticky="w", pady=5)
+        ).grid(row=row, column=0, sticky="w", pady=3)
         self.localize_widget(
             ttk.Checkbutton(
                 chapter_row,
@@ -10292,7 +10594,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         ttk.Entry(chapter_row, textvariable=self.chapter_name_var).grid(row=0, column=2, sticky="ew")
 
         chapter_options_row = ttk.Frame(chapter_row)
-        chapter_options_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        chapter_options_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
         self.localize_widget(
             ttk.Label(chapter_options_row),
             "label_chapter_interval",
@@ -10316,8 +10618,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             "option_detect_intro_end",
         ).grid(row=0, column=6, padx=(12, 0))
 
-        actions = ttk.Frame(outer, style="Toolbar.TFrame")
-        actions.grid(row=3, column=0, sticky="ew", pady=(0, 14))
+        actions = self._card_container(outer, 3, pady=(0, 8))
         for index in range(6):
             actions.columnconfigure(index, weight=1)
 
@@ -10354,11 +10655,11 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             maximum=100,
             mode="determinate",
         )
-        self.progress_bar.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(10, 0))
+        self.progress_bar.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(8, 0))
         ttk.Label(
             actions,
             textvariable=self.progress_status_var,
-            style="Root.TLabel",
+            style="Muted.TLabel",
             anchor="w",
         ).grid(row=2, column=0, columnspan=6, sticky="ew", pady=(4, 0))
 
@@ -10395,7 +10696,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         bind_main_scroll(outer)
 
     def make_log_text(self, parent: tk.Widget, height: int) -> ScrolledText:
-        return ScrolledText(
+        widget = ScrolledText(
             parent,
             height=height,
             wrap="word",
@@ -10414,6 +10715,19 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             pady=8,
             font=tkfont.nametofont("TkFixedFont"),
         )
+        try:
+            widget.vbar.configure(
+                troughcolor=UI_COLORS["window"],
+                background=UI_COLORS["border_strong"],
+                activebackground=UI_COLORS["muted"],
+                borderwidth=0,
+                relief="flat",
+                elementborderwidth=0,
+                width=12,
+            )
+        except tk.TclError:
+            pass
+        return widget
 
     def _path_row(
         self,
@@ -12083,7 +12397,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         form.columnconfigure(1, weight=1)
         form.columnconfigure(3, weight=1)
 
-        self.localize_widget(ttk.Label(form), "label_subtitle_api_key").grid(
+        self.localize_widget(ttk.Label(form, style="Root.TLabel"), "label_subtitle_api_key").grid(
             row=0,
             column=0,
             sticky="w",
@@ -12098,7 +12412,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             pady=4,
         )
 
-        self.localize_widget(ttk.Label(form), "label_subtitle_username").grid(
+        self.localize_widget(ttk.Label(form, style="Root.TLabel"), "label_subtitle_username").grid(
             row=1,
             column=0,
             sticky="w",
@@ -12111,7 +12425,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             padx=8,
             pady=4,
         )
-        self.localize_widget(ttk.Label(form), "label_subtitle_password").grid(
+        self.localize_widget(ttk.Label(form, style="Root.TLabel"), "label_subtitle_password").grid(
             row=1,
             column=2,
             sticky="w",
@@ -12129,11 +12443,12 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                 form,
                 variable=self.subtitle_show_password_var,
                 command=self.toggle_subtitle_password_visibility,
+                style="Root.TCheckbutton",
             ),
             "button_show",
         ).grid(row=1, column=4, sticky="w", pady=4)
 
-        self.localize_widget(ttk.Label(form), "label_subtitle_language").grid(
+        self.localize_widget(ttk.Label(form, style="Root.TLabel"), "label_subtitle_language").grid(
             row=2,
             column=0,
             sticky="w",
@@ -12144,7 +12459,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             textvariable=self.subtitle_language_var,
             values=SUBTITLE_LANGUAGE_CHOICES,
         ).grid(row=2, column=1, sticky="ew", padx=8, pady=4)
-        self.localize_widget(ttk.Label(form), "label_subtitle_query").grid(
+        self.localize_widget(ttk.Label(form, style="Root.TLabel"), "label_subtitle_query").grid(
             row=2,
             column=2,
             sticky="w",
@@ -12161,7 +12476,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.localize_widget(self.subtitle_search_button, "button_search_subtitles")
         self.subtitle_search_button.grid(row=2, column=4, sticky="ew", pady=4)
 
-        self.localize_widget(ttk.Label(form), "label_subtitle_target").grid(
+        self.localize_widget(ttk.Label(form, style="Root.TLabel"), "label_subtitle_target").grid(
             row=3,
             column=0,
             sticky="w",
@@ -12192,6 +12507,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             show="headings",
             height=16,
             selectmode="extended",
+            style="Modal.Treeview",
         )
         self.localize_tree_heading(tree, "status", "heading_subtitle_status")
         self.localize_tree_heading(tree, "target", "heading_subtitle_target")
@@ -12209,7 +12525,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         tree.column("flags", width=170, minwidth=130, stretch=False)
         tree.column("downloads", width=115, minwidth=100, stretch=False, anchor="e")
         tree.column("file", width=320, minwidth=220, stretch=True)
-        tree.tag_configure("downloaded", background="#dcfce7")
+        tree.tag_configure("downloaded", background=UI_COLORS["success_soft"])
         tree.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
@@ -12221,24 +12537,39 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         actions.columnconfigure(0, weight=1)
         actions.columnconfigure(1, weight=1)
         actions.columnconfigure(2, weight=1)
+        self.subtitle_progress_bar = ttk.Progressbar(
+            actions,
+            maximum=100,
+            mode="determinate",
+        )
+        self.subtitle_progress_bar.grid(
+            row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6)
+        )
+        ttk.Label(
+            actions,
+            textvariable=self.progress_status_var,
+            style="MutedRoot.TLabel",
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         self.subtitle_best_button = ttk.Button(
             actions,
             command=self.start_subtitle_download_best,
         )
         self.localize_widget(self.subtitle_best_button, "button_download_best_subtitles")
-        self.subtitle_best_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.subtitle_best_button.grid(row=2, column=0, sticky="ew", padx=(0, 8))
         self.subtitle_download_button = ttk.Button(
             actions,
             command=self.start_subtitle_download_selected,
             style="Accent.TButton",
         )
         self.localize_widget(self.subtitle_download_button, "button_download_selected_subtitle")
-        self.subtitle_download_button.grid(row=0, column=1, sticky="ew", padx=8)
+        self.subtitle_download_button.grid(row=2, column=1, sticky="ew", padx=8)
         self.localize_widget(
             ttk.Button(actions, command=self.close_subtitle_window),
             "button_cancel",
-        ).grid(row=0, column=2, sticky="ew", padx=(8, 0))
+        ).grid(row=2, column=2, sticky="ew", padx=(8, 0))
 
+        self.sync_progress_widget(self.subtitle_progress_bar)
         self.center_window(window, self)
         window.focus_set()
 
@@ -12278,6 +12609,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             except tk.TclError:
                 pass
         self.subtitle_window = None
+        self.subtitle_progress_bar = None
         self.subtitle_results_tree = None
         self.subtitle_search_button = None
         self.subtitle_download_button = None
@@ -12532,7 +12864,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         window.configure(background=UI_COLORS["surface"])
         window.title(f"{APP_NAME} - {self.tr('window_audio_adjust_title')}")
         self.apply_window_icon(window)
-        window.geometry("1220x420")
+        window.geometry("1220x470")
         window.transient(self)
         window.columnconfigure(0, weight=1)
         window.rowconfigure(0, weight=1)
@@ -12570,7 +12902,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         ]
         for key, column, width in headings:
             if key:
-                self.localize_widget(ttk.Label(rows_frame, style="SectionTitle.TLabel"), key).grid(
+                self.localize_widget(ttk.Label(rows_frame, style="ModalTableHeading.TLabel"), key).grid(
                     row=0,
                     column=column,
                     sticky="w",
@@ -12648,13 +12980,27 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             )
 
         self.localize_widget(
-            ttk.Label(window, style="Muted.TLabel", wraplength=1150, justify="left"),
+            ttk.Label(window, style="MutedRoot.TLabel", wraplength=1150, justify="left"),
             "audio_adjust_hint",
         ).grid(row=1, column=0, sticky="w", padx=14, pady=(0, 8))
 
-        actions = ttk.Frame(window, padding=(14, 0, 14, 14))
+        actions = ttk.Frame(window, padding=(14, 0, 14, 14), style="Root.TFrame")
         actions.grid(row=2, column=0, sticky="ew")
         actions.columnconfigure(0, weight=1)
+        self.audio_adjust_progress_bar = ttk.Progressbar(
+            actions,
+            maximum=100,
+            mode="determinate",
+        )
+        self.audio_adjust_progress_bar.grid(
+            row=0, column=0, columnspan=2, sticky="ew", pady=(4, 6)
+        )
+        ttk.Label(
+            actions,
+            textvariable=self.progress_status_var,
+            style="MutedRoot.TLabel",
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         apply_button = ttk.Button(
             actions,
             command=self.start_audio_adjust,
@@ -12662,7 +13008,8 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         )
         self.audio_adjust_apply_button = apply_button
         self.localize_widget(apply_button, "button_apply_audio_adjust")
-        apply_button.grid(row=0, column=1, sticky="e")
+        apply_button.grid(row=2, column=1, sticky="e")
+        self.sync_progress_widget(self.audio_adjust_progress_bar)
         self.center_window(window, self)
         window.focus_set()
 
@@ -12690,6 +13037,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         finally:
             self.audio_adjust_window = None
             self.audio_adjust_apply_button = None
+            self.audio_adjust_progress_bar = None
             self.audio_adjust_rows = []
 
     def collect_audio_adjust_tasks(self) -> list[AudioAdjustTask]:
@@ -13636,6 +13984,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             self.extract_window.destroy()
         self.extract_window = None
         self.extract_tree = None
+        self.extract_progress_bar = None
         self.extract_language_frame = None
         self.extract_language_vars = {}
         self.extract_language_output_vars = {}
@@ -13691,6 +14040,21 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         self.localize_widget(self.extract_button, "button_extract_selected")
         self.extract_button.grid(row=0, column=3, sticky="ew", padx=(8, 0))
 
+        self.extract_progress_bar = ttk.Progressbar(
+            actions,
+            maximum=100,
+            mode="determinate",
+        )
+        self.extract_progress_bar.grid(
+            row=1, column=0, columnspan=4, sticky="ew", pady=(10, 0)
+        )
+        ttk.Label(
+            actions,
+            textvariable=self.progress_status_var,
+            style="MutedRoot.TLabel",
+            anchor="w",
+        ).grid(row=2, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+
         frame = ttk.Frame(window, padding=(18, 0, 18, 18), style="Root.TFrame")
         frame.grid(row=1, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
@@ -13701,6 +14065,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             columns=("selected", "kind", "output"),
             show="headings",
             height=16,
+            style="Modal.Treeview",
         )
         self.localize_tree_heading(tree, "selected", "heading_selected")
         self.localize_tree_heading(tree, "kind", "heading_track")
@@ -13708,6 +14073,18 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         tree.column("selected", width=55, minwidth=55, stretch=False, anchor="center")
         tree.column("kind", width=560, minwidth=260, stretch=True)
         tree.column("output", width=280, minwidth=180, stretch=False)
+        if self.extract_inactive_font is None:
+            self.extract_inactive_font = tkfont.Font(
+                self,
+                font=tkfont.nametofont("TkDefaultFont"),
+            )
+            self.extract_inactive_font.configure(overstrike=True)
+        tree.tag_configure(
+            "inactive",
+            foreground=UI_COLORS["disabled"],
+            background=UI_COLORS["surface_alt"],
+            font=self.extract_inactive_font,
+        )
         tree.grid(row=0, column=0, sticky="nsew")
         tree.bind("<Double-1>", self.toggle_extract_item_event)
         tree.bind("<space>", self.toggle_extract_item_event)
@@ -13716,6 +14093,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         scrollbar.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=scrollbar.set)
         self.extract_tree = tree
+        self.sync_progress_widget(self.extract_progress_bar)
 
         language_frame = ttk.Frame(frame, padding=(0, 10, 0, 0), style="Root.TFrame")
         language_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
@@ -13743,6 +14121,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     item.label,
                     item.output_name,
                 ),
+                tags=(() if item.selected else ("inactive",)),
             )
         self.update_extract_all_button_text()
 
@@ -13852,6 +14231,7 @@ class MkvCreatorApp(TK_ROOT_CLASS):
                     item.label,
                     item.output_name,
                 ),
+                tags=(() if item.selected else ("inactive",)),
             )
 
     def toggle_extract_item_event(self, event: tk.Event) -> str:
@@ -14459,32 +14839,79 @@ class MkvCreatorApp(TK_ROOT_CLASS):
             return value[:147].rstrip() + "..."
         return value
 
+    def progress_bars(self) -> list[ttk.Progressbar]:
+        bars: list[ttk.Progressbar] = []
+        for bar in (
+            self.progress_bar,
+            self.extract_progress_bar,
+            self.subtitle_progress_bar,
+            self.audio_adjust_progress_bar,
+        ):
+            if bar is None:
+                continue
+            try:
+                if bar.winfo_exists():
+                    bars.append(bar)
+            except tk.TclError:
+                continue
+        return bars
+
+    def sync_progress_widget(self, bar: ttk.Progressbar | None) -> None:
+        if bar is None:
+            return
+        try:
+            if not bar.winfo_exists():
+                return
+            worker_busy = self.worker is not None and self.worker.is_alive()
+            if worker_busy:
+                bar.configure(mode="indeterminate", value=0)
+                bar.start(12)
+            else:
+                bar.stop()
+                bar.configure(mode="determinate", value=float(self.progress_var.get()))
+        except tk.TclError:
+            pass
+
     def start_progress(self, message: str) -> None:
         self.progress_var.set(0)
         self.progress_status_var.set(self.short_status_message(message))
-        if self.progress_bar is not None:
-            self.progress_bar.stop()
-            self.progress_bar.configure(mode="indeterminate")
-            self.progress_bar.start(12)
+        for bar in self.progress_bars():
+            try:
+                bar.stop()
+                bar.configure(mode="indeterminate", value=0)
+                bar.start(12)
+            except tk.TclError:
+                pass
 
     def finish_progress(self) -> None:
-        if self.progress_bar is not None:
-            self.progress_bar.stop()
-            self.progress_bar.configure(mode="determinate")
         error_prefixes = {
             texts["error_prefix"].split("{message}", 1)[0]
             for texts in UI_TEXT.values()
         }
-        if any(self.progress_status_var.get().startswith(prefix) for prefix in error_prefixes):
+        has_error = any(
+            self.progress_status_var.get().startswith(prefix) for prefix in error_prefixes
+        )
+        target_value = 0 if has_error else 100
+        for bar in self.progress_bars():
+            try:
+                bar.stop()
+                bar.configure(mode="determinate", value=target_value)
+            except tk.TclError:
+                pass
+        if has_error:
+            self.progress_var.set(0)
             return
         self.progress_var.set(100)
         if self.progress_status_var.get().endswith("..."):
             self.progress_status_var.set(self.tr("status_completed"))
 
     def set_progress_error(self, message: str) -> None:
-        if self.progress_bar is not None:
-            self.progress_bar.stop()
-            self.progress_bar.configure(mode="determinate")
+        for bar in self.progress_bars():
+            try:
+                bar.stop()
+                bar.configure(mode="determinate", value=0)
+            except tk.TclError:
+                pass
         self.progress_var.set(0)
         self.progress_status_var.set(
             self.short_status_message(self.tr("error_prefix", message=message))
@@ -14502,9 +14929,12 @@ class MkvCreatorApp(TK_ROOT_CLASS):
         )
         if percent_match:
             value = min(100, max(0, int(percent_match.group(1))))
-            if self.progress_bar is not None:
-                self.progress_bar.stop()
-                self.progress_bar.configure(mode="determinate")
+            for bar in self.progress_bars():
+                try:
+                    bar.stop()
+                    bar.configure(mode="determinate", value=value)
+                except tk.TclError:
+                    pass
             self.progress_var.set(value)
             self.progress_status_var.set(
                 self.tr("status_progress_percent", percent=value)
