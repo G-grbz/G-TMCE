@@ -129,6 +129,9 @@ class WindowsContextMenuLauncherTests(unittest.TestCase):
                 self.assertTrue(stable.stat().st_mode & stat.S_IXUSR)
                 icon = data_home / "icons" / "hicolor" / "256x256" / "apps" / "g-tmce.png"
                 self.assertEqual(icon.read_bytes(), b"icon data")
+                app_launcher = data_home / "applications" / "g-tmce.desktop"
+                self.assertIn(str(stable), app_launcher.read_text(encoding="utf-8"))
+                self.assertTrue(app_launcher.stat().st_mode & stat.S_IXUSR)
                 for service_menu in app.linux_kde_service_menu_paths():
                     self.assertIn(str(stable), service_menu.read_text(encoding="utf-8"))
                     self.assertTrue(service_menu.stat().st_mode & stat.S_IXUSR)
@@ -144,6 +147,7 @@ class WindowsContextMenuLauncherTests(unittest.TestCase):
                 self.assertEqual(app.uninstall_linux_appimage_context_menu(), [])
                 self.assertFalse(stable.exists())
                 self.assertFalse(icon.exists())
+                self.assertFalse(app_launcher.exists())
                 self.assertFalse(any(path.exists() for path in app.linux_kde_service_menu_paths()))
                 self.assertEqual(refresh_cache.call_count, 2)
 

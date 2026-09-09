@@ -1558,6 +1558,13 @@ def linux_context_menu_icon_path() -> Path | None:
     return data_home / "icons" / "hicolor" / "256x256" / "apps" / f"{APP_ID}.png"
 
 
+def linux_appimage_desktop_entry_path() -> Path | None:
+    data_home = linux_context_menu_data_home()
+    if data_home is None:
+        return None
+    return data_home / "applications" / f"{APP_ID}.desktop"
+
+
 def linux_kde_service_menu_paths() -> tuple[Path, ...]:
     launcher = linux_context_menu_launcher_path()
     if launcher is None:
@@ -1606,6 +1613,43 @@ Exec={executable} --extract %f
 """
 
 
+def linux_appimage_desktop_entry_contents(launcher: Path) -> str:
+    executable = quote_desktop_exec_arg(launcher)
+    return f"""[Desktop Entry]
+Type=Application
+Version=1.0
+Name={APP_NAME}
+Name[tr]={APP_NAME}
+Comment=Create and extract MKV media files
+Comment[tr]=MKV medya dosyalarını oluştur ve çıkar
+Exec={executable} --extract %f
+Icon={APP_ID}
+Terminal=false
+StartupNotify=true
+Categories=AudioVideo;Video;
+MimeType=video/x-matroska;application/x-matroska;video/webm;
+Keywords=MKV;Matroska;Mux;Extract;Subtitle;
+Keywords[tr]=MKV;Matroska;Birleştir;Çıkar;Altyazı;
+"""
+
+
+def write_authorized_linux_desktop_entry(path: Path, contents: str) -> bool:
+    """Write a local desktop file and authorize it for KDE's safety checks."""
+    try:
+        current = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        current = ""
+    changed = current != contents
+    if changed:
+        atomic_write_private_text(path, contents)
+    # Local .desktop files are untrusted until their owner explicitly marks
+    # them executable. Keep them private to the current user.
+    if not path.stat().st_mode & stat.S_IXUSR:
+        path.chmod(0o700)
+        changed = True
+    return changed
+
+
 def refresh_linux_kde_service_menu_cache() -> None:
     for command in ("kbuildsycoca6", "kbuildsycoca5"):
         executable = shutil.which(command)
@@ -1642,20 +1686,15 @@ def install_linux_appimage_context_menu() -> list[str]:
         service_menu = linux_kde_service_menu_contents(destination)
         menu_changed = False
         for path in paths:
-            try:
-                current = path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                current = ""
-            if current != service_menu:
-                atomic_write_private_text(path, service_menu)
-                menu_changed = True
-            # Dolphin deliberately treats locally installed service menus as
-            # untrusted until their owner marks the .desktop file executable.
-            # Keep it private to this user while satisfying that authorization.
-            if not path.stat().st_mode & stat.S_IXUSR:
-                path.chmod(0o700)
-                menu_changed = True
-        if menu_changed or icon_changed:
+            menu_changed = write_authorized_linux_desktop_entry(path, service_menu) or menu_changed
+        app_launcher_changed = False
+        app_launcher = linux_appimage_desktop_entry_path()
+        if app_launcher is not None:
+            app_launcher_changed = write_authorized_linux_desktop_entry(
+                app_launcher,
+                linux_appimage_desktop_entry_contents(destination),
+            )
+        if menu_changed or icon_changed or app_launcher_changed:
             refresh_linux_kde_service_menu_cache()
     except OSError as exc:
         return [str(exc)]
@@ -1671,6 +1710,13 @@ def uninstall_linux_appimage_context_menu() -> list[str]:
             path.unlink(missing_ok=True)
         except OSError as exc:
             errors.append(f"{path}: {exc}")
+    app_launcher = linux_appimage_desktop_entry_path()
+    if app_launcher is not None:
+        try:
+            desktop_data_removed = desktop_data_removed or app_launcher.exists()
+            app_launcher.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append(f"{app_launcher}: {exc}")
     launcher = linux_context_menu_launcher_path()
     if launcher is not None:
         try:
