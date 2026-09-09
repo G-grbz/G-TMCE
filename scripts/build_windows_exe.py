@@ -22,7 +22,7 @@ def install_build_requirements(root: Path) -> None:
 
 
 def create_windows_icon(root: Path) -> Path | None:
-    logo = root / "logo.png"
+    logo = root / "assets" / "logo.png"
     if not logo.exists():
         return None
 
@@ -55,7 +55,7 @@ def create_windows_icon(root: Path) -> Path | None:
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     entry = root / ENTRY_FILE
     if not entry.exists():
         print(f"Missing: {entry}")
@@ -64,7 +64,7 @@ def main() -> int:
     python = sys.executable
     install_build_requirements(root)
 
-    hidden_imports = ["PIL", "PIL.Image", "PIL.ImageOps", "PIL.ImageTk", "tkinterdnd2", "certifi"]
+    hidden_imports = ["PIL", "PIL.Image", "PIL.ImageOps", "PySide6", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "certifi"]
     command = [
         python,
         "-m",
@@ -75,15 +75,18 @@ def main() -> int:
         "--windowed",
         "--name",
         APP_NAME,
-        "--collect-all",
-        "tkinterdnd2",
         "--collect-data",
         "certifi",
     ]
 
-    logo = root / "logo.png"
+    logo = root / "assets" / "logo.png"
     if logo.exists():
-        command += ["--add-data", f"{logo}{os.pathsep}."]
+        command += ["--add-data", f"{logo}{os.pathsep}assets"]
+
+    for asset_name in ("combo-arrow-dark.png", "combo-arrow-light.png"):
+        asset = root / "assets" / asset_name
+        if asset.exists():
+            command += ["--add-data", f"{asset}{os.pathsep}assets"]
 
     icon = create_windows_icon(root)
     if icon is not None:

@@ -9,7 +9,7 @@
 
 Create professional MKV remuxes with TMDB metadata, artwork, chapters, language handling, and MKVToolNix automation — without manually building `mkvmerge` commands.
 
-G-TMCE is a cross-platform GUI application for creating, extracting, and managing MKV files on Linux and Windows.
+G-TMCE is a cross-platform PySide6/Qt 6 desktop application for creating, extracting, and managing MKV files on Linux and Windows. The interface includes native Dark and Light themes and is independent of any specific Linux desktop environment.
 
 It combines MKVToolNix, FFmpeg, and TMDB into a single workflow and automatically handles tasks that are normally performed manually:
 
@@ -108,13 +108,34 @@ G-TMCE automates the entire process and keeps every MKV organized using predicta
 
 ---
 
+### Interface themes
+
+G-TMCE ships with two application-controlled themes:
+
+- **Dark** — the default modern navy/indigo interface.
+- **Light** — the same layout with a bright neutral palette.
+
+Use the sun/moon button beside the interface-language selector to switch themes instantly. The selected theme is persisted in the per-user settings file. Because the styling is implemented with Qt/QSS rather than KDE-specific APIs, the same G-TMCE appearance is used across supported desktop environments.
+
 ## Requirements
 
 **Runtime:**
-- Linux
+- Linux or Windows
 - Python 3.10+
-- Tkinter
-- Pillow
+- PySide6 / Qt 6 (`>=6.8,<7`)
+- Pillow (`>=12.3.0,<13`)
+- certifi (`>=2026.7.22,<2027`) for the bundled trusted CA certificate store
+
+Install the runtime dependencies for a source checkout with:
+
+```bash
+python3 -m pip install --upgrade -r requirements.txt
+```
+
+G-TMCE no longer uses Tkinter, `tkinterdnd2`, or Tk-specific file-dialog
+helpers. File dialogs, drag-and-drop, and theming are supplied by PySide6/Qt 6.
+
+The Qt interface is desktop-environment agnostic: KDE Plasma, GNOME, XFCE, Cinnamon, Wayland, and X11 are supported as long as the normal Qt platform libraries are available.
 
 **Supported Architectures:**
 
@@ -147,17 +168,14 @@ makepkg -si
 
 The AUR package installs the `g-tmce` launcher command, desktop menu entry, application icon, and Dolphin/KDE service menu integration.
 
-Optional native file dialog helpers:
-
-```bash
-sudo pacman -S --needed kdialog zenity
-```
+File dialogs are provided directly by Qt and do not require KDE-specific helpers.
 
 ### Clone Repository
 
 ```bash
 git clone https://github.com/G-grbz/G-TMCE.git
 cd G-TMCE
+python3 -m pip install --upgrade -r requirements.txt
 ```
 
 ### Automatic Installation
@@ -186,16 +204,23 @@ Version tags (`vX.Y.Z`) are built through the verified release workflow. Release
 
 ### Building from Source
 
+Project files are grouped by purpose: `src/gtmce/` contains the application
+modules, `assets/` contains shipped UI/branding images, `scripts/` contains
+release helpers, and `tests/` contains regression coverage. The root
+`mkv_creator_ui.py` file remains the compatible application entry point.
+
 **Windows EXE:**
 
 ```powershell
-py -3 -m pip install --upgrade pillow tkinterdnd2 pyinstaller
-py -3 build_windows_exe.py
+py -3 -m pip install --upgrade -r requirements-build.txt
+py -3 scripts/build_windows_exe.py
 ```
 
 Output: `dist\G-TMCE.exe`
 
-On first launch, the EXE registers a per-user Explorer context menu entry for supported media containers. The menu item is named `Open with G-TMCE Extract`. No admin permission is required as registry entries are written under `HKEY_CURRENT_USER`. If you move the portable EXE, launch it once from the new location to refresh the context menu command path.
+On first launch, the EXE registers a per-user Explorer context menu entry for supported media containers. The menu item is named `Open with G-TMCE Extract`. No admin permission is required as registry entries are written under `HKEY_CURRENT_USER`.
+
+The first run creates one stable launcher at `%LOCALAPPDATA%\G-TMCE\G-TMCE.exe`; Explorer always uses that path rather than a versioned GitHub download name. Open a newer release once and it atomically updates this stable launcher, so the right-click menu keeps working without unregistering an old version or registering every new one.
 
 ```powershell
 dist\G-TMCE.exe --install-context-menu

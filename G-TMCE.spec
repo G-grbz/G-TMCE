@@ -1,25 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('VERSION', '.')]
+datas = [('VERSION', '.'), ('assets', 'assets')]
 binaries = []
-hiddenimports = ['tkinterdnd2']
-tmp_ret = collect_all('tkinterdnd2')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+hiddenimports = ['PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets']
+
 tmp_ret = collect_all('certifi')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
 
-
+# PyInstaller's official PySide6 hooks collect the Qt libraries and platform
+# plugins required by the imported Qt modules. Avoid collect_all('PySide6') so
+# the package does not pull unrelated Qt modules into the desktop build.
 a = Analysis(
     ['mkv_creator_ui.py'],
-    pathex=[],
+    pathex=['.'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['tkinter'],
     noarchive=False,
     optimize=0,
 )

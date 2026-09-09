@@ -71,162 +71,64 @@ check_dependencies() {
   echo "[0/6] Checking required system dependencies..."
 
   detect_distro
-
   local missing_packages=()
+  local packages=()
 
   if is_debian_like; then
-    local packages=(
-      "python3"
-      "python3-pip"
-      "zenity"
-      "kdialog"
-      "python3-tk"
-      "python3-pil"
-      "desktop-file-utils"
-      "hicolor-icon-theme"
-      "xdg-utils"
+    packages=(
+      "python3" "python3-pip"
+      "libxcb-cursor0" "libxkbcommon-x11-0" "libegl1" "libgl1"
+      "desktop-file-utils" "hicolor-icon-theme" "xdg-utils"
     )
-
     for package in "${packages[@]}"; do
       if dpkg -s "$package" >/dev/null 2>&1; then
         echo "Dependency already installed: $package"
       else
-        echo "Dependency missing: $package"
         missing_packages+=("$package")
       fi
     done
-
     if ((${#missing_packages[@]} > 0)); then
-      echo "Installing missing dependencies: ${missing_packages[*]}"
       apt-get update
       apt-get install -y "${missing_packages[@]}"
-    else
-      echo "All required dependencies are already installed."
     fi
-
   elif is_fedora_like; then
-    local packages=(
-      "python3"
-      "python3-pip"
-      "zenity"
-      "kdialog"
-      "python3-tkinter"
-      "python3-pillow"
-      "desktop-file-utils"
-      "hicolor-icon-theme"
-      "xdg-utils"
+    packages=(
+      "python3" "python3-pip"
+      "xcb-util-cursor" "libxkbcommon-x11" "mesa-libEGL" "mesa-libGL"
+      "desktop-file-utils" "hicolor-icon-theme" "xdg-utils"
     )
-
     for package in "${packages[@]}"; do
-      if rpm -q "$package" >/dev/null 2>&1; then
-        echo "Dependency already installed: $package"
-      else
-        echo "Dependency missing: $package"
-        missing_packages+=("$package")
-      fi
+      rpm -q "$package" >/dev/null 2>&1 || missing_packages+=("$package")
     done
-
-    if ((${#missing_packages[@]} > 0)); then
-      echo "Installing missing dependencies: ${missing_packages[*]}"
-      dnf install -y "${missing_packages[@]}"
-    else
-      echo "All required dependencies are already installed."
-    fi
-
+    ((${#missing_packages[@]} == 0)) || dnf install -y "${missing_packages[@]}"
   elif is_arch_like; then
-    local packages=(
-      "python"
-      "python-pip"
-      "zenity"
-      "kdialog"
-      "tk"
-      "python-pillow"
-      "desktop-file-utils"
-      "hicolor-icon-theme"
-      "xdg-utils"
+    packages=(
+      "python" "python-pip"
+      "xcb-util-cursor" "libxkbcommon-x11" "libglvnd"
+      "desktop-file-utils" "hicolor-icon-theme" "xdg-utils"
     )
-
     for package in "${packages[@]}"; do
-      if pacman -Q "$package" >/dev/null 2>&1; then
-        echo "Dependency already installed: $package"
-      else
-        echo "Dependency missing: $package"
-        missing_packages+=("$package")
-      fi
+      pacman -Q "$package" >/dev/null 2>&1 || missing_packages+=("$package")
     done
-
-    if ((${#missing_packages[@]} > 0)); then
-      echo "Installing missing dependencies: ${missing_packages[*]}"
-      pacman -S --needed --noconfirm "${missing_packages[@]}"
-    else
-      echo "All required dependencies are already installed."
-    fi
-
+    ((${#missing_packages[@]} == 0)) || pacman -S --needed --noconfirm "${missing_packages[@]}"
   elif is_opensuse_like; then
-    local packages=(
-      "python3"
-      "python3-pip"
-      "zenity"
-      "kdialog"
-      "python3-tk"
-      "python3-Pillow"
-      "desktop-file-utils"
-      "hicolor-icon-theme"
-      "xdg-utils"
+    packages=(
+      "python3" "python3-pip"
+      "libxcb-cursor0" "libxkbcommon-x11-0" "libEGL1" "libGL1"
+      "desktop-file-utils" "hicolor-icon-theme" "xdg-utils"
     )
-
     for package in "${packages[@]}"; do
-      if rpm -q "$package" >/dev/null 2>&1; then
-        echo "Dependency already installed: $package"
-      else
-        echo "Dependency missing: $package"
-        missing_packages+=("$package")
-      fi
+      rpm -q "$package" >/dev/null 2>&1 || missing_packages+=("$package")
     done
-
-    if ((${#missing_packages[@]} > 0)); then
-      echo "Installing missing dependencies: ${missing_packages[*]}"
-      zypper --non-interactive install "${missing_packages[@]}"
-    else
-      echo "All required dependencies are already installed."
-    fi
-
+    ((${#missing_packages[@]} == 0)) || zypper --non-interactive install "${missing_packages[@]}"
   else
     echo "Unsupported or unknown Linux distribution: ${DISTRO_ID}"
-    echo
-    echo "Install these dependencies manually:"
-    echo "- python3"
-    echo "- pip for Python 3"
-    echo "- tkinter for Python 3"
-    echo "- Pillow for Python 3"
-    echo "- desktop-file-utils"
-    echo "- hicolor-icon-theme"
-    echo "- xdg-utils"
+    echo "Install Python 3, pip, Qt/XCB runtime libraries, desktop-file-utils, hicolor-icon-theme and xdg-utils manually."
     exit 1
   fi
 
-  if ! has_command python3; then
-    echo "Error: python3 is still not available after dependency installation."
-    exit 1
-  fi
-
-  if ! python3 - <<'PY' >/dev/null 2>&1
-import tkinter
-PY
-  then
-    echo "Error: Python tkinter is still not available after dependency installation."
-    exit 1
-  fi
-
-  if ! check_python_module "PIL"; then
-    echo "Error: Python Pillow is still not available after dependency installation."
-    exit 1
-  fi
-
-  if ! python3 -m pip --version >/dev/null 2>&1; then
-    echo "Error: pip for Python 3 is still not available after dependency installation."
-    exit 1
-  fi
+  has_command python3 || { echo "Error: python3 is not available."; exit 1; }
+  python3 -m pip --version >/dev/null 2>&1 || { echo "Error: pip for Python 3 is not available."; exit 1; }
 }
 
 install_vendor_python_package() {
@@ -259,7 +161,9 @@ install_application() {
   cp -a "$SRC_DIR/." "$INSTALL_DIR/"
 
   mkdir -p "$VENDOR_DIR"
-  install_vendor_python_package "tkinterdnd2" "tkinterdnd2"
+  echo "Installing Python runtime requirements into app vendor directory..."
+  PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    python3 -m pip install --upgrade --target "$VENDOR_DIR" -r "$INSTALL_DIR/requirements.txt"
 
   mkdir -p "$INSTALL_DIR/3rdParty/bin"
   mkdir -p "$INSTALL_DIR/3rdParty/.downloads"
@@ -284,7 +188,7 @@ install_launcher() {
 cat > "$BIN_LINK" <<EOF
 #!/usr/bin/env bash
 cd "$INSTALL_DIR"
-export PYTHONPATH="$VENDOR_DIR\${PYTHONPATH:+:\$PYTHONPATH}"
+export PYTHONPATH="$INSTALL_DIR:$VENDOR_DIR\${PYTHONPATH:+:\$PYTHONPATH}"
 exec python3 "$INSTALL_DIR/mkv_creator_ui.py" "\$@"
 EOF
 
@@ -294,7 +198,7 @@ EOF
 install_icon() {
   echo "[3/6] Installing application icon..."
 
-  if [[ ! -f "$INSTALL_DIR/logo.png" ]]; then
+  if [[ ! -f "$INSTALL_DIR/assets/logo.png" ]]; then
     echo "Warning: logo.png was not found. Skipping icon installation."
     return
   fi
@@ -302,12 +206,12 @@ install_icon() {
   for size in 16 24 32 48 64 128 256 512 1024; do
     icon_dir="/usr/share/icons/hicolor/${size}x${size}/apps"
     mkdir -p "$icon_dir"
-    cp "$INSTALL_DIR/logo.png" "$icon_dir/${APP_ID}.png"
+    cp "$INSTALL_DIR/assets/logo.png" "$icon_dir/${APP_ID}.png"
     chmod 644 "$icon_dir/${APP_ID}.png"
   done
 
   mkdir -p "$PIXMAP_DIR"
-  cp "$INSTALL_DIR/logo.png" "$PIXMAP_DIR/${APP_ID}.png"
+  cp "$INSTALL_DIR/assets/logo.png" "$PIXMAP_DIR/${APP_ID}.png"
   chmod 644 "$PIXMAP_DIR/${APP_ID}.png"
 }
 
@@ -330,7 +234,7 @@ GenericName[tr]=MKV Oluşturma ve Parça Çıkarma Aracı
 Comment=Create MKV files with TMDB metadata and extract tracks, subtitles, chapters, and attachments
 Comment[tr]=TMDB verileriyle MKV oluşturur; parça, altyazı, chapter ve ekleri çıkarır
 
-Exec=${BIN_LINK} %F
+Exec=${BIN_LINK} --extract %f
 Icon=${APP_ID}
 Path=${INSTALL_DIR}
 
@@ -414,7 +318,7 @@ Name=Open with G-TMCE Extract
 Name[tr]=G-TMCE Extract ile Aç
 
 Icon=${APP_ID}
-Exec=${BIN_LINK} %F
+Exec=${BIN_LINK} --extract %f
 EOF
 
     chmod 644 "$dir/${APP_ID}-extract.desktop"
@@ -427,6 +331,23 @@ update_caches() {
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APP_DESKTOP_DIR" || true
   command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -q /usr/share/icons/hicolor || true
   command -v xdg-icon-resource >/dev/null 2>&1 && xdg-icon-resource forceupdate || true
+
+  # KDE's service/application cache is per-user.  Running the installer with
+  # sudo and rebuilding only root's ksycoca can leave Dolphin using a stale
+  # Open-With/ServiceMenu Exec line.  Refresh the invoking desktop user's cache
+  # as well as root's so the new --extract %f handler is effective immediately.
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    user_home="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
+    if [[ -n "$user_home" ]]; then
+      if command -v kbuildsycoca6 >/dev/null 2>&1; then
+        sudo -u "$SUDO_USER" env HOME="$user_home" kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
+      fi
+      if command -v kbuildsycoca5 >/dev/null 2>&1; then
+        sudo -u "$SUDO_USER" env HOME="$user_home" kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+
   command -v kbuildsycoca6 >/dev/null 2>&1 && kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
   command -v kbuildsycoca5 >/dev/null 2>&1 && kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
 }

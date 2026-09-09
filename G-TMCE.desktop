@@ -11,7 +11,7 @@ GenericName[tr]=MKV Oluşturma ve Parça Çıkarma Aracı
 Comment=Create MKV files with TMDB metadata and extract tracks, subtitles, chapters, and attachments
 Comment[tr]=TMDB verileriyle MKV oluşturur; parça, altyazı, chapter ve ekleri çıkarır
 
-Exec=g-tmce %F
+Exec=g-tmce --extract %f
 Icon=g-tmce
 Path=/opt/G-TMCE
 

@@ -12,12 +12,13 @@ on:
       - main
     paths:
       - "mkv_creator_ui.py"
-      - "build_windows_exe.py"
+      - "src/**"
+      - "scripts/build_windows_exe.py"
       - "G-TMCE.spec"
       - "requirements.txt"
       - "requirements-build.txt"
       - "VERSION"
-      - "logo.png"
+      - "assets/**"
       - "mkv.mtxcfg"
       - ".github/workflows/build-windows-exe.yml"
 
@@ -52,7 +53,7 @@ jobs:
           python -m pip install -r requirements-build.txt
 
       - name: Build EXE
-        run: python build_windows_exe.py
+        run: python scripts/build_windows_exe.py
 
       - name: Prepare artifact name
         shell: pwsh

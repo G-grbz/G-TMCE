@@ -20,7 +20,7 @@ set -Eeuo pipefail
 
 APP_NAME="G-TMCE"
 ENTRY_FILE="mkv_creator_ui.py"
-ICON_FILE="logo.png"
+ICON_FILE="assets/logo.png"
 VERSION_FILE="VERSION"
 DESKTOP_FILE="${APP_NAME}.desktop"
 APPDIR="${APP_NAME}.AppDir"
@@ -103,13 +103,22 @@ build_binary() {
   if [[ -f "$VERSION_FILE" ]]; then
     add_data_args+=(--add-data "${VERSION_FILE}:.")
   fi
+  if [[ -f "$ICON_FILE" ]]; then
+    add_data_args+=(--add-data "${ICON_FILE}:assets")
+  fi
+  for asset in assets/combo-arrow-dark.png assets/combo-arrow-light.png; do
+    if [[ -f "$asset" ]]; then
+      add_data_args+=(--add-data "${asset}:assets")
+    fi
+  done
 
   "$BUILD_PYTHON" -m PyInstaller \
     --onefile \
     --windowed \
     --name "$APP_NAME" \
-    --hidden-import tkinterdnd2 \
-    --collect-all tkinterdnd2 \
+    --hidden-import PySide6.QtCore \
+    --hidden-import PySide6.QtGui \
+    --hidden-import PySide6.QtWidgets \
     --collect-data certifi \
     "${add_data_args[@]}" \
     "$ENTRY_FILE"
@@ -142,9 +151,10 @@ APPRUN
 Type=Application
 Name=G-TMCE
 Comment=Extract and create MKV files with TMDB metadata support
-Exec=${APP_NAME}
+Exec=${APP_NAME} --extract %f
 Icon=${APP_NAME}
 Categories=AudioVideo;Video;
+MimeType=video/x-matroska;application/x-matroska;video/webm;
 Terminal=false
 DESKTOP
 

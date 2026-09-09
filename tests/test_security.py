@@ -15,6 +15,91 @@ import mkv_creator_ui as app
 
 
 ROOT = Path(__file__).resolve().parents[1]
+APP_SOURCE_FILES = (
+    ROOT / "mkv_creator_ui.py",
+    *(ROOT / "src" / "gtmce" / name for name in ("core.py", "controller.py", "theme.py")),
+)
+
+
+class DesktopOpenWithTests(unittest.TestCase):
+    def test_extract_default_directory_is_available_from_the_ui_instance(self) -> None:
+        source = Path("/media/movie.mkv")
+        controller = app.GTMCEControllerMixin()
+
+        self.assertEqual(
+            controller.default_extract_output_dir(source),
+            Path("/media/movie_tracks"),
+        )
+
+    def test_extract_desktop_arguments_open_supported_local_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "movie with spaces.MKV"
+            source.touch()
+
+            self.assertEqual(
+                app.initial_extract_source_from_argv(["g-tmce", "--extract", str(source)]),
+                source,
+            )
+            self.assertEqual(
+                app.initial_extract_source_from_argv(["g-tmce", f"--extract={source}"]),
+                source,
+            )
+            self.assertEqual(
+                app.initial_extract_source_from_argv(["g-tmce", source.as_uri()]),
+                source,
+            )
+
+    def test_pending_desktop_extract_uses_dialog_first_flow(self) -> None:
+        source = Path("/media/movie.mkv")
+
+        class PendingExtract:
+            def __init__(self) -> None:
+                self.initial_extract_source = source
+                self._initial_extract_started = False
+                self.opened_source: Path | None = None
+
+            def open_initial_extract_source(self, value: Path) -> None:
+                self.opened_source = value
+
+        pending = PendingExtract()
+        app.MkvCreatorApp._open_pending_initial_extract(pending)
+
+        self.assertTrue(pending._initial_extract_started)
+        self.assertIsNone(pending.initial_extract_source)
+        self.assertEqual(pending.opened_source, source)
+
+
+class WindowsContextMenuLauncherTests(unittest.TestCase):
+    def test_versioned_release_updates_one_stable_context_menu_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_release = root / "G-TMCE-v1.9.0-win-x64.exe"
+            second_release = root / "G-TMCE-v2.0.0-win-x64.exe"
+            first_release.write_bytes(b"version one")
+            second_release.write_bytes(b"version two")
+            local_app_data = root / "AppData" / "Local"
+
+            stable_path = local_app_data / "G-TMCE" / "G-TMCE.exe"
+            with (
+                mock.patch.object(app._core, "windows_context_menu_launcher_path", return_value=stable_path),
+                mock.patch.object(app.sys, "frozen", True, create=True),
+                mock.patch.object(app.sys, "executable", str(first_release)),
+            ):
+                stable = app.sync_windows_context_menu_launcher()
+                self.assertEqual(stable, stable_path)
+                self.assertEqual(stable.read_bytes(), b"version one")
+                self.assertEqual(
+                    app.app_command_for_file_argument(),
+                    f'"{stable}" "%1"',
+                )
+
+                app.sys.executable = str(second_release)
+                self.assertEqual(app.sync_windows_context_menu_launcher(), stable)
+                self.assertEqual(stable.read_bytes(), b"version two")
+                self.assertEqual(
+                    app.app_command_for_file_argument(),
+                    f'"{stable}" "%1"',
+                )
 
 
 class UrlSecurityTests(unittest.TestCase):
@@ -106,8 +191,30 @@ class ProcessSecurityTests(unittest.TestCase):
         for key in secrets:
             self.assertNotIn(key, env)
 
+    def test_capture_process_drains_large_stderr_without_pipe_deadlock(self) -> None:
+        # Regression: the old poll-then-communicate loop could block forever on
+        # Windows when FFmpeg filled stderr before exiting.
+        payload_size = 512 * 1024
+        process = app.run_cancellable_capture(
+            [
+                app.sys.executable,
+                "-c",
+                f"import sys; sys.stderr.write('x' * {payload_size}); sys.stdout.write('ok')",
+            ],
+        )
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(process.stdout, "ok")
+        self.assertEqual(len(process.stderr), payload_size)
+
+    def test_ffmpeg_path_prefers_installed_binary_without_release_check(self) -> None:
+        installed = r"C:\\Users\\Test\\AppData\\Roaming\\g-tmce\\3rdParty\\bin\\ffmpeg.exe"
+        with mock.patch.object(app._core, "installed_third_party_tool_path", return_value=installed), mock.patch.object(
+            app._core, "third_party_tool_path", side_effect=AssertionError("release check should not run")
+        ):
+            self.assertEqual(app.ffmpeg_path(), installed)
+
     def test_source_contains_no_shell_true(self) -> None:
-        source = (ROOT / "mkv_creator_ui.py").read_text(encoding="utf-8")
+        source = "\n".join(path.read_text(encoding="utf-8") for path in APP_SOURCE_FILES)
         self.assertNotIn("shell=True", source)
         self.assertNotIn("shell = True", source)
 
@@ -167,7 +274,9 @@ class ReleaseSecurityTests(unittest.TestCase):
         self.assertIn("- main", workflow)
         for watched_path in (
             '"mkv_creator_ui.py"',
-            '"build_windows_exe.py"',
+            '"src/**"',
+            '"scripts/build_windows_exe.py"',
+            '"assets/**"',
             '"requirements.txt"',
             '"requirements-build.txt"',
             '"VERSION"',
@@ -177,10 +286,10 @@ class ReleaseSecurityTests(unittest.TestCase):
         self.assertNotIn("gh release create", workflow)
 
     def test_windows_build_installs_shared_requirements(self) -> None:
-        build_script = (ROOT / "build_windows_exe.py").read_text(encoding="utf-8")
+        build_script = (ROOT / "scripts" / "build_windows_exe.py").read_text(encoding="utf-8")
         self.assertIn('root / "requirements-build.txt"', build_script)
         self.assertIn('"-r", str(requirements)', build_script)
-        for duplicated_requirement in ("Pillow>=", "tkinterdnd2>=", "certifi>=", "PyInstaller>="):
+        for duplicated_requirement in ("Pillow>=", "PySide6>=", "certifi>=", "PyInstaller>="):
             self.assertNotIn(duplicated_requirement, build_script)
         self.assertIn('"--collect-data",', build_script)
         self.assertIn('"certifi",', build_script)
@@ -214,7 +323,7 @@ class LinuxFileDialogTests(unittest.TestCase):
     def test_appimage_build_installs_shared_requirements(self) -> None:
         script = (ROOT / "build_appimage.sh").read_text(encoding="utf-8")
         self.assertIn('pip install --upgrade -r requirements-build.txt', script)
-        for duplicated_requirement in ("Pillow>=", "tkinterdnd2>=", "certifi>=", "PyInstaller>="):
+        for duplicated_requirement in ("Pillow>=", "PySide6>=", "certifi>=", "PyInstaller>="):
             self.assertNotIn(duplicated_requirement, script)
         self.assertIn("--collect-data certifi", script)
 
@@ -260,10 +369,32 @@ class WindowsReleaseEncodingTests(unittest.TestCase):
         self.assertIn('PYTHONIOENCODING: "utf-8"', windows_block)
 
     def test_windows_builder_ci_output_is_ascii_safe(self) -> None:
-        source = (ROOT / "build_windows_exe.py").read_text(encoding="utf-8")
+        source = (ROOT / "scripts" / "build_windows_exe.py").read_text(encoding="utf-8")
         self.assertNotIn("Hazır:", source)
         self.assertNotIn("Bulunamadı:", source)
         self.assertNotIn("çıktısı", source)
+
+
+class QtUiMigrationTests(unittest.TestCase):
+    def test_runtime_uses_pyside6_not_tkinter(self) -> None:
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("PySide6>=", requirements)
+        self.assertNotIn("tkinterdnd2", requirements.lower())
+        source = "\n".join(path.read_text(encoding="utf-8") for path in APP_SOURCE_FILES)
+        self.assertNotIn("import tkinter", source)
+        self.assertNotIn("from tkinter", source)
+
+    def test_dark_and_light_qt_themes_are_present(self) -> None:
+        source = (ROOT / "src" / "gtmce" / "theme.py").read_text(encoding="utf-8")
+        self.assertIn("DARK = ThemePalette", source)
+        self.assertIn("LIGHT = ThemePalette", source)
+        self.assertIn("QMainWindow", source)
+        self.assertIn("QProgressBar", source)
+
+    def test_split_runtime_modules_are_compiled_in_ci(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for name in ("mkv_creator_ui.py", "src", "scripts/build_windows_exe.py"):
+            self.assertIn(name, workflow)
 
 
 if __name__ == "__main__":
