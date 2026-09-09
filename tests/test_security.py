@@ -123,7 +123,9 @@ class WindowsContextMenuLauncherTests(unittest.TestCase):
                 mock.patch.object(app._core, "refresh_linux_kde_service_menu_cache") as refresh_cache,
                 mock.patch.object(app._core, "LOGO_PATH", logo),
             ):
-                self.assertEqual(app.install_linux_appimage_context_menu(), [])
+                # Double-clicking an AppImage refreshes the application-menu
+                # launcher independently of the optional Dolphin checkbox.
+                self.assertEqual(app.install_linux_appimage_launcher(), [])
                 stable = data_home / "g-tmce" / "G-TMCE.AppImage"
                 self.assertEqual(stable.read_bytes(), b"version one")
                 self.assertTrue(stable.stat().st_mode & stat.S_IXUSR)
@@ -132,24 +134,30 @@ class WindowsContextMenuLauncherTests(unittest.TestCase):
                 app_launcher = data_home / "applications" / "g-tmce.desktop"
                 self.assertIn(str(stable), app_launcher.read_text(encoding="utf-8"))
                 self.assertTrue(app_launcher.stat().st_mode & stat.S_IXUSR)
-                for service_menu in app.linux_kde_service_menu_paths():
-                    self.assertIn(str(stable), service_menu.read_text(encoding="utf-8"))
-                    self.assertTrue(service_menu.stat().st_mode & stat.S_IXUSR)
+                self.assertFalse(any(path.exists() for path in app.linux_kde_service_menu_paths()))
                 refresh_cache.assert_called_once()
 
                 os.environ["APPIMAGE"] = str(second_release)
-                self.assertEqual(app.install_linux_appimage_context_menu(), [])
+                self.assertEqual(app.install_linux_appimage_launcher(), [])
                 self.assertEqual(stable.read_bytes(), b"version two")
-                # The service-menu target stays the same across releases; it is
-                # not rewritten or re-cached after the one-time setup.
+                # The search entry retains its stable target and needs no
+                # desktop-cache rewrite just because the AppImage changed.
                 refresh_cache.assert_called_once()
 
-                self.assertEqual(app.uninstall_linux_appimage_context_menu(), [])
-                self.assertFalse(stable.exists())
-                self.assertFalse(icon.exists())
-                self.assertFalse(app_launcher.exists())
-                self.assertFalse(any(path.exists() for path in app.linux_kde_service_menu_paths()))
+                self.assertEqual(app.install_linux_appimage_context_menu(), [])
+                for service_menu in app.linux_kde_service_menu_paths():
+                    self.assertIn(str(stable), service_menu.read_text(encoding="utf-8"))
+                    self.assertTrue(service_menu.stat().st_mode & stat.S_IXUSR)
                 self.assertEqual(refresh_cache.call_count, 2)
+
+                self.assertEqual(app.uninstall_linux_appimage_context_menu(), [])
+                # The checkbox controls only the Dolphin action. The stable
+                # AppImage and search-menu entry remain for future upgrades.
+                self.assertTrue(stable.exists())
+                self.assertTrue(icon.exists())
+                self.assertTrue(app_launcher.exists())
+                self.assertFalse(any(path.exists() for path in app.linux_kde_service_menu_paths()))
+                self.assertEqual(refresh_cache.call_count, 3)
 
 class UrlSecurityTests(unittest.TestCase):
     def test_opensubtitles_base_url_accepts_official_hosts(self) -> None:

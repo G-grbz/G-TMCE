@@ -1669,12 +1669,13 @@ def refresh_linux_kde_service_menu_cache() -> None:
             continue
 
 
-def install_linux_appimage_context_menu() -> list[str]:
+def install_linux_appimage_launcher() -> list[str]:
+    """Refresh the stable AppImage and its application-menu entry on launch."""
     source = current_appimage_path()
     destination = linux_context_menu_launcher_path()
-    paths = linux_kde_service_menu_paths()
-    if source is None or destination is None or not paths:
-        return ["Linux right-click integration is available only from an AppImage."]
+    app_launcher = linux_appimage_desktop_entry_path()
+    if source is None or destination is None or app_launcher is None:
+        return ["Linux application integration is available only from an AppImage."]
     try:
         sync_stable_launcher(source, destination)
         icon_destination = linux_context_menu_icon_path()
@@ -1683,18 +1684,31 @@ def install_linux_appimage_context_menu() -> list[str]:
             icon_changed = not icon_destination.is_file() or not files_have_same_sha256(LOGO_PATH, icon_destination)
             if icon_changed:
                 sync_stable_launcher(LOGO_PATH, icon_destination)
+        app_launcher_changed = write_authorized_linux_desktop_entry(
+            app_launcher,
+            linux_appimage_desktop_entry_contents(destination),
+        )
+        if icon_changed or app_launcher_changed:
+            refresh_linux_kde_service_menu_cache()
+    except OSError as exc:
+        return [str(exc)]
+    return []
+
+
+def install_linux_appimage_context_menu() -> list[str]:
+    errors = install_linux_appimage_launcher()
+    if errors:
+        return errors
+    try:
+        destination = linux_context_menu_launcher_path()
+        paths = linux_kde_service_menu_paths()
+        if destination is None or not paths:
+            return ["Linux right-click integration is available only from an AppImage."]
         service_menu = linux_kde_service_menu_contents(destination)
         menu_changed = False
         for path in paths:
             menu_changed = write_authorized_linux_desktop_entry(path, service_menu) or menu_changed
-        app_launcher_changed = False
-        app_launcher = linux_appimage_desktop_entry_path()
-        if app_launcher is not None:
-            app_launcher_changed = write_authorized_linux_desktop_entry(
-                app_launcher,
-                linux_appimage_desktop_entry_contents(destination),
-            )
-        if menu_changed or icon_changed or app_launcher_changed:
+        if menu_changed:
             refresh_linux_kde_service_menu_cache()
     except OSError as exc:
         return [str(exc)]
@@ -1703,34 +1717,14 @@ def install_linux_appimage_context_menu() -> list[str]:
 
 def uninstall_linux_appimage_context_menu() -> list[str]:
     errors: list[str] = []
-    desktop_data_removed = False
+    service_menu_removed = False
     for path in linux_kde_service_menu_paths():
         try:
-            desktop_data_removed = desktop_data_removed or path.exists()
+            service_menu_removed = service_menu_removed or path.exists()
             path.unlink(missing_ok=True)
         except OSError as exc:
             errors.append(f"{path}: {exc}")
-    app_launcher = linux_appimage_desktop_entry_path()
-    if app_launcher is not None:
-        try:
-            desktop_data_removed = desktop_data_removed or app_launcher.exists()
-            app_launcher.unlink(missing_ok=True)
-        except OSError as exc:
-            errors.append(f"{app_launcher}: {exc}")
-    launcher = linux_context_menu_launcher_path()
-    if launcher is not None:
-        try:
-            launcher.unlink(missing_ok=True)
-        except OSError as exc:
-            errors.append(f"{launcher}: {exc}")
-    icon = linux_context_menu_icon_path()
-    if icon is not None:
-        try:
-            desktop_data_removed = desktop_data_removed or icon.exists()
-            icon.unlink(missing_ok=True)
-        except OSError as exc:
-            errors.append(f"{icon}: {exc}")
-    if not errors and desktop_data_removed:
+    if not errors and service_menu_removed:
         refresh_linux_kde_service_menu_cache()
     return errors
 

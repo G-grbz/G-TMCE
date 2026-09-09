@@ -222,7 +222,7 @@ The right-click integration is opt-in: enable **Extract right-click menu** once 
 
 The EXE is copied to the stable `%LOCALAPPDATA%\G-TMCE\G-TMCE.exe` launcher path; Explorer always uses that path rather than a versioned GitHub download name. Open a newer release once and it atomically updates this stable launcher, so the right-click menu keeps working without unregistering an old version or registering every new one.
 
-On Linux, the same option is available from the AppImage and creates a user-level KDE/Dolphin service menu plus a **G-TMCE** entry in the application search/menu. The AppImage is kept at a stable path under `~/.local/share/g-tmce/`, so opening a newer AppImage once updates both launch targets without administrator privileges. Other Linux file managers do not share Dolphin's service-menu API. Turning the option off removes the context-menu integration, app-menu entry, icon, and app-managed stable launcher.
+On Linux, double-clicking any AppImage version atomically refreshes the stable per-user AppImage and **G-TMCE** application-search entry under `~/.local/share/`. This keeps application search on the newest version without administrator privileges or duplicate entries. The same option additionally enables the user-level KDE/Dolphin service menu; other Linux file managers do not share Dolphin's service-menu API. Turning the option off removes only that context-menu integration.
 
 ```powershell
 dist\G-TMCE.exe --install-context-menu
