@@ -5,7 +5,8 @@
   <a href="https://github.com/G-grbz/G-TMCE/actions/workflows/codeql.yml"><img src="https://github.com/G-grbz/G-TMCE/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
 </p>
 
-<img width="2172" height="724" alt="g-tmce" src="https://github.com/user-attachments/assets/27c911e6-77fa-4f85-8735-3a9dd1fdd049" />
+<img width="1672" height="941" alt="g-tmce" src="https://github.com/user-attachments/assets/1fc914b0-b5d2-4e1d-9197-ec2c927d1f7c" />
+
 
 
 
