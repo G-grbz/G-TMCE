@@ -218,14 +218,18 @@ py -3 scripts/build_windows_exe.py
 
 Output: `dist\G-TMCE.exe`
 
-On first launch, the EXE registers a per-user Explorer context menu entry for supported media containers. The menu item is named `Open with G-TMCE Extract`. No admin permission is required as registry entries are written under `HKEY_CURRENT_USER`.
+The right-click integration is opt-in: enable **Extract right-click menu** once from the main interface. On Windows, it registers a per-user Explorer entry for supported media containers named `Open with G-TMCE Extract`; no admin permission is required because it uses `HKEY_CURRENT_USER`.
 
-The first run creates one stable launcher at `%LOCALAPPDATA%\G-TMCE\G-TMCE.exe`; Explorer always uses that path rather than a versioned GitHub download name. Open a newer release once and it atomically updates this stable launcher, so the right-click menu keeps working without unregistering an old version or registering every new one.
+The EXE is copied to the stable `%LOCALAPPDATA%\G-TMCE\G-TMCE.exe` launcher path; Explorer always uses that path rather than a versioned GitHub download name. Open a newer release once and it atomically updates this stable launcher, so the right-click menu keeps working without unregistering an old version or registering every new one.
+
+On Linux, the same option is available from the AppImage and creates a user-level KDE/Dolphin service menu. The AppImage is kept at a stable path under `~/.local/share/g-tmce/`, so opening a newer AppImage once updates the menu target without administrator privileges. Other Linux file managers do not share Dolphin's service-menu API. Turning the option off removes the context-menu integration and its app-managed stable launcher.
 
 ```powershell
 dist\G-TMCE.exe --install-context-menu
 dist\G-TMCE.exe --uninstall-context-menu
 ```
+
+These commands are the manual/recovery equivalent of the checkbox and save the same preference, so an uninstall is not restored at the next launch.
 
 **AppImage:**
 

@@ -337,6 +337,8 @@ UI_TEXT = {
         "option_include_extra_subtitles": "Include additional subtitles",
         "option_add_tracks_before_mux": "Add tracks before muxing",
         "option_download_before_mux": "Prepare artwork and tags before muxing",
+        "option_enable_extract_context_menu": "Enable Extract right-click menu",
+        "tooltip_context_menu_unavailable": "Available in the Windows EXE and Linux AppImage (KDE Dolphin).",
         "option_download_missing_mux_assets": "Fill missing artwork/tags from TMDB",
         "label_auto_chapters": "Automatic chapters",
         "option_create_if_missing": "Create if missing",
@@ -671,6 +673,8 @@ UI_TEXT = {
         "option_include_extra_subtitles": "Fazla altyazıları ekle",
         "option_add_tracks_before_mux": "MKV öncesi parça ekle",
         "option_download_before_mux": "MKV oluşturmadan önce görsel/tag hazırla",
+        "option_enable_extract_context_menu": "Extract sağ tık menüsünü etkinleştir",
+        "tooltip_context_menu_unavailable": "Windows EXE ve Linux AppImage (KDE Dolphin) için kullanılabilir.",
         "option_download_missing_mux_assets": "Eksik görsel/tag TMDB'den tamamla",
         "label_auto_chapters": "Otomatik chapter",
         "option_create_if_missing": "Yoksa oluştur",
@@ -1213,6 +1217,7 @@ MATROSKA_EXTRACT_EXTENSIONS = {".mkv", ".mk3d", ".mka", ".mks", ".webm"}
 WINDOWS_CONTEXT_MENU_VERB = "G-TMCEExtract"
 WINDOWS_CONTEXT_MENU_LABEL = "Open with G-TMCE Extract"
 WINDOWS_CONTEXT_MENU_EXTENSIONS = tuple(sorted(VIDEO_CONTAINER_EXTENSIONS))
+LINUX_CONTEXT_MENU_FILE_NAME = "g-tmce-extract.desktop"
 AUDIO_EXTENSIONS = {
     ".aac",
     ".ac3",
@@ -1326,13 +1331,9 @@ def files_have_same_sha256(first: Path, second: Path) -> bool:
         return False
 
 
-def sync_windows_context_menu_launcher() -> Path | None:
-    """Atomically update the stable launcher from a newly opened release EXE."""
-    destination = windows_context_menu_launcher_path()
-    if destination is None:
-        return None
-
-    source = Path(sys.executable).resolve()
+def sync_stable_launcher(source: Path, destination: Path) -> Path:
+    """Atomically update a stable launcher without exposing a partial file."""
+    source = source.resolve()
     try:
         if source == destination.resolve():
             return destination
@@ -1355,6 +1356,14 @@ def sync_windows_context_menu_launcher() -> Path | None:
         except FileNotFoundError:
             pass
     return destination
+
+
+def sync_windows_context_menu_launcher() -> Path | None:
+    """Atomically update the stable launcher from a newly opened release EXE."""
+    destination = windows_context_menu_launcher_path()
+    if destination is None:
+        return None
+    return sync_stable_launcher(Path(sys.executable), destination)
 
 
 def windows_context_menu_executable() -> Path:
@@ -1519,6 +1528,161 @@ def uninstall_windows_context_menu() -> list[str]:
     return errors
 
 
+def current_appimage_path() -> Path | None:
+    """Return the outer AppImage path when running from an AppImage."""
+    raw_path = os.environ.get("APPIMAGE", "").strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path).expanduser()
+    return path if path.is_file() else None
+
+
+def linux_context_menu_launcher_path() -> Path | None:
+    source = current_appimage_path()
+    if os.name != "posix" or source is None:
+        return None
+    data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    base_dir = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
+    return base_dir / APP_ID / f"{APP_NAME}.AppImage"
+
+
+def linux_kde_service_menu_paths() -> tuple[Path, ...]:
+    launcher = linux_context_menu_launcher_path()
+    if launcher is None:
+        return ()
+    data_home = launcher.parents[1]
+    # A single definition avoids duplicate actions in installations which still
+    # scan a legacy service-menu directory.  Plasma 6 uses KIO; Plasma 5 uses
+    # kservices5.  Prefer the current KIO location when no cache builder is
+    # discoverable (for example, before the first Plasma login).
+    if shutil.which("kbuildsycoca6") is not None:
+        directory = data_home / "kio" / "servicemenus"
+    elif shutil.which("kbuildsycoca5") is not None:
+        directory = data_home / "kservices5" / "ServiceMenus"
+    else:
+        directory = data_home / "kio" / "servicemenus"
+    return (directory / LINUX_CONTEXT_MENU_FILE_NAME,)
+
+
+def quote_desktop_exec_arg(value: Path | str) -> str:
+    """Quote an Exec argument according to the desktop-entry syntax."""
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def linux_kde_service_menu_contents(launcher: Path) -> str:
+    executable = quote_desktop_exec_arg(launcher)
+    return f"""[Desktop Entry]
+Type=Service
+Name=G-TMCE Extract
+Name[tr]=G-TMCE Extract
+Comment=Extract tracks, subtitles, chapters and attachments from media files
+Comment[tr]=Medya dosyalarından parça, altyazı, chapter ve ek çıkar
+ServiceTypes=KonqPopupMenu/Plugin
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+X-KDE-Priority=TopLevel
+MimeType=application/octet-stream;video/*;
+Icon=g-tmce
+Actions=OpenGTMCEExtract;
+
+[Desktop Action OpenGTMCEExtract]
+Name=Open with G-TMCE Extract
+Name[tr]=G-TMCE Extract ile Aç
+Icon=g-tmce
+Exec={executable} --extract %f
+"""
+
+
+def refresh_linux_kde_service_menu_cache() -> None:
+    for command in ("kbuildsycoca6", "kbuildsycoca5"):
+        executable = shutil.which(command)
+        if executable is None:
+            continue
+        try:
+            subprocess.run(
+                [executable, "--noincremental"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=20,
+                env=system_gui_subprocess_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+
+
+def install_linux_appimage_context_menu() -> list[str]:
+    source = current_appimage_path()
+    destination = linux_context_menu_launcher_path()
+    paths = linux_kde_service_menu_paths()
+    if source is None or destination is None or not paths:
+        return ["Linux right-click integration is available only from an AppImage."]
+    try:
+        sync_stable_launcher(source, destination)
+        service_menu = linux_kde_service_menu_contents(destination)
+        menu_changed = False
+        for path in paths:
+            try:
+                current = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                current = ""
+            if current != service_menu:
+                atomic_write_private_text(path, service_menu)
+                menu_changed = True
+        if menu_changed:
+            refresh_linux_kde_service_menu_cache()
+    except OSError as exc:
+        return [str(exc)]
+    return []
+
+
+def uninstall_linux_appimage_context_menu() -> list[str]:
+    errors: list[str] = []
+    menu_removed = False
+    for path in linux_kde_service_menu_paths():
+        try:
+            menu_removed = menu_removed or path.exists()
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+    launcher = linux_context_menu_launcher_path()
+    if launcher is not None:
+        try:
+            launcher.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append(f"{launcher}: {exc}")
+    if not errors and menu_removed:
+        refresh_linux_kde_service_menu_cache()
+    return errors
+
+
+def context_menu_integration_supported() -> bool:
+    return os.name == "nt" or current_appimage_path() is not None
+
+
+def install_context_menu_integration() -> list[str]:
+    if os.name == "nt":
+        return install_windows_context_menu()
+    if current_appimage_path() is not None:
+        return install_linux_appimage_context_menu()
+    return ["Right-click integration is available in the Windows EXE and Linux AppImage."]
+
+
+def uninstall_context_menu_integration() -> list[str]:
+    if os.name == "nt":
+        return uninstall_windows_context_menu()
+    if current_appimage_path() is not None:
+        return uninstall_linux_appimage_context_menu()
+    return []
+
+
+def set_context_menu_enabled_preference(enabled: bool) -> None:
+    """Persist the opt-in state shared by the checkbox and Windows CLI."""
+    preferences = load_saved_preferences()
+    preferences["context_menu_enabled"] = "true" if enabled else "false"
+    save_saved_preferences(preferences)
+
+
 def write_cli_line(message: str, *, error: bool = False) -> None:
     stream = sys.stderr if error else sys.stdout
     if stream is not None:
@@ -1534,6 +1698,7 @@ def handle_windows_context_menu_cli(argv: list[str]) -> bool:
             for error in errors:
                 write_cli_line(f"- {error}", error=True)
         else:
+            set_context_menu_enabled_preference(True)
             write_cli_line("Windows context menu installed.")
         return True
     if "--uninstall-context-menu" in options:
@@ -1543,6 +1708,7 @@ def handle_windows_context_menu_cli(argv: list[str]) -> bool:
             for error in errors:
                 write_cli_line(f"- {error}", error=True)
         else:
+            set_context_menu_enabled_preference(False)
             write_cli_line("Windows context menu removed.")
         return True
     return False

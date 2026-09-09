@@ -101,6 +101,44 @@ class WindowsContextMenuLauncherTests(unittest.TestCase):
                     f'"{stable}" "%1"',
                 )
 
+    def test_new_appimage_updates_one_stable_dolphin_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_release = root / "G-TMCE-v1.9.0-x86_64.AppImage"
+            second_release = root / "G-TMCE-v2.0.0-x86_64.AppImage"
+            first_release.write_bytes(b"version one")
+            second_release.write_bytes(b"version two")
+            first_release.chmod(0o755)
+            second_release.chmod(0o755)
+            data_home = root / "share"
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"APPIMAGE": str(first_release), "XDG_DATA_HOME": str(data_home)},
+                    clear=False,
+                ),
+                mock.patch.object(app._core, "refresh_linux_kde_service_menu_cache") as refresh_cache,
+            ):
+                self.assertEqual(app.install_linux_appimage_context_menu(), [])
+                stable = data_home / "g-tmce" / "G-TMCE.AppImage"
+                self.assertEqual(stable.read_bytes(), b"version one")
+                self.assertTrue(stable.stat().st_mode & stat.S_IXUSR)
+                for service_menu in app.linux_kde_service_menu_paths():
+                    self.assertIn(str(stable), service_menu.read_text(encoding="utf-8"))
+                refresh_cache.assert_called_once()
+
+                os.environ["APPIMAGE"] = str(second_release)
+                self.assertEqual(app.install_linux_appimage_context_menu(), [])
+                self.assertEqual(stable.read_bytes(), b"version two")
+                # The service-menu target stays the same across releases; it is
+                # not rewritten or re-cached after the one-time setup.
+                refresh_cache.assert_called_once()
+
+                self.assertEqual(app.uninstall_linux_appimage_context_menu(), [])
+                self.assertFalse(stable.exists())
+                self.assertFalse(any(path.exists() for path in app.linux_kde_service_menu_paths()))
+                self.assertEqual(refresh_cache.call_count, 2)
 
 class UrlSecurityTests(unittest.TestCase):
     def test_opensubtitles_base_url_accepts_official_hosts(self) -> None:

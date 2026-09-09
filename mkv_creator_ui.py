@@ -282,6 +282,9 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.include_extra_subs_var = ValueVar(True)
         self.add_tracks_before_mux_var = ValueVar(False)
         self.download_before_mux_var = ValueVar(True)
+        self.context_menu_enabled_var = ValueVar(
+            self.saved_preferences.get("context_menu_enabled", "false") == "true"
+        )
         self.mux_tracks_download_missing_assets_var = ValueVar(False)
         self.auto_chapters_var = ValueVar(self.saved_preferences.get("auto_chapters", "false") == "true")
         self.auto_chapter_detect_intro_var = ValueVar(
@@ -361,6 +364,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.third_party_button: QPushButton | None = None
         self.app_update_button: QPushButton | None = None
         self.download_before_mux_checkbutton: QCheckBox | None = None
+        self.context_menu_check: QCheckBox | None = None
         self.media_type_combobox: QComboBox | None = None
         self.progress_bar: QProgressBar | None = None
 
@@ -388,6 +392,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self._queue_timer = QTimer(self)
         self._queue_timer.timeout.connect(self._drain_log_queue)
         self._queue_timer.start(100)
+        QTimer.singleShot(0, self.sync_context_menu_on_startup)
         QTimer.singleShot(800, self.start_check_app_update)
         # Defer Open-With extraction until the top-level Qt window has actually
         # received its first show event.  A QTimer owned by the window is more
@@ -556,6 +561,35 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.apply_theme()
         self.save_preferences()
 
+    def sync_context_menu_on_startup(self) -> None:
+        """Refresh the stable launcher only after the user has opted in once."""
+        if not self.context_menu_enabled_var.get() or not context_menu_integration_supported():
+            return
+        errors = install_context_menu_integration()
+        if errors:
+            self.queue_log("\n".join(errors))
+
+    def on_context_menu_toggled(self, enabled: bool) -> None:
+        if not context_menu_integration_supported():
+            if self.context_menu_check is not None:
+                self._set_check(self.context_menu_check, False)
+            self.context_menu_enabled_var.set(False)
+            self.show_error(self.tr("dialog_error_title"), self.tr("tooltip_context_menu_unavailable"))
+            return
+
+        errors = (
+            install_context_menu_integration()
+            if enabled
+            else uninstall_context_menu_integration()
+        )
+        if errors:
+            if self.context_menu_check is not None:
+                self._set_check(self.context_menu_check, not enabled)
+            self.context_menu_enabled_var.set(not enabled)
+            self.show_error(self.tr("dialog_error_title"), "\n".join(errors))
+            return
+        self.save_preferences()
+
     def _card(self, object_name: str = "Card") -> tuple[QFrame, QVBoxLayout]:
         frame = QFrame()
         frame.setObjectName(object_name)
@@ -689,6 +723,13 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.ui_language_combo.setCurrentText(UI_LANGUAGE_NAMES[self.ui_language_var.get()])
         self.ui_language_combo.currentTextChanged.connect(self.on_ui_language_selected)
         h.addWidget(self.ui_language_combo)
+        self.context_menu_check = self._bind_check(self.context_menu_enabled_var, QCheckBox())
+        self.localize_widget(self.context_menu_check, "option_enable_extract_context_menu")
+        self.context_menu_check.toggled.connect(self.on_context_menu_toggled)
+        if not context_menu_integration_supported():
+            self.context_menu_check.setEnabled(False)
+            self.context_menu_check.setToolTip(self.tr("tooltip_context_menu_unavailable"))
+        h.addWidget(self.context_menu_check)
         self.theme_button = QPushButton()
         self.theme_button.setObjectName("ThemeButton")
         self.theme_button.setFixedSize(34, 34)
@@ -999,6 +1040,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                     "tag_language": self.tag_language_var.get().strip() or self.language_var.get().strip() or "en",
                     "output_name_extra": self.output_name_extra_var.get(),
                     "output_name_year": "true" if self.output_name_year_var.get() else "false",
+                    "context_menu_enabled": "true" if self.context_menu_enabled_var.get() else "false",
                     "video_fps": self.video_fps_var.get().strip(),
                     "audio_language_order": self.audio_language_order_var.get().strip(),
                     "subtitle_language_order": self.subtitle_language_order_var.get().strip(),
@@ -2542,7 +2584,6 @@ def main(argv: list[str] | None = None) -> None:
     argv = argv or sys.argv
     if handle_windows_context_menu_cli(argv):
         return
-    install_windows_context_menu()
     initial_extract_source = initial_extract_source_from_argv(argv)
     qt_app = QApplication(argv)
     qt_app.setApplicationName(APP_NAME)
