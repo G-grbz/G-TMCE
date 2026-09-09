@@ -14,6 +14,10 @@ jobs:
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    env:
+      # PySide6 loads QtGui while the tests import the application.  CI has no
+      # display server, so use Qt's headless platform plugin consistently.
+      QT_QPA_PLATFORM: offscreen
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +33,11 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-build.txt
+
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libegl1 libgl1
 
       - name: Install dependencies
         run: |

@@ -13,6 +13,8 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -38,6 +40,11 @@ jobs:
           git fetch origin main --no-tags
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libegl1 libgl1
 
       - name: Install dependencies
         run: |
