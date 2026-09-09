@@ -1,11 +1,13 @@
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/438cb661-dbe0-4201-955e-1dab84e62668" alt="logo" width="200" style="background: transparent; display: inline-block;" />
-</p>
+
 
 <p align="center">
   <a href="https://github.com/G-grbz/G-TMCE/actions/workflows/ci.yml"><img src="https://github.com/G-grbz/G-TMCE/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/G-grbz/G-TMCE/actions/workflows/codeql.yml"><img src="https://github.com/G-grbz/G-TMCE/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
 </p>
+
+<img width="2172" height="724" alt="g-tmce" src="https://github.com/user-attachments/assets/27c911e6-77fa-4f85-8735-3a9dd1fdd049" />
+
+
 
 Create professional MKV remuxes with TMDB metadata, artwork, chapters, language handling, and MKVToolNix automation — without manually building `mkvmerge` commands.
 
@@ -21,18 +23,6 @@ It combines MKVToolNix, FFmpeg, and TMDB into a single workflow and automaticall
 * 🎯 Forced and SDH subtitle detection
 * 🔊 Audio synchronization between different frame rates (23.976 ↔ 24 ↔ 25 FPS)
 * 📦 Consistent MKV structure and output naming
-
-Perfect for media archivists, remux creators, home media server users, and anyone who regularly works with MKVToolNix.
-
-<p align="center">
-  <a href="https://github.com/user-attachments/assets/ab4245a7-1770-4fec-b54c-768d4a8f4357">
-    <img src="https://github.com/user-attachments/assets/694c61ad-c62e-4067-b8a7-50ac4fa2b057" width="900">
-  </a>
-</p>
-
-<p align="center">
-  <b>▶ Click the image above to watch the demo</b>
-</p>
 
 ---
 
