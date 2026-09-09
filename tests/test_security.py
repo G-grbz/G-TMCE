@@ -110,6 +110,8 @@ class WindowsContextMenuLauncherTests(unittest.TestCase):
             second_release.write_bytes(b"version two")
             first_release.chmod(0o755)
             second_release.chmod(0o755)
+            logo = root / "logo.png"
+            logo.write_bytes(b"icon data")
             data_home = root / "share"
 
             with (
@@ -119,13 +121,17 @@ class WindowsContextMenuLauncherTests(unittest.TestCase):
                     clear=False,
                 ),
                 mock.patch.object(app._core, "refresh_linux_kde_service_menu_cache") as refresh_cache,
+                mock.patch.object(app._core, "LOGO_PATH", logo),
             ):
                 self.assertEqual(app.install_linux_appimage_context_menu(), [])
                 stable = data_home / "g-tmce" / "G-TMCE.AppImage"
                 self.assertEqual(stable.read_bytes(), b"version one")
                 self.assertTrue(stable.stat().st_mode & stat.S_IXUSR)
+                icon = data_home / "icons" / "hicolor" / "256x256" / "apps" / "g-tmce.png"
+                self.assertEqual(icon.read_bytes(), b"icon data")
                 for service_menu in app.linux_kde_service_menu_paths():
                     self.assertIn(str(stable), service_menu.read_text(encoding="utf-8"))
+                    self.assertTrue(service_menu.stat().st_mode & stat.S_IXUSR)
                 refresh_cache.assert_called_once()
 
                 os.environ["APPIMAGE"] = str(second_release)
@@ -137,6 +143,7 @@ class WindowsContextMenuLauncherTests(unittest.TestCase):
 
                 self.assertEqual(app.uninstall_linux_appimage_context_menu(), [])
                 self.assertFalse(stable.exists())
+                self.assertFalse(icon.exists())
                 self.assertFalse(any(path.exists() for path in app.linux_kde_service_menu_paths()))
                 self.assertEqual(refresh_cache.call_count, 2)
 

@@ -1537,20 +1537,34 @@ def current_appimage_path() -> Path | None:
     return path if path.is_file() else None
 
 
-def linux_context_menu_launcher_path() -> Path | None:
-    source = current_appimage_path()
-    if os.name != "posix" or source is None:
+def linux_context_menu_data_home() -> Path | None:
+    if os.name != "posix" or current_appimage_path() is None:
         return None
     data_home = os.environ.get("XDG_DATA_HOME", "").strip()
-    base_dir = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
-    return base_dir / APP_ID / f"{APP_NAME}.AppImage"
+    return Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
+
+
+def linux_context_menu_launcher_path() -> Path | None:
+    data_home = linux_context_menu_data_home()
+    if data_home is None:
+        return None
+    return data_home / APP_ID / f"{APP_NAME}.AppImage"
+
+
+def linux_context_menu_icon_path() -> Path | None:
+    data_home = linux_context_menu_data_home()
+    if data_home is None:
+        return None
+    return data_home / "icons" / "hicolor" / "256x256" / "apps" / f"{APP_ID}.png"
 
 
 def linux_kde_service_menu_paths() -> tuple[Path, ...]:
     launcher = linux_context_menu_launcher_path()
     if launcher is None:
         return ()
-    data_home = launcher.parents[1]
+    data_home = linux_context_menu_data_home()
+    if data_home is None:
+        return ()
     # A single definition avoids duplicate actions in installations which still
     # scan a legacy service-menu directory.  Plasma 6 uses KIO; Plasma 5 uses
     # kservices5.  Prefer the current KIO location when no cache builder is
@@ -1619,6 +1633,12 @@ def install_linux_appimage_context_menu() -> list[str]:
         return ["Linux right-click integration is available only from an AppImage."]
     try:
         sync_stable_launcher(source, destination)
+        icon_destination = linux_context_menu_icon_path()
+        icon_changed = False
+        if icon_destination is not None and LOGO_PATH.is_file():
+            icon_changed = not icon_destination.is_file() or not files_have_same_sha256(LOGO_PATH, icon_destination)
+            if icon_changed:
+                sync_stable_launcher(LOGO_PATH, icon_destination)
         service_menu = linux_kde_service_menu_contents(destination)
         menu_changed = False
         for path in paths:
@@ -1629,7 +1649,13 @@ def install_linux_appimage_context_menu() -> list[str]:
             if current != service_menu:
                 atomic_write_private_text(path, service_menu)
                 menu_changed = True
-        if menu_changed:
+            # Dolphin deliberately treats locally installed service menus as
+            # untrusted until their owner marks the .desktop file executable.
+            # Keep it private to this user while satisfying that authorization.
+            if not path.stat().st_mode & stat.S_IXUSR:
+                path.chmod(0o700)
+                menu_changed = True
+        if menu_changed or icon_changed:
             refresh_linux_kde_service_menu_cache()
     except OSError as exc:
         return [str(exc)]
@@ -1638,10 +1664,10 @@ def install_linux_appimage_context_menu() -> list[str]:
 
 def uninstall_linux_appimage_context_menu() -> list[str]:
     errors: list[str] = []
-    menu_removed = False
+    desktop_data_removed = False
     for path in linux_kde_service_menu_paths():
         try:
-            menu_removed = menu_removed or path.exists()
+            desktop_data_removed = desktop_data_removed or path.exists()
             path.unlink(missing_ok=True)
         except OSError as exc:
             errors.append(f"{path}: {exc}")
@@ -1651,7 +1677,14 @@ def uninstall_linux_appimage_context_menu() -> list[str]:
             launcher.unlink(missing_ok=True)
         except OSError as exc:
             errors.append(f"{launcher}: {exc}")
-    if not errors and menu_removed:
+    icon = linux_context_menu_icon_path()
+    if icon is not None:
+        try:
+            desktop_data_removed = desktop_data_removed or icon.exists()
+            icon.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append(f"{icon}: {exc}")
+    if not errors and desktop_data_removed:
         refresh_linux_kde_service_menu_cache()
     return errors
 
