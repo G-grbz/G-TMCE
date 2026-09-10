@@ -159,6 +159,30 @@ class WindowsContextMenuLauncherTests(unittest.TestCase):
                 self.assertFalse(any(path.exists() for path in app.linux_kde_service_menu_paths()))
                 self.assertEqual(refresh_cache.call_count, 3)
 
+    def test_system_install_removes_only_stale_appimage_service_menu(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_home = Path(tmp) / "share"
+            stale_menu = data_home / "kio" / "servicemenus" / "g-tmce-extract.desktop"
+            stale_menu.parent.mkdir(parents=True)
+            stale_menu.write_text(
+                app.linux_kde_service_menu_contents(data_home / "g-tmce" / "G-TMCE.AppImage"),
+                encoding="utf-8",
+            )
+            unrelated_menu = data_home / "kservices5" / "ServiceMenus" / "g-tmce-extract.desktop"
+            unrelated_menu.parent.mkdir(parents=True)
+            unrelated_menu.write_text("[Desktop Entry]\nName=User menu\n", encoding="utf-8")
+
+            with (
+                mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(data_home)}, clear=False),
+                mock.patch.object(app._core, "APP_DIR", Path("/usr/lib/g-tmce")),
+                mock.patch.object(app._core, "refresh_linux_kde_service_menu_cache") as refresh_cache,
+            ):
+                self.assertEqual(app.remove_stale_appimage_service_menu_for_system_install(), [])
+
+            self.assertFalse(stale_menu.exists())
+            self.assertTrue(unrelated_menu.exists())
+            refresh_cache.assert_called_once()
+
 class UrlSecurityTests(unittest.TestCase):
     def test_opensubtitles_base_url_accepts_official_hosts(self) -> None:
         self.assertEqual(

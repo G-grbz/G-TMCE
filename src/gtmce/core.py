@@ -1218,6 +1218,11 @@ WINDOWS_CONTEXT_MENU_VERB = "G-TMCEExtract"
 WINDOWS_CONTEXT_MENU_LABEL = "Open with G-TMCE Extract"
 WINDOWS_CONTEXT_MENU_EXTENSIONS = tuple(sorted(VIDEO_CONTAINER_EXTENSIONS))
 LINUX_CONTEXT_MENU_FILE_NAME = "g-tmce-extract.desktop"
+LINUX_KDE_SERVICE_MENU_DIRS = (
+    ("kio", "servicemenus"),
+    ("kservices5", "ServiceMenus"),
+    ("kservices6", "ServiceMenus"),
+)
 AUDIO_EXTENSIONS = {
     ".aac",
     ".ac3",
@@ -1537,11 +1542,17 @@ def current_appimage_path() -> Path | None:
     return path if path.is_file() else None
 
 
-def linux_context_menu_data_home() -> Path | None:
-    if os.name != "posix" or current_appimage_path() is None:
+def linux_user_data_home() -> Path | None:
+    if os.name != "posix":
         return None
     data_home = os.environ.get("XDG_DATA_HOME", "").strip()
     return Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
+
+
+def linux_context_menu_data_home() -> Path | None:
+    if current_appimage_path() is None:
+        return None
+    return linux_user_data_home()
 
 
 def linux_context_menu_launcher_path() -> Path | None:
@@ -1583,6 +1594,28 @@ def linux_kde_service_menu_paths() -> tuple[Path, ...]:
     else:
         directory = data_home / "kio" / "servicemenus"
     return (directory / LINUX_CONTEXT_MENU_FILE_NAME,)
+
+
+def linux_appimage_managed_service_menu_paths() -> tuple[Path, ...]:
+    """Return every possible user path used by prior AppImage integrations."""
+    data_home = linux_user_data_home()
+    if data_home is None:
+        return ()
+    return tuple(
+        data_home.joinpath(*directory, LINUX_CONTEXT_MENU_FILE_NAME)
+        for directory in LINUX_KDE_SERVICE_MENU_DIRS
+    )
+
+
+def is_system_linux_install() -> bool:
+    """Identify the locations used by the package and install.sh installers."""
+    if os.name != "posix" or current_appimage_path() is not None:
+        return False
+    app_dir = APP_DIR.resolve()
+    return any(
+        app_dir.is_relative_to(prefix)
+        for prefix in (Path("/usr/lib/g-tmce"), Path("/opt/G-TMCE"))
+    )
 
 
 def quote_desktop_exec_arg(value: Path | str) -> str:
@@ -1725,6 +1758,28 @@ def uninstall_linux_appimage_context_menu() -> list[str]:
         except OSError as exc:
             errors.append(f"{path}: {exc}")
     if not errors and service_menu_removed:
+        refresh_linux_kde_service_menu_cache()
+    return errors
+
+
+def remove_stale_appimage_service_menu_for_system_install() -> list[str]:
+    """Let system/AUR service menus replace only our own stale AppImage entry."""
+    if not is_system_linux_install():
+        return []
+    data_home = linux_user_data_home()
+    if data_home is None:
+        return []
+    expected = linux_kde_service_menu_contents(data_home / APP_ID / f"{APP_NAME}.AppImage")
+    errors: list[str] = []
+    removed = False
+    for path in linux_appimage_managed_service_menu_paths():
+        try:
+            if path.is_file() and path.read_text(encoding="utf-8") == expected:
+                path.unlink()
+                removed = True
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+    if removed and not errors:
         refresh_linux_kde_service_menu_cache()
     return errors
 

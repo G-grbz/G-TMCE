@@ -2584,10 +2584,13 @@ def main(argv: list[str] | None = None) -> None:
     argv = argv or sys.argv
     if handle_windows_context_menu_cli(argv):
         return
-    # Every AppImage launch refreshes the one stable per-user target used by
-    # the desktop application menu. This keeps search results on the newly
-    # downloaded version even if the Dolphin right-click option is disabled.
-    install_linux_appimage_launcher()
+    # AppImage launches refresh their per-user desktop target. Package and
+    # install.sh launches remove only the stale AppImage menu that would take
+    # precedence over the system g-tmce service-menu entry.
+    if current_appimage_path() is not None:
+        install_linux_appimage_launcher()
+    else:
+        remove_stale_appimage_service_menu_for_system_install()
     initial_extract_source = initial_extract_source_from_argv(argv)
     qt_app = QApplication(argv)
     qt_app.setApplicationName(APP_NAME)
