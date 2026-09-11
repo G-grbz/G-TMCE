@@ -370,12 +370,17 @@ UI_TEXT = {
         "heading_audio_volume": "Volume",
         "heading_audio_speed": "Audio FPS Sync",
         "button_apply_audio_adjust": "Apply",
+        "button_apply_audio_to_all_episodes": "Apply Selected to All Episodes",
+        "toast_audio_apply_all_success": "Applied settings to {tracks} matching audio tracks in {episodes} episodes.",
+        "toast_audio_apply_all_error": "No matching selected audio settings were found to apply.",
         "error_ffmpeg_missing": "ffmpeg is not available in 3rdParty.",
         "error_audio_adjust_none": "Select at least one audio track and enter milliseconds or change codec/output settings.",
+        "info_audio_adjust_no_changes": "All selected audio tracks already have the requested settings.",
         "error_audio_adjust_numeric": "Milliseconds must be numeric, for example +1 or -967.",
         "error_audio_codec_unsupported": "Unsupported audio codec: {codec}",
         "error_ffmpeg_exit": "ffmpeg exited with error code: {code}",
         "log_audio_adjust_ready": "Audio adjustment ready: {name}",
+        "log_audio_adjust_skipped_unchanged": "Skipped unchanged audio tracks: {count}.",
         "log_audio_adjust_command": "Audio ffmpeg command:",
         "status_adjusting_audio": "Adjusting audio...",
         "button_download_assets": "Download Artwork/Tags",
@@ -383,11 +388,16 @@ UI_TEXT = {
         "button_write_config": "Write Config",
         "button_create_mkv": "Create MKV",
         "button_cancel": "Cancel",
+        "button_close": "Close",
         "button_cancel_job": "Cancel Job",
         "button_show_log": "Show Log",
         "section_extract": "MKV Extract",
         "path_source_mkv": "Source MKV / folder",
         "path_extract_folder": "Extraction folder",
+        "path_existing_extract_folder": "Extracted output folder",
+        "button_load_existing_extract": "Load Existing",
+        "error_existing_extract_missing": "The extracted folder was not found: {path}",
+        "log_existing_extract_loaded": "Loaded existing extracted folder: {path}",
         "button_browse_file": "File",
         "button_browse_folder": "Folder",
         "button_extract_folder": "Extract Folder",
@@ -706,12 +716,17 @@ UI_TEXT = {
         "heading_audio_volume": "Ses",
         "heading_audio_speed": "FPS Eşitle",
         "button_apply_audio_adjust": "Uygula",
+        "button_apply_audio_to_all_episodes": "Seçilenleri Tüm Bölümlere Uygula",
+        "toast_audio_apply_all_success": "Ayarlar {episodes} bölümdeki {tracks} eşleşen ses parçasına uygulandı.",
+        "toast_audio_apply_all_error": "Uygulanacak eşleşen seçili ses ayarı bulunamadı.",
         "error_ffmpeg_missing": "ffmpeg 3rdParty içinde kullanıma hazır değil.",
         "error_audio_adjust_none": "En az bir ses parçası seç ve milisaniye gir ya da kodek/çıkış ayarını değiştir.",
+        "info_audio_adjust_no_changes": "Seçili ses parçalarının tamamı zaten istenen ayarlarda.",
         "error_audio_adjust_numeric": "Milisaniye sayısal olmalı, örnek +1 veya -967.",
         "error_audio_codec_unsupported": "Desteklenmeyen ses kodeki: {codec}",
         "error_ffmpeg_exit": "ffmpeg hata kodu ile bitti: {code}",
         "log_audio_adjust_ready": "Ses ayarı hazır: {name}",
+        "log_audio_adjust_skipped_unchanged": "Aynı ayardaki ses parçaları atlandı: {count}.",
         "log_audio_adjust_command": "Ses ffmpeg komutu:",
         "status_adjusting_audio": "Ses ayarlanıyor...",
         "button_download_assets": "Görsel/Tag İndir",
@@ -719,11 +734,16 @@ UI_TEXT = {
         "button_write_config": "Config Yaz",
         "button_create_mkv": "MKV Oluştur",
         "button_cancel": "İptal",
+        "button_close": "Çık",
         "button_cancel_job": "İşi İptal Et",
         "button_show_log": "Günlüğü Göster",
         "section_extract": "MKV Extract",
         "path_source_mkv": "Kaynak MKV / klasör",
         "path_extract_folder": "Çıkarma klasörü",
+        "path_existing_extract_folder": "Çıkarılmış çıktı klasörü",
+        "button_load_existing_extract": "Mevcut Çıktıyı Yükle",
+        "error_existing_extract_missing": "Çıkarılmış klasör bulunamadı: {path}",
+        "log_existing_extract_loaded": "Mevcut çıkarılmış klasör yüklendi: {path}",
         "button_browse_file": "Dosya",
         "button_browse_folder": "Klasör",
         "button_extract_folder": "Klasörü Çıkar",
@@ -3963,7 +3983,46 @@ def release_name_candidates(settings: AppSettings) -> list[str]:
 
 
 def normalise_title_for_match(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.lower())
+    # TMDB titles commonly use a typographic apostrophe for Turkish suffixes
+    # (``Gölge'nin``), while release names commonly omit it (``Gölgenin``).
+    # Removing punctuation before comparing deliberately treats those forms as
+    # the same title. Transliteration also keeps Turkish letters comparable.
+    value = value.lower().translate(str.maketrans("çğıöşü", "cgiosu"))
+    return re.sub(r"[^a-z0-9]+", "", value)
+
+
+def tmdb_search_query_variants(query: str) -> list[str]:
+    """Return likely official spellings for a punctuation-light release title."""
+    base = re.sub(r"\s+", " ", query).strip()
+    if not base:
+        return []
+
+    variants: list[str] = []
+
+    def add(value: str) -> None:
+        value = re.sub(r"\s+", " ", value).strip()
+        if value and value not in variants:
+            variants.append(value)
+
+    add(base)
+    # Release names often omit Turkish possessive apostrophes: Gölgenin ->
+    # Gölge'nin and Günün -> Gü'nün.
+    add(
+        re.sub(
+            r"(?iu)\b([^\W\d_]+?)(n(?:in|ın|un|ün))\b",
+            r"\1'\2",
+            base,
+        )
+    )
+
+    # A sequel number followed by a subtitle is frequently represented by
+    # TMDB as "Title 2: Subtitle", while release names omit the colon.
+    for value in tuple(variants):
+        sequel_match = re.match(r"^(.+?\b\d+)\s+(.+)$", value)
+        if sequel_match:
+            add(f"{sequel_match.group(1)}: {sequel_match.group(2)}")
+
+    return variants
 
 
 def result_title(result: dict[str, Any]) -> str:
@@ -3992,14 +4051,23 @@ def result_original_title(result: dict[str, Any]) -> str:
 
 def score_tmdb_result(result: dict[str, Any], query: str, year: str) -> float:
     query_key = normalise_title_for_match(query)
-    title_key = normalise_title_for_match(result_title(result))
     score = float(result.get("popularity") or 0)
 
-    if title_key == query_key:
+    # ``title`` can be translated according to the requested API language, so
+    # the original title is an equally important matching target.
+    title_keys = {
+        normalise_title_for_match(result_title(result)),
+        normalise_title_for_match(result_original_title(result)),
+    }
+    if query_key in title_keys:
         score += 1000
-    elif title_key.startswith(query_key) or query_key.startswith(title_key):
+    elif any(
+        key.startswith(query_key) or query_key.startswith(key)
+        for key in title_keys
+        if key
+    ):
         score += 500
-    elif query_key and query_key in title_key:
+    elif query_key and any(query_key in key for key in title_keys):
         score += 250
 
     found_year = result_year(result)
@@ -6599,12 +6667,18 @@ class TMDBClient:
                 ui_text("error_tmdb_connection_failed", reason=exc.reason)
             ) from exc
 
-    def search(self, media_type: str, query: str, year: str) -> list[dict[str, Any]]:
+    def search(
+        self,
+        media_type: str,
+        query: str,
+        year: str,
+        language: str = "en-US",
+    ) -> list[dict[str, Any]]:
         path = f"/search/{media_type}"
         params = {
             "query": query,
             "include_adult": "false",
-            "language": "en-US",
+            "language": language,
             "page": "1",
         }
         if year:
@@ -8125,7 +8199,28 @@ def find_tmdb_match_from_folder(
         raise UserVisibleError(ui_text("error_folder_title_missing"))
 
     client = TMDBClient(settings.api_key)
-    results = client.search(settings.media_type, query, year)
+    results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    search_language = detail_language(settings.image_language)
+    for search_query in tmdb_search_query_variants(query):
+        for result in client.search(
+            settings.media_type,
+            search_query,
+            year,
+            language=search_language,
+        ):
+            result_id = str(result.get("id") or "")
+            dedupe_key = result_id or json.dumps(result, sort_keys=True, ensure_ascii=False)
+            if dedupe_key in seen_ids:
+                continue
+            seen_ids.add(dedupe_key)
+            results.append(result)
+
+        # An exact normalised title is already present.  This keeps the normal
+        # case to one request, but tries spelling variants after an empty or
+        # unrelated response.
+        if results and max(score_tmdb_result(result, query, year) for result in results) >= 1000:
+            break
     if not results:
         year_text = f" ({year})" if year else ""
         raise UserVisibleError(

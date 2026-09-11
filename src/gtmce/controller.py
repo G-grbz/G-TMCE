@@ -98,6 +98,48 @@ class GTMCEControllerMixin:
         if scan and source.is_file():
             self.start_scan_extract()
 
+    def load_existing_extracted_folder(self) -> None:
+        """Restore a previous folder extraction without extracting again."""
+        raw = self.extract_output_dir_var.get().strip()
+        root = Path(raw).expanduser()
+        if not raw or not root.is_dir():
+            raise UserVisibleError(ui_text("error_existing_extract_missing", path=root))
+        root = root.resolve()
+        self.extract_output_dir_var.set(str(root))
+
+        # Folder extraction uses ``<source>_tracks`` by default, therefore a
+        # sibling with that base name is the reliable source-folder restore.
+        source_name = root.name[:-7] if root.name.lower().endswith("_tracks") else ""
+        source = root.with_name(source_name) if source_name else None
+        if source is not None and source.is_dir():
+            self.extract_source_var.set(str(source.resolve()))
+
+        episode_dirs = sorted(
+            (path for path in root.iterdir() if path.is_dir() and path.name.lower().endswith("_tracks")),
+            key=lambda path: path.name.lower(),
+        )
+        if not episode_dirs:
+            # A single-file extraction itself is also a valid track folder.
+            episode_dirs = [root]
+        first_episode_dir = episode_dirs[0]
+        self.output_var.set("")
+        if source is not None and source.is_dir():
+            sources = video_sources_in_folder(source)
+            if sources:
+                first_source = sources[0]
+                candidate = root / f"{safe_filename_stem(first_source.stem)}_tracks"
+                if candidate.is_dir():
+                    first_episode_dir = candidate
+                ref = episode_ref_from_path(first_source, parse_season_number_from_text(source.name))
+                if ref is not None:
+                    task = BatchEpisodeTask(first_source, first_episode_dir, ref)
+                    self.title_var.set(batch_episode_preview_title(source, task))
+                    self.output_var.set(str(batch_episode_output_path(source, task)))
+        self.folder_var.set(str(first_episode_dir))
+        self._set_default_output()
+        self.remember_mkv_dir(root)
+        self.queue_log(self.tr("log_existing_extract_loaded", path=root))
+
     def _set_default_output(self) -> None:
         folder = self.folder_var.get().strip()
         if not folder or self.output_var.get().strip():
@@ -239,6 +281,26 @@ class GTMCEControllerMixin:
             dict(self.mux_track_delay_overrides),
             dict(self.mux_track_append_overrides),
             set(self.mux_track_excluded_keys),
+        )
+
+    def batch_mux_track_customizations_for(
+        self, media_dir: Path,
+    ) -> tuple[
+        list[AdditionalMuxTrack], list[str], dict[str, str], dict[str, str],
+        dict[str, tuple[Path, ...]], set[str], list[AdditionalMuxAsset], bool,
+    ]:
+        """Return the track choices made for one extracted batch episode.
+
+        Track file names are naturally repeated across episode directories, so
+        batch choices must be keyed by directory rather than by a global track
+        key.  A missing entry deliberately means "use that episode as-is".
+        """
+        key = str(media_dir.resolve())
+        empty = ([], [], {}, {}, {}, set(), [], False)
+        values = getattr(self, "batch_mux_track_customizations", {}).get(key, empty)
+        return (
+            list(values[0]), list(values[1]), dict(values[2]), dict(values[3]),
+            dict(values[4]), set(values[5]), list(values[6]), bool(values[7]),
         )
 
     def mux_track_kind_label(self, path: Path) -> str:
@@ -595,6 +657,16 @@ class GTMCEControllerMixin:
         return query_override or target.query
 
     def start_subtitle_search(self) -> None:
+        if self.worker is not None and self.worker.is_alive():
+            if self.current_operation == "subtitle_search":
+                self.cancel_current_operation()
+                self.update_subtitle_search_button_text()
+            else:
+                self.show_info(
+                    self.tr("dialog_in_progress_title"),
+                    self.tr("dialog_in_progress_message"),
+                )
+            return
         api_key = self.subtitle_api_key_var.get().strip()
         if not api_key:
             self.show_error(
@@ -612,7 +684,6 @@ class GTMCEControllerMixin:
         language = normalise_subtitle_language(self.subtitle_language_var.get())
         self.subtitle_language_var.set(language)
         query_override = self.subtitle_query_var.get().strip()
-        self.subtitle_downloaded_paths = {}
         self.subtitle_status_var.set(self.tr("status_searching_subtitles"))
         self.save_preferences()
 
@@ -638,15 +709,20 @@ class GTMCEControllerMixin:
                         )
                     )
                 results.extend(found)
-            self.log_queue.put(("set_subtitle_results", results))
             if not results:
                 self.log_queue.put(("set_subtitle_status", ui_text("label_subtitle_status_no_results")))
                 self.queue_log(self.tr("error_subtitle_no_results"))
                 return
+            self.log_queue.put(("reset_subtitle_downloads", True))
+            self.log_queue.put(("set_subtitle_results", results))
             self.log_queue.put(("set_subtitle_status", ui_text("log_subtitle_results_found", count=len(results))))
             self.queue_log(self.tr("log_subtitle_results_found", count=len(results)))
 
-        self.run_background(work, self.tr("status_searching_subtitles"))
+        started = self.run_background(
+            work, self.tr("status_searching_subtitles"), operation="subtitle_search"
+        )
+        if started:
+            self.update_subtitle_search_button_text()
 
     def subtitle_download_status(self, result_key: str) -> str:
         return (
@@ -667,7 +743,13 @@ class GTMCEControllerMixin:
 
     def best_subtitle_results(self) -> list[SubtitleResult]:
         selected: dict[int, SubtitleResult] = {}
+        active_target: int | None = None
+        tabs = getattr(self, "subtitle_results_tabs", None)
+        if self.subtitle_batch_mode and tabs is not None:
+            active_target = tabs.currentIndex()
         for result in self.subtitle_results.values():
+            if active_target is not None and result.target_index != active_target:
+                continue
             if result.key in self.subtitle_downloaded_paths:
                 continue
             selected.setdefault(result.target_index, result)
@@ -1315,7 +1397,7 @@ class GTMCEControllerMixin:
             operation="mux",
         )
 
-    def start_batch_mux_folder(self) -> None:
+    def start_batch_mux_folder(self, *, skip_track_window: bool = False) -> None:
         if (
             self.worker is not None
             and self.worker.is_alive()
@@ -1333,6 +1415,30 @@ class GTMCEControllerMixin:
         except UserVisibleError as exc:
             self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
+
+        if self.add_tracks_before_mux_var.get() and not skip_track_window:
+            self.open_batch_mux_tracks_window(settings, source_dir, tasks)
+            return
+
+        existing_outputs: list[Path] = []
+        for task in tasks:
+            existing_outputs.extend(path for path in task.extract_dir.glob("*.mkv") if path.is_file())
+            final_dir = tmdb_season_folder_path(
+                source_dir, settings, task.episode_ref.season
+            )
+            if final_dir.is_dir():
+                existing_outputs.extend(path for path in final_dir.glob("*.mkv") if path.is_file())
+        # One confirmation covers the batch. The worker never displays modal
+        # dialogs, so this must happen before it starts.
+        overwrite_existing = False
+        if existing_outputs:
+            first_existing = existing_outputs[0]
+            overwrite_existing = self.ask_yes_no(
+                self.tr("dialog_overwrite_title"),
+                self.tr("dialog_overwrite_message", name=first_existing.name),
+            )
+            if not overwrite_existing:
+                return
 
         def work() -> None:
             if settings.download_before_mux and not settings.tmdb_id:
@@ -1355,6 +1461,10 @@ class GTMCEControllerMixin:
             first_default_mux_title = ""
             for index, task in enumerate(tasks, start=1):
                 self.check_cancelled()
+                self.log_queue.put((
+                    "set_batch_operation_current",
+                    f"{episode_code(task.episode_ref)} · {task.source.name} ({index}/{len(tasks)})",
+                ))
                 self.queue_log(
                     self.tr(
                         "log_batch_episode",
@@ -1426,17 +1536,50 @@ class GTMCEControllerMixin:
                 )
 
                 if episode_settings.output_path.exists():
-                    raise UserVisibleError(
-                        ui_text(
-                            "error_output_exists_choose",
-                            name=episode_settings.output_path.name,
+                    if not overwrite_existing:
+                        raise UserVisibleError(
+                            ui_text(
+                                "error_output_exists_choose",
+                                name=episode_settings.output_path.name,
+                            )
                         )
-                    )
+                    try:
+                        episode_settings.output_path.unlink()
+                    except OSError as exc:
+                        raise UserVisibleError(
+                            ui_text(
+                                "error_output_delete_failed",
+                                name=episode_settings.output_path.name,
+                                error=exc,
+                            )
+                        ) from exc
 
                 config = load_or_create_template_config(
                     episode_settings.template_path,
                     episode_settings.media_dir,
                 )
+                (
+                    additional_tracks,
+                    track_order_keys,
+                    language_overrides,
+                    delay_overrides,
+                    append_overrides,
+                    excluded_track_keys,
+                    additional_assets,
+                    download_missing_assets,
+                ) = self.batch_mux_track_customizations_for(episode_settings.media_dir)
+                # Assets chosen in a tab belong to that episode only.  Prepare
+                # them while its directory is active, just like single-file mux.
+                if additional_assets:
+                    original_assets = self.additional_mux_assets
+                    self.additional_mux_assets = additional_assets
+                    try:
+                        if not self.prepare_additional_mux_assets(episode_settings):
+                            return
+                    finally:
+                        self.additional_mux_assets = original_assets
+                if download_missing_assets:
+                    episode_settings.download_before_mux = True
                 if episode_settings.auto_chapters and auto_chapter_end:
                     self.queue_log(self.tr("log_detecting_chapter_end"))
                     episode_settings.chapter_end_minutes = ""
@@ -1471,6 +1614,12 @@ class GTMCEControllerMixin:
                     episode_settings.audio_language_order,
                     episode_settings.subtitle_language_order,
                     episode_settings.tag_language,
+                    additional_tracks,
+                    track_order_keys,
+                    language_overrides,
+                    delay_overrides,
+                    append_overrides,
+                    excluded_track_keys,
                     cancel_event=self.cancel_event,
                     register_process=self.register_active_process,
                     unregister_process=self.unregister_active_process,
@@ -1487,6 +1636,12 @@ class GTMCEControllerMixin:
                     episode_settings.audio_language_order,
                     episode_settings.subtitle_language_order,
                     episode_settings.tag_language,
+                    additional_tracks,
+                    track_order_keys,
+                    language_overrides,
+                    delay_overrides,
+                    append_overrides,
+                    excluded_track_keys,
                 )
                 self.queue_log(self.tr("log_config_written", path=generated))
                 if missing_optional:
@@ -1517,8 +1672,17 @@ class GTMCEControllerMixin:
                     season_dirs[episode_ref.season] = final_dir
                 target = final_dir / output_path.name
                 target_key = str(target).lower()
-                if target_key in used_targets or target.exists():
+                if target_key in used_targets:
                     raise UserVisibleError(ui_text("error_output_exists_choose", name=target.name))
+                if target.exists():
+                    if not overwrite_existing:
+                        raise UserVisibleError(ui_text("error_output_exists_choose", name=target.name))
+                    try:
+                        target.unlink()
+                    except OSError as exc:
+                        raise UserVisibleError(
+                            ui_text("error_output_delete_failed", name=target.name, error=exc)
+                        ) from exc
                 used_targets.add(target_key)
                 move_plan.append((output_path, target))
 

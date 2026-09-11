@@ -9,10 +9,11 @@ import subprocess
 import sys
 import threading
 import webbrowser
+import copy
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QMimeData, QSignalBlocker, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QLibraryInfo, QMimeData, QSignalBlocker, QSize, Qt, QTimer, QTranslator, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QDrag, QFont, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
     QSpacerItem,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -224,6 +226,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         )
         self.ui_language_display_var = ValueVar(UI_LANGUAGE_NAMES[self.ui_language_var.get()])
         set_active_ui_language(self.ui_language_var.get())
+        self.qt_translator = QTranslator(self)
+        self.apply_qt_language()
         self.theme_mode = str(self.saved_preferences.get("theme", "dark")).lower()
         if self.theme_mode not in {"dark", "light"}:
             self.theme_mode = "dark"
@@ -298,6 +302,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.show_api_key_var = ValueVar(False)
         self.progress_var = ValueVar(0.0)
         self.progress_status_var = ValueVar(self.tr("status_ready"))
+        self.batch_operation_current_var = ValueVar("")
+        self.audio_adjust_current_var = ValueVar("")
 
         # Dialog/model state.
         self.extract_window: QDialog | None = None
@@ -307,11 +313,21 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.extract_language_output_vars: dict[str, ValueVar] = {}
         self.audio_adjust_window: QDialog | None = None
         self.audio_adjust_apply_button: QPushButton | None = None
+        self.audio_adjust_apply_all_button: QPushButton | None = None
         self.audio_adjust_progress_bar: QProgressBar | None = None
         self.audio_adjust_rows: list[dict[str, Any]] = []
+        self.audio_adjust_rows_by_episode: dict[str, list[dict[str, Any]]] = {}
+        self.audio_adjust_tabs: QTabWidget | None = None
+        self.audio_adjust_groups: list[tuple[str, list[Any], str]] = []
+        self.audio_adjust_batch_mode = False
+        self.audio_adjust_presets_by_episode: dict[str, dict[str, dict[str, Any]]] = {}
+        self.audio_adjust_skipped_unchanged_count = 0
+        self.audio_adjust_episode_labels_by_dir: dict[str, str] = {}
         self.subtitle_window: QDialog | None = None
         self.subtitle_progress_bar: QProgressBar | None = None
         self.subtitle_results_tree: QTableWidget | None = None
+        self.subtitle_results_tabs: QTabWidget | None = None
+        self.subtitle_results_trees_by_target: dict[int, QTableWidget] = {}
         self.subtitle_search_button: QPushButton | None = None
         self.tmdb_search_window: QDialog | None = None
         self.tmdb_search_tree: QTableWidget | None = None
@@ -324,9 +340,21 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.subtitle_targets: list[SubtitleSearchTarget] = []
         self.subtitle_results: dict[str, SubtitleResult] = {}
         self.subtitle_downloaded_paths: dict[str, Path] = {}
+        self.subtitle_session_key: tuple[str, ...] = ()
+        self.subtitle_sessions: dict[tuple[str, ...], tuple[str, str, dict[str, SubtitleResult], dict[str, Path]]] = {}
         self.subtitle_batch_mode = False
         self.mux_tracks_window: QDialog | None = None
         self.mux_tracks_tree: QTableWidget | None = None
+        self.mux_tracks_tabs: QTabWidget | None = None
+        self.mux_tracks_rows_by_episode: dict[str, dict[str, MuxTrackWindowRow]] = {}
+        self.mux_track_source_keys_by_episode: dict[str, set[str]] = {}
+        self.mux_track_auto_excluded_append_keys_by_episode: dict[str, set[str]] = {}
+        self.mux_batch_tasks: list[BatchEpisodeTask] = []
+        self.mux_batch_settings: AppSettings | None = None
+        self.batch_mux_track_customizations: dict[str, tuple[
+            list[AdditionalMuxTrack], list[str], dict[str, str], dict[str, str],
+            dict[str, tuple[Path, ...]], set[str], list[AdditionalMuxAsset], bool,
+        ]] = {}
         self.mux_tracks_toggle_button: QPushButton | None = None
         self.mux_tracks_rows_by_iid: dict[str, MuxTrackWindowRow] = {}
         self.mux_tracks_selected_iid: str | None = None
@@ -372,6 +400,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self._bound_widgets: list[Any] = []
         self._dialog_progress_labels: list[QLabel] = []
         self._progress_bars: list[QProgressBar] = []
+        self._toast_widget: QFrame | None = None
 
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
@@ -631,6 +660,28 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         button.clicked.connect(callback)
         return button
 
+    def show_toast(self, message: str, *, success: bool = True) -> None:
+        """Show a brief in-context confirmation without interrupting the modal."""
+        parent = self.audio_adjust_window or self
+        if self._toast_widget is not None:
+            self._toast_widget.deleteLater()
+        toast = QFrame(parent)
+        toast.setObjectName("ToastSuccess" if success else "ToastError")
+        toast.setFrameShape(QFrame.StyledPanel)
+        row = QHBoxLayout(toast); row.setContentsMargins(12, 8, 12, 8)
+        label = QLabel(message); label.setWordWrap(True); label.setMaximumWidth(460)
+        row.addWidget(label)
+        toast.adjustSize()
+        toast.move(max(12, parent.width() - toast.width() - 20), max(12, parent.height() - toast.height() - 20))
+        toast.show(); toast.raise_()
+        self._toast_widget = toast
+        QTimer.singleShot(4200, lambda current=toast: self._hide_toast(current))
+
+    def _hide_toast(self, toast: QFrame) -> None:
+        if self._toast_widget is toast:
+            self._toast_widget = None
+        toast.deleteLater()
+
     def _main_progress_block(self, parent_layout: QVBoxLayout) -> None:
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -643,6 +694,11 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         status.setWordWrap(False)
         self.progress_status_var.bind(lambda value: status.setText(str(value)))
         parent_layout.addWidget(status)
+        current = QLabel()
+        current.setObjectName("Muted")
+        current.setWordWrap(True)
+        self.batch_operation_current_var.bind(lambda value: current.setText(str(value)))
+        parent_layout.addWidget(current)
 
     @staticmethod
     def _set_progress_value(bar: QProgressBar | None, value: Any) -> None:
@@ -928,16 +984,19 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         extract_form.setHorizontalSpacing(8)
         extract_form.setVerticalSpacing(6)
         extract_form.setColumnStretch(1, 1)
+        extract_form.setColumnMinimumWidth(2, 78)
+        extract_form.setColumnMinimumWidth(3, 150)
         extract_layout.addLayout(extract_form)
         extract_form.addWidget(self._field_label("path_source_mkv"), 0, 0)
         self.extract_source_entry = self._bind_line(self.extract_source_var, QLineEdit())
         extract_form.addWidget(self.extract_source_entry, 0, 1)
         extract_form.addWidget(self._button("button_browse_file", self.browse_extract_source), 0, 2)
         extract_form.addWidget(self._button("button_browse_folder", self.browse_extract_source_folder), 0, 3)
-        extract_form.addWidget(self._field_label("path_extract_folder"), 1, 0)
+        extract_form.addWidget(self._field_label("path_existing_extract_folder"), 1, 0)
         self.extract_output_entry = self._bind_line(self.extract_output_dir_var, QLineEdit())
-        extract_form.addWidget(self.extract_output_entry, 1, 1, 1, 2)
-        extract_form.addWidget(self._button("button_browse", self.browse_extract_output_dir), 1, 3)
+        extract_form.addWidget(self.extract_output_entry, 1, 1)
+        extract_form.addWidget(self._button("button_browse", self.browse_extract_output_dir), 1, 2)
+        extract_form.addWidget(self._button("button_load_existing_extract", self.load_existing_extracted_folder_action), 1, 3)
         batch_actions = QHBoxLayout()
         self.batch_extract_button = self._button("button_extract_folder", self.start_extract_source_action)
         self.batch_mux_button = self._button("button_mux_extracted_folder", self.start_batch_mux_folder, primary=True)
@@ -998,10 +1057,23 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.ui_language_var.set(code)
         self.ui_language_display_var.set(UI_LANGUAGE_NAMES[code])
         set_active_ui_language(code)
+        self.apply_qt_language()
         self.progress_status_var.set(self.tr("status_ready"))
         self.refresh_localized_text()
         self.apply_theme()
         self.save_preferences()
+
+    def apply_qt_language(self) -> None:
+        """Translate Qt-owned controls such as native text-edit context menus."""
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.removeTranslator(self.qt_translator)
+        if self.ui_language_var.get() != "tr":
+            return
+        translations_dir = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+        if self.qt_translator.load("qtbase_tr", translations_dir):
+            app.installTranslator(self.qt_translator)
 
     # ------------------------------------------------------------------
     # Dialog helpers / files / preferences
@@ -1139,6 +1211,12 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             self.tr("error_mkv_source_not_found", source=source),
         )
 
+    def load_existing_extracted_folder_action(self) -> None:
+        try:
+            self.load_existing_extracted_folder()
+        except UserVisibleError as exc:
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
+
     def open_initial_extract_source(self, source: Path) -> None:
         """Open a file supplied by the desktop/Open-With integration in Extract.
 
@@ -1210,6 +1288,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         except UserVisibleError as exc:
             self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
+        self.mux_batch_tasks = []
         self.close_mux_tracks_window()
         dialog = QDialog(self)
         dialog.setObjectName("DialogRoot")
@@ -1221,53 +1300,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         layout.setSpacing(10)
         card, card_layout = self._card("DialogCard")
         layout.addWidget(card, 1)
-        table = MuxTracksTable(0, 6)
-        table.setHorizontalHeaderLabels([
-            self.tr("heading_selected"), self.tr("heading_track_type"), self.tr("label_track_language"),
-            self.tr("label_track_delay"), self.tr("heading_audio_append"), self.tr("heading_audio_file"),
-        ])
-        table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
-        table.setDragDropMode(QAbstractItemView.InternalMove)
-        table.setDefaultDropAction(Qt.MoveAction)
-        table.setDragEnabled(True)
-        table.setAcceptDrops(True)
-        table.setDropIndicatorShown(True)
-        table.row_move_callback = self._move_mux_track_row_to
-        table.file_drop_callback = self._drop_mux_track_files
-        table.verticalHeader().setDefaultSectionSize(40)
-        table.verticalHeader().setMinimumSectionSize(40)
-        table.setColumnWidth(4, 250)
-        table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Interactive)
-        table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
-        self.mux_tracks_tree = table
+        table = self._build_mux_tracks_table(rows)
         card_layout.addWidget(table, 1)
-        self.mux_tracks_rows_by_iid = {}
-        self.mux_track_source_keys = {row.key for row in rows if not row.manual}
-        for index, row_model in enumerate(rows):
-            iid = row_model.key
-            self.mux_tracks_rows_by_iid[iid] = row_model
-            table.insertRow(index)
-            use = QCheckBox()
-            use.setChecked(row_model.included)
-            use.toggled.connect(lambda checked, key=iid: self._mux_row_inclusion_changed(key, checked))
-            table.setCellWidget(index, 0, self._center_widget(use))
-            table.setItem(index, 1, QTableWidgetItem(row_model.kind))
-            lang = QLineEdit(row_model.language)
-            lang.editingFinished.connect(lambda key=iid, editor=lang: self._mux_row_language_changed(key, editor.text()))
-            table.setCellWidget(index, 2, self._table_editor_host(lang))
-            delay = QLineEdit(row_model.delay)
-            delay.setEnabled(row_model.delay_supported)
-            delay.editingFinished.connect(lambda key=iid, editor=delay: self._mux_row_delay_changed(key, editor.text()))
-            table.setCellWidget(index, 3, self._table_editor_host(delay))
-            table.setCellWidget(index, 4, self._build_mux_append_cell(row_model))
-            file_item = QTableWidgetItem(self._mux_base_file_label(row_model))
-            file_item.setData(Qt.UserRole, row_model.key)
-            table.setItem(index, 5, file_item)
-            self._style_mux_row(index, row_model.included)
-        self._sync_mux_append_source_rows()
         controls = QHBoxLayout()
         add = self._button("button_add_tracks", self.add_mux_track_files)
         remove = self._button("button_remove_track", self.remove_selected_mux_track)
@@ -1290,6 +1324,134 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         layout.addLayout(actions)
         dialog.finished.connect(lambda _r: self._clear_mux_dialog_refs())
         dialog.show()
+
+    def _build_mux_tracks_table(self, rows: list[MuxTrackWindowRow]) -> MuxTracksTable:
+        """Create one editable track table for the active episode."""
+        table = MuxTracksTable(0, 6)
+        table.setHorizontalHeaderLabels([
+            self.tr("heading_selected"), self.tr("heading_track_type"), self.tr("label_track_language"),
+            self.tr("label_track_delay"), self.tr("heading_audio_append"), self.tr("heading_audio_file"),
+        ])
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+        table.setDragDropMode(QAbstractItemView.InternalMove)
+        table.setDefaultDropAction(Qt.MoveAction)
+        table.setDragEnabled(True)
+        table.setAcceptDrops(True)
+        table.setDropIndicatorShown(True)
+        table.row_move_callback = self._move_mux_track_row_to
+        table.file_drop_callback = self._drop_mux_track_files
+        table.verticalHeader().setDefaultSectionSize(40)
+        table.verticalHeader().setMinimumSectionSize(40)
+        table.setColumnWidth(4, 250)
+        table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Interactive)
+        table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.mux_tracks_tree = table
+        self.mux_tracks_rows_by_iid = {}
+        self.mux_track_source_keys = {row.key for row in rows if not row.manual}
+        for index, row_model in enumerate(rows):
+            key = row_model.key
+            self.mux_tracks_rows_by_iid[key] = row_model
+            table.insertRow(index)
+            use = QCheckBox(); use.setChecked(row_model.included)
+            use.toggled.connect(lambda checked, row_key=key: self._mux_row_inclusion_changed(row_key, checked))
+            table.setCellWidget(index, 0, self._center_widget(use))
+            table.setItem(index, 1, QTableWidgetItem(row_model.kind))
+            lang = QLineEdit(row_model.language)
+            lang.editingFinished.connect(lambda row_key=key, editor=lang: self._mux_row_language_changed(row_key, editor.text()))
+            table.setCellWidget(index, 2, self._table_editor_host(lang))
+            delay = QLineEdit(row_model.delay); delay.setEnabled(row_model.delay_supported)
+            delay.editingFinished.connect(lambda row_key=key, editor=delay: self._mux_row_delay_changed(row_key, editor.text()))
+            table.setCellWidget(index, 3, self._table_editor_host(delay))
+            table.setCellWidget(index, 4, self._build_mux_append_cell(row_model))
+            item = QTableWidgetItem(self._mux_base_file_label(row_model)); item.setData(Qt.UserRole, key)
+            table.setItem(index, 5, item)
+            self._style_mux_row(index, row_model.included)
+        self._sync_mux_append_source_rows()
+        return table
+
+    def open_batch_mux_tracks_window(
+        self,
+        settings: AppSettings,
+        source_dir: Path,
+        tasks: list[BatchEpisodeTask],
+    ) -> None:
+        """Let batch users configure each extracted episode independently."""
+        if not tasks:
+            return
+        self.close_mux_tracks_window()
+        self.mux_batch_tasks = list(tasks)
+        self.mux_batch_settings = copy.copy(settings)
+        self.mux_tracks_rows_by_episode = {}
+        self.mux_track_source_keys_by_episode = {}
+        self.mux_track_auto_excluded_append_keys_by_episode = {}
+        self.batch_mux_track_customizations = {}
+        self.additional_mux_tracks = []
+        self.additional_mux_assets = []
+        self.mux_track_order_keys = []
+        self.mux_track_language_overrides = {}
+        self.mux_track_delay_overrides = {}
+        self.mux_track_append_overrides = {}
+        self.mux_track_excluded_keys = set()
+
+        dialog = QDialog(self)
+        dialog.setObjectName("DialogRoot")
+        dialog.setWindowTitle(f"{APP_NAME} - {self.tr('window_mux_tracks_title')}")
+        dialog.resize(1050, 610)
+        self.mux_tracks_window = dialog
+        layout = QVBoxLayout(dialog); layout.setContentsMargins(16, 16, 16, 16); layout.setSpacing(10)
+        card, card_layout = self._card("DialogCard"); layout.addWidget(card, 1)
+        tabs = QTabWidget(); self.mux_tracks_tabs = tabs; card_layout.addWidget(tabs, 1)
+
+        for task in tasks:
+            tab_label = f"{episode_code(task.episode_ref)} · {task.source.name}"
+            tabs.addTab(QWidget(), tab_label)
+
+        tabs.currentChanged.connect(self._activate_mux_batch_tab)
+        self._activate_mux_batch_tab(0)
+        controls = QHBoxLayout()
+        controls.addWidget(self._button("button_add_tracks", self.add_mux_track_files))
+        controls.addWidget(self._button("button_remove_track", self.remove_selected_mux_track))
+        controls.addWidget(self._button("button_move_track_up", lambda: self.move_selected_mux_track(-1)))
+        controls.addWidget(self._button("button_move_track_down", lambda: self.move_selected_mux_track(1)))
+        controls.addStretch(1)
+        self.mux_tracks_download_missing_assets_var.set(False)
+        card_layout.addLayout(controls)
+        actions = QHBoxLayout(); actions.addStretch(1)
+        actions.addWidget(self._button("button_cancel", self.close_mux_tracks_window))
+        actions.addWidget(self._button("button_create_mkv", self.confirm_mux_tracks_and_start_mux, primary=True))
+        layout.addLayout(actions)
+        dialog.finished.connect(lambda _r: self._clear_mux_dialog_refs())
+        dialog.show()
+
+    def _activate_mux_batch_tab(self, index: int) -> None:
+        if index < 0 or index >= len(self.mux_batch_tasks) or self.mux_tracks_tabs is None:
+            return
+        task = self.mux_batch_tasks[index]
+        key = str(task.extract_dir.resolve())
+        page = self.mux_tracks_tabs.widget(index)
+        if page is None:
+            return
+        table = page.findChild(MuxTracksTable)
+        if table is None:
+            if self.mux_batch_settings is None:
+                return
+            episode_settings = copy.copy(self.mux_batch_settings)
+            episode_settings.media_dir = task.extract_dir
+            rows = self.mux_track_window_rows(episode_settings)
+            self.mux_track_auto_excluded_append_keys = set()
+            table = self._build_mux_tracks_table(rows)
+            page_layout = QVBoxLayout(page); page_layout.setContentsMargins(0, 0, 0, 0)
+            page_layout.addWidget(table)
+            self.mux_tracks_rows_by_episode[key] = self.mux_tracks_rows_by_iid
+            self.mux_track_source_keys_by_episode[key] = self.mux_track_source_keys
+            self.mux_track_auto_excluded_append_keys_by_episode[key] = self.mux_track_auto_excluded_append_keys
+        self.mux_tracks_tree = table
+        self.mux_tracks_rows_by_iid = self.mux_tracks_rows_by_episode.get(key, {})
+        self.mux_track_source_keys = self.mux_track_source_keys_by_episode.get(key, set())
+        self.mux_track_auto_excluded_append_keys = self.mux_track_auto_excluded_append_keys_by_episode.get(key, set())
 
     @staticmethod
     def _center_widget(widget: QWidget) -> QWidget:
@@ -1626,6 +1788,29 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     def confirm_mux_tracks_and_start_mux(self) -> None:
         if self.mux_tracks_tree is None:
             return
+        if self.mux_batch_tasks:
+            for task in self.mux_batch_tasks:
+                key = str(task.extract_dir.resolve())
+                rows = list(self.mux_tracks_rows_by_episode.get(key, {}).values())
+                active_rows = [row for row in rows if row.included]
+                active_tracks = [row for row in active_rows if not row.asset_kind]
+                active_assets = [row for row in active_rows if row.asset_kind]
+                source_keys = self.mux_track_source_keys_by_episode.get(key, set())
+                self.batch_mux_track_customizations[key] = (
+                    [AdditionalMuxTrack(row.path, normalise_mux_language(row.language), row.delay, row.append_paths)
+                     for row in active_tracks if row.manual],
+                    [row.key for row in active_tracks],
+                    {row.key: normalise_mux_language(row.language) for row in active_tracks},
+                    {row.key: row.delay for row in active_tracks if row.delay_supported},
+                    {row.key: row.append_paths for row in active_tracks if row.append_paths or row.append_overridden},
+                    source_keys - {row.key for row in active_tracks},
+                    [AdditionalMuxAsset(row.path, row.asset_kind, row.target_name)
+                     for row in active_assets if row.manual],
+                    bool(self.mux_tracks_download_missing_assets_var.get()),
+                )
+            self.close_mux_tracks_window()
+            self.start_batch_mux_folder(skip_track_window=True)
+            return
         download_missing_assets = bool(self.mux_tracks_download_missing_assets_var.get())
         try:
             settings = self.collect_settings(require_tmdb=download_missing_assets)
@@ -1666,7 +1851,13 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     def _clear_mux_dialog_refs(self) -> None:
         self.mux_tracks_window = None
         self.mux_tracks_tree = None
+        self.mux_tracks_tabs = None
         self.mux_tracks_toggle_button = None
+        self.mux_tracks_rows_by_episode = {}
+        self.mux_track_source_keys_by_episode = {}
+        self.mux_track_auto_excluded_append_keys_by_episode = {}
+        self.mux_batch_tasks = []
+        self.mux_batch_settings = None
 
     def update_mux_track_toggle_button_text(self) -> None:
         pass
@@ -1698,11 +1889,22 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.close_subtitle_window()
         self.subtitle_targets = targets
         self.subtitle_batch_mode = batch_mode
-        self.subtitle_results = {}
-        self.subtitle_downloaded_paths = {}
-        self.subtitle_language_var.set(self.default_subtitle_download_language())
-        self.subtitle_query_var.set(query)
-        self.subtitle_status_var.set(self.tr("label_subtitle_status_ready"))
+        session_key = tuple(str(target.media_dir.resolve()) for target in targets)
+        self.subtitle_session_key = session_key
+        cached = self.subtitle_sessions.get(session_key)
+        if cached is None:
+            self.subtitle_results = {}
+            self.subtitle_downloaded_paths = {}
+            self.subtitle_language_var.set(self.default_subtitle_download_language())
+            self.subtitle_query_var.set(query)
+            self.subtitle_status_var.set(self.tr("label_subtitle_status_ready"))
+        else:
+            cached_query, cached_language, cached_results, cached_downloads = cached
+            self.subtitle_results = dict(cached_results)
+            self.subtitle_downloaded_paths = dict(cached_downloads)
+            self.subtitle_query_var.set(cached_query)
+            self.subtitle_language_var.set(cached_language)
+            self.subtitle_status_var.set(self.tr("log_subtitle_results_found", count=len(self.subtitle_results)))
 
         dialog = QDialog(self)
         dialog.setObjectName("DialogRoot")
@@ -1735,29 +1937,67 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         target_label = QLabel(target_text); target_label.setObjectName("Muted"); target_label.setWordWrap(True); form.addWidget(target_label, 3, 1, 1, 4)
         status_label = QLabel(); status_label.setObjectName("StatusText"); self.subtitle_status_var.bind(lambda v: status_label.setText(str(v))); form.addWidget(status_label, 4, 1, 1, 4)
 
-        table = QTableWidget(0, 8)
-        table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        table.setAlternatingRowColors(True); table.verticalHeader().setVisible(False)
-        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.subtitle_results_tree = table; self._refresh_subtitle_headers(); card_layout.addWidget(table, 1)
+        self.subtitle_results_trees_by_target = {}
+        if batch_mode:
+            tabs = QTabWidget(); self.subtitle_results_tabs = tabs; card_layout.addWidget(tabs, 1)
+            for index, target in enumerate(targets):
+                table = self._new_subtitle_results_table()
+                self.subtitle_results_trees_by_target[index] = table
+                label = f"{episode_code(target.episode_ref)} · {target.source_name}" if target.episode_ref else target.output_stem
+                tabs.addTab(table, label)
+            self.subtitle_results_tree = self.subtitle_results_trees_by_target.get(0)
+            tabs.currentChanged.connect(self._activate_subtitle_target_tab)
+        else:
+            table = self._new_subtitle_results_table()
+            self.subtitle_results_tree = table; card_layout.addWidget(table, 1)
         bottom = QVBoxLayout(); self.subtitle_progress_bar, _ = self._dialog_progress_block(bottom); card_layout.addLayout(bottom)
         actions = QHBoxLayout()
         self.subtitle_best_button = self._button("button_download_best_subtitles", self.start_subtitle_download_best)
         self.subtitle_download_button = self._button("button_download_selected_subtitle", self.start_subtitle_download_selected, primary=True)
-        actions.addWidget(self.subtitle_best_button, 1); actions.addWidget(self.subtitle_download_button, 1); actions.addWidget(self._button("button_cancel", self.close_subtitle_window), 1)
+        actions.addWidget(self.subtitle_best_button, 1); actions.addWidget(self.subtitle_download_button, 1); actions.addWidget(self._button("button_close", self.close_subtitle_window), 1)
         card_layout.addLayout(actions)
         self.sync_progress_widget(self.subtitle_progress_bar)
         dialog.finished.connect(lambda _r: self._clear_subtitle_refs())
+        if self.subtitle_results:
+            self.set_subtitle_results(list(self.subtitle_results.values()))
         dialog.show()
 
-    def _refresh_subtitle_headers(self) -> None:
-        if self.subtitle_results_tree is None:
+    def remember_subtitle_session(self) -> None:
+        if not self.subtitle_session_key:
             return
-        self.subtitle_results_tree.setHorizontalHeaderLabels([
+        self.subtitle_sessions[self.subtitle_session_key] = (
+            self.subtitle_query_var.get().strip(),
+            self.subtitle_language_var.get().strip(),
+            dict(self.subtitle_results),
+            dict(self.subtitle_downloaded_paths),
+        )
+
+    def _new_subtitle_results_table(self) -> QTableWidget:
+        table = QTableWidget(0, 8)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        table.setAlternatingRowColors(True); table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        table.setHorizontalHeaderLabels([
             self.tr("heading_subtitle_status"), self.tr("heading_subtitle_target"), self.tr("heading_subtitle_language"),
             self.tr("heading_subtitle_release"), self.tr("heading_subtitle_fps"), self.tr("heading_subtitle_flags"),
             self.tr("heading_subtitle_downloads"), self.tr("heading_subtitle_file"),
         ])
+        return table
+
+    def _activate_subtitle_target_tab(self, index: int) -> None:
+        table = self.subtitle_results_trees_by_target.get(index)
+        if table is not None:
+            self.subtitle_results_tree = table
+
+    def _refresh_subtitle_headers(self) -> None:
+        tables = list(self.subtitle_results_trees_by_target.values()) or [self.subtitle_results_tree]
+        for table in tables:
+            if table is not None:
+                table.setHorizontalHeaderLabels([
+                    self.tr("heading_subtitle_status"), self.tr("heading_subtitle_target"), self.tr("heading_subtitle_language"),
+                    self.tr("heading_subtitle_release"), self.tr("heading_subtitle_fps"), self.tr("heading_subtitle_flags"),
+                    self.tr("heading_subtitle_downloads"), self.tr("heading_subtitle_file"),
+                ])
 
     def close_subtitle_window(self) -> None:
         if self.subtitle_window is not None:
@@ -1767,20 +2007,39 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     def _clear_subtitle_refs(self) -> None:
         if self.subtitle_progress_bar in self._progress_bars:
             self._progress_bars.remove(self.subtitle_progress_bar)
-        self.subtitle_window = None; self.subtitle_results_tree = None; self.subtitle_progress_bar = None
+        self.subtitle_window = None; self.subtitle_results_tree = None; self.subtitle_results_tabs = None; self.subtitle_results_trees_by_target = {}; self.subtitle_progress_bar = None
         self.subtitle_search_button = None; self.subtitle_download_button = None; self.subtitle_best_button = None; self.subtitle_password_entry = None
 
     def toggle_subtitle_password_visibility(self, *_args: Any) -> None:
         if self.subtitle_password_entry is not None:
             self.subtitle_password_entry.setEchoMode(QLineEdit.Normal if self.subtitle_show_password_var.get() else QLineEdit.Password)
 
+    def update_subtitle_search_button_text(self) -> None:
+        if self.subtitle_search_button is None:
+            return
+        running = (
+            self.current_operation == "subtitle_search"
+            and self.worker is not None
+            and self.worker.is_alive()
+        )
+        self.subtitle_search_button.setText(
+            self.tr("button_cancel_job") if running else self.tr("button_search_subtitles")
+        )
+        self.subtitle_search_button.setEnabled(
+            running or self.current_operation is None
+        )
+
     def set_subtitle_results(self, results: list[SubtitleResult]) -> None:
         self.subtitle_results = {result.key: result for result in results}
-        table = self.subtitle_results_tree
-        if table is None:
-            return
-        table.setRowCount(0)
+        self.remember_subtitle_session()
+        tables = self.subtitle_results_trees_by_target or {0: self.subtitle_results_tree}
+        for table in tables.values():
+            if table is not None:
+                table.setRowCount(0)
         for result in results:
+            table = tables.get(result.target_index)
+            if table is None:
+                continue
             row = table.rowCount(); table.insertRow(row)
             target = self.subtitle_targets[result.target_index] if result.target_index < len(self.subtitle_targets) else None
             target_text = target.output_stem if target else str(result.target_index + 1)
@@ -1793,8 +2052,9 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             values = [self.subtitle_download_status(result.key), target_text, result.language, result.release, result.fps, ", ".join(flags), str(result.downloads), result.file_name]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value); item.setData(Qt.UserRole, result.key); table.setItem(row, col, item)
-        if results:
-            table.selectRow(0)
+        for table in tables.values():
+            if table is not None and table.rowCount():
+                table.selectRow(0)
         self.subtitle_status_var.set(self.tr("log_subtitle_results_found", count=len(results)))
 
     def selected_subtitle_results(self) -> list[SubtitleResult]:
@@ -1812,14 +2072,16 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
 
     def mark_subtitle_result_downloaded(self, result_key: str, destination: Path) -> None:
         self.subtitle_downloaded_paths[result_key] = destination
-        table = self.subtitle_results_tree
-        if table is None:
-            return
-        for row in range(table.rowCount()):
-            item = table.item(row, 0)
-            if item is not None and str(item.data(Qt.UserRole)) == result_key:
-                item.setText(self.tr("value_subtitle_downloaded"))
-                break
+        self.remember_subtitle_session()
+        tables = self.subtitle_results_trees_by_target.values() or [self.subtitle_results_tree]
+        for table in tables:
+            if table is None:
+                continue
+            for row in range(table.rowCount()):
+                item = table.item(row, 0)
+                if item is not None and str(item.data(Qt.UserRole)) == result_key:
+                    item.setText(self.tr("value_subtitle_downloaded"))
+                    return
 
     # ------------------------------------------------------------------
     # Audio adjust dialog
@@ -1827,36 +2089,97 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     def open_audio_adjust_window(self) -> None:
         try:
             settings = self.collect_settings()
-            config = load_or_create_template_config(settings.template_path, settings.media_dir)
-            items, _, _ = discover_track_items(config, settings.media_dir, settings.include_extra_subtitles)
         except UserVisibleError as exc:
             self.show_error(self.tr("dialog_missing_info"), str(exc)); return
-        audio_items = [item for item in items if track_type_value(item) == 0]
-        if not audio_items:
+
+        groups: list[tuple[str, list[Any], str]] = []
+        batch_audio_mode = False
+        source_raw = self.extract_source_var.get().strip()
+        source = Path(source_raw).expanduser() if source_raw else None
+        if source is not None and source.is_dir():
+            try:
+                _batch_settings, _source_dir, _extract_root, batch_tasks = self.collect_batch_folder_settings(require_mux=False)
+                for task in batch_tasks:
+                    if not task.extract_dir.is_dir():
+                        continue
+                    config = load_or_create_template_config(settings.template_path, task.extract_dir)
+                    items, _, _ = discover_track_items(config, task.extract_dir, settings.include_extra_subtitles)
+                    audio_items = [item for item in items if track_type_value(item) == 0]
+                    if audio_items:
+                        groups.append((f"{episode_code(task.episode_ref)} · {task.source.name}", audio_items, str(task.extract_dir.resolve())))
+                batch_audio_mode = bool(groups)
+            except UserVisibleError:
+                # A normal track folder remains a valid single-folder workflow.
+                groups = []
+        if not groups:
+            try:
+                config = load_or_create_template_config(settings.template_path, settings.media_dir)
+                items, _, _ = discover_track_items(config, settings.media_dir, settings.include_extra_subtitles)
+            except UserVisibleError as exc:
+                self.show_error(self.tr("dialog_missing_info"), str(exc)); return
+            audio_items = [item for item in items if track_type_value(item) == 0]
+            if audio_items:
+                groups.append((settings.media_dir.name, audio_items, str(settings.media_dir.resolve())))
+        if not groups:
             self.show_info(self.tr("dialog_missing_info"), self.tr("error_audio_adjust_none")); return
         self.close_audio_adjust_window()
         dialog = QDialog(self); dialog.setObjectName("DialogRoot"); dialog.setWindowTitle(f"{APP_NAME} - {self.tr('window_audio_adjust_title')}"); dialog.resize(1180, 560)
         self.audio_adjust_window = dialog
         layout = QVBoxLayout(dialog); layout.setContentsMargins(16,16,16,16); layout.setSpacing(10)
         card, card_layout = self._card("DialogCard"); layout.addWidget(card, 1)
+        self.audio_adjust_rows = []
+        self.audio_adjust_rows_by_episode = {}
+        self.audio_adjust_presets_by_episode = {}
+        self.audio_adjust_episode_labels_by_dir = {key: label for label, _items, key in groups}
+        self.audio_adjust_current_var.set("")
+        self.audio_adjust_groups = groups
+        self.audio_adjust_batch_mode = batch_audio_mode
+        self._audio_heading_labels: list[tuple[QLabel,str]] = []
+        if len(groups) == 1:
+            label, audio_items, key = groups[0]
+            page, rows = self._build_audio_adjust_page(audio_items)
+            card_layout.addWidget(page, 1)
+            self.audio_adjust_rows = rows
+            self.audio_adjust_rows_by_episode[key] = rows
+        else:
+            tabs = QTabWidget(); self.audio_adjust_tabs = tabs; card_layout.addWidget(tabs, 1)
+            for label, _audio_items, _key in groups:
+                tabs.addTab(QWidget(), label)
+            tabs.currentChanged.connect(self._activate_audio_adjust_tab)
+            self._activate_audio_adjust_tab(0)
+        hint=QLabel(self.tr("audio_adjust_hint")); hint.setObjectName("Muted"); hint.setWordWrap(True); card_layout.addWidget(hint)
+        progress_layout=QVBoxLayout(); self.audio_adjust_progress_bar,_=self._dialog_progress_block(progress_layout)
+        current_label = QLabel(); current_label.setObjectName("Muted"); current_label.setWordWrap(True)
+        self.audio_adjust_current_var.bind(lambda value: current_label.setText(str(value)))
+        progress_layout.addWidget(current_label)
+        card_layout.addLayout(progress_layout)
+        actions=QHBoxLayout(); actions.addStretch(1)
+        self.audio_adjust_apply_all_button = self._button("button_apply_audio_to_all_episodes", self.apply_audio_settings_to_all_episodes)
+        self.audio_adjust_apply_all_button.setVisible(batch_audio_mode)
+        actions.addWidget(self.audio_adjust_apply_all_button)
+        self.audio_adjust_apply_button=self._button("button_apply_audio_adjust", self.start_audio_adjust, primary=True); actions.addWidget(self.audio_adjust_apply_button); card_layout.addLayout(actions)
+        self.update_audio_apply_all_button_state()
+        self.sync_progress_widget(self.audio_adjust_progress_bar)
+        dialog.finished.connect(lambda _r:self._clear_audio_refs()); dialog.show()
+
+    def _build_audio_adjust_page(self, audio_items: list[Any]) -> tuple[QScrollArea, list[dict[str, Any]]]:
         scroll = QScrollArea(); scroll.setObjectName("DialogScroll"); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
         rows_widget = QWidget(); grid = QGridLayout(rows_widget); grid.setContentsMargins(4,4,4,4); grid.setHorizontalSpacing(8); grid.setVerticalSpacing(9)
         grid.setAlignment(Qt.AlignTop)
-        scroll.setWidget(rows_widget); card_layout.addWidget(scroll, 1)
+        scroll.setWidget(rows_widget)
         headings = ["", "heading_audio_file", "heading_audio_delta", "heading_audio_speed", "heading_audio_codec", "heading_audio_bitrate", "heading_audio_rate", "heading_audio_layout", "heading_audio_volume"]
-        self._audio_heading_labels: list[tuple[QLabel,str]] = []
         for col,key in enumerate(headings):
             if not key: continue
             label = QLabel(); label.setObjectName("TableHeading"); self.localize_widget(label,key); grid.addWidget(label,0,col); self._audio_heading_labels.append((label,key))
         grid.setColumnStretch(1,1)
-        self.audio_adjust_rows = []
+        rows: list[dict[str, Any]] = []
         codec_values = sorted(SUPPORTED_AUDIO_ENCODERS)
         speed_values = [("auto", self.tr("speed_factor_auto"))] + [(key,self.tr(f"speed_factor_{key}")) for key in AUDIO_SPEED_FACTORS if key != "auto"]
         for r,item in enumerate(audio_items, start=1):
             defaults = audio_probe_defaults(item.path)
             selected = ValueVar(False); delta = ValueVar(""); codec = ValueVar(defaults["codec"] if defaults["codec"] in SUPPORTED_AUDIO_ENCODERS else "eac3")
             bitrate=ValueVar(defaults["bitrate"]); rate=ValueVar(defaults["sample_rate"]); layout_var=ValueVar(defaults["channel_layout"]); volume=ValueVar(1.0); speed=ValueVar(speed_values[0][1])
-            check=self._bind_check(selected,QCheckBox()); grid.addWidget(check,r,0)
+            check=self._bind_check(selected,QCheckBox()); check.toggled.connect(self.update_audio_apply_all_button_state); grid.addWidget(check,r,0)
             name=QLabel(item.path.name); name.setObjectName("FieldLabel"); grid.addWidget(name,r,1)
             grid.addWidget(self._bind_line(delta,QLineEdit()),r,2)
             speed_combo=QComboBox(); speed_combo.addItems([label for _,label in speed_values]); self._bind_combo_text(speed,speed_combo); grid.addWidget(speed_combo,r,3)
@@ -1865,16 +2188,129 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             volume_host=QWidget(); vh=QHBoxLayout(volume_host); vh.setContentsMargins(0,0,0,0); slider=QSlider(Qt.Horizontal); slider.setRange(10,50); slider.setValue(10); value_label=QLabel("1.0x"); value_label.setMinimumWidth(42)
             slider.valueChanged.connect(lambda v,var=volume,lbl=value_label: (var.set(v/10.0), lbl.setText(f"{v/10.0:.1f}x")))
             vh.addWidget(slider,1); vh.addWidget(value_label); grid.addWidget(volume_host,r,8)
-            self.audio_adjust_rows.append({"path":item.path,"selected":selected,"delta":delta,"codec":codec,"bitrate":bitrate,"sample_rate":rate,"layout":layout_var,"volume":volume,"speed":speed,"speed_values":speed_values,"defaults":defaults})
+            rows.append({"path":item.path,"language":track_language_value(item) or "und","selected":selected,"delta":delta,"codec":codec,"bitrate":bitrate,"sample_rate":rate,"layout":layout_var,"volume":volume,"volume_slider":slider,"volume_label":value_label,"speed":speed,"speed_values":speed_values,"defaults":defaults,"name_label":name})
         # Keep all headings and audio rows anchored to the top of the scroll viewport.
         # Any spare vertical room belongs below the final row instead of being spread
         # between the header and editors.
         grid.setRowStretch(len(audio_items) + 1, 1)
-        hint=QLabel(self.tr("audio_adjust_hint")); hint.setObjectName("Muted"); hint.setWordWrap(True); card_layout.addWidget(hint)
-        progress_layout=QVBoxLayout(); self.audio_adjust_progress_bar,_=self._dialog_progress_block(progress_layout); card_layout.addLayout(progress_layout)
-        actions=QHBoxLayout(); actions.addStretch(1); self.audio_adjust_apply_button=self._button("button_apply_audio_adjust", self.start_audio_adjust, primary=True); actions.addWidget(self.audio_adjust_apply_button); card_layout.addLayout(actions)
-        self.sync_progress_widget(self.audio_adjust_progress_bar)
-        dialog.finished.connect(lambda _r:self._clear_audio_refs()); dialog.show()
+        return scroll, rows
+
+    def _activate_audio_adjust_tab(self, index: int) -> None:
+        """Build a batch episode's heavy audio controls only when it is opened."""
+        if self.audio_adjust_tabs is None or index < 0 or index >= len(self.audio_adjust_groups):
+            return
+        page = self.audio_adjust_tabs.widget(index)
+        if page is None or page.property("audioAdjustPageBuilt"):
+            return
+        _label, audio_items, key = self.audio_adjust_groups[index]
+        page_layout = QVBoxLayout(page); page_layout.setContentsMargins(0, 0, 0, 0)
+        scroll, rows = self._build_audio_adjust_page(audio_items)
+        page_layout.addWidget(scroll)
+        page.setProperty("audioAdjustPageBuilt", True)
+        self.audio_adjust_rows_by_episode[key] = rows
+        self.audio_adjust_rows.extend(rows)
+        for row in rows:
+            preset = self.audio_adjust_presets_by_episode.get(key, {}).get(row["language"])
+            if preset is not None:
+                self._apply_audio_preset(row, preset)
+        self.update_audio_apply_all_button_state()
+
+    def _current_audio_adjust_rows(self) -> list[dict[str, Any]]:
+        if self.audio_adjust_tabs is None:
+            return self.audio_adjust_rows
+        index = self.audio_adjust_tabs.currentIndex()
+        if index < 0 or index >= len(self.audio_adjust_groups):
+            return []
+        return self.audio_adjust_rows_by_episode.get(self.audio_adjust_groups[index][2], [])
+
+    @staticmethod
+    def _audio_preset_from_row(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "delta": row["delta"].get(), "codec": row["codec"].get(),
+            "bitrate": row["bitrate"].get(), "sample_rate": row["sample_rate"].get(),
+            "layout": row["layout"].get(), "volume": row["volume"].get(),
+            "speed": row["speed"].get(),
+        }
+
+    @staticmethod
+    def _apply_audio_preset(row: dict[str, Any], preset: dict[str, Any]) -> None:
+        for key in ("delta", "codec", "bitrate", "sample_rate", "layout", "speed"):
+            row[key].set(preset[key])
+        volume = float(preset["volume"])
+        row["volume"].set(volume)
+        slider = row.get("volume_slider")
+        if isinstance(slider, QSlider):
+            slider.setValue(round(volume * 10))
+        row["selected"].set(True)
+
+    def update_audio_apply_all_button_state(self, *_args: Any) -> None:
+        if self.audio_adjust_apply_all_button is None:
+            return
+        selected = any(row["selected"].get() for row in self._current_audio_adjust_rows())
+        available = self.audio_adjust_batch_mode and selected
+        self.audio_adjust_apply_all_button.setVisible(available)
+        self.audio_adjust_apply_all_button.setEnabled(available)
+
+    def apply_audio_settings_to_all_episodes(self) -> None:
+        source_rows = [row for row in self._current_audio_adjust_rows() if row["selected"].get()]
+        if not source_rows:
+            self.show_toast(self.tr("toast_audio_apply_all_error"), success=False)
+            return
+        presets = {row["language"]: self._audio_preset_from_row(row) for row in source_rows}
+        matched_tracks = 0
+        matched_episodes: set[str] = set()
+        for _label, _audio_items, key in self.audio_adjust_groups:
+            matches = [
+                item for item in _audio_items
+                if (track_language_value(item) or "und") in presets
+            ]
+            if matches:
+                matched_tracks += len(matches)
+                matched_episodes.add(key)
+            episode_presets = self.audio_adjust_presets_by_episode.setdefault(key, {})
+            episode_presets.update(presets)
+            for row in self.audio_adjust_rows_by_episode.get(key, []):
+                preset = presets.get(row["language"])
+                if preset is not None:
+                    self._apply_audio_preset(row, preset)
+        self.update_audio_apply_all_button_state()
+        if not matched_tracks:
+            self.show_toast(self.tr("toast_audio_apply_all_error"), success=False)
+            return
+        self.show_toast(
+            self.tr(
+                "toast_audio_apply_all_success",
+                episodes=len(matched_episodes),
+                tracks=matched_tracks,
+            ),
+            success=True,
+        )
+
+    def _audio_adjust_task_from_preset(
+        self,
+        path: Path,
+        defaults: dict[str, str],
+        preset: dict[str, Any],
+    ) -> AudioAdjustTask:
+        speed_label = str(preset["speed"]).strip()
+        speed_labels = {
+            self.tr("speed_factor_auto"): "auto",
+            **{self.tr(f"speed_factor_{key}"): key for key in AUDIO_SPEED_FACTORS if key != "auto"},
+        }
+        return AudioAdjustTask(
+            path=path,
+            delta_seconds=parse_milliseconds_delta(str(preset["delta"])),
+            codec=str(preset["codec"]).strip().lower(),
+            bitrate=str(preset["bitrate"]).strip(),
+            sample_rate=str(preset["sample_rate"]).strip() or "48000",
+            channel_layout=str(preset["layout"]).strip() or "stereo",
+            volume_multiplier=normalise_audio_volume_multiplier(preset["volume"]),
+            speed_factor=AUDIO_SPEED_FACTORS.get(speed_labels.get(speed_label, "auto"), 1.0),
+            original_codec=defaults.get("codec", ""),
+            original_bitrate=defaults.get("bitrate", ""),
+            original_sample_rate=defaults.get("sample_rate", ""),
+            original_channel_layout=defaults.get("channel_layout", ""),
+        )
 
     def collect_audio_adjust_tasks(self) -> list[AudioAdjustTask]:
         tasks: list[AudioAdjustTask] = []
@@ -1908,8 +2344,35 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                     original_channel_layout=row["defaults"].get("channel_layout", ""),
                 )
             )
+        # Lazy tabs do not build their editors until opened.  Their presets
+        # must nevertheless become real ffmpeg tasks when the user applies a
+        # language-specific setting to every episode.
+        if self.audio_adjust_batch_mode:
+            loaded_episode_keys = set(self.audio_adjust_rows_by_episode)
+            for _label, audio_items, episode_key in self.audio_adjust_groups:
+                if episode_key in loaded_episode_keys:
+                    continue
+                presets = self.audio_adjust_presets_by_episode.get(episode_key, {})
+                for item in audio_items:
+                    preset = presets.get(track_language_value(item) or "und")
+                    if preset is None:
+                        continue
+                    tasks.append(
+                        self._audio_adjust_task_from_preset(
+                            item.path,
+                            audio_probe_defaults(item.path),
+                            preset,
+                        )
+                    )
         if not tasks:
             raise UserVisibleError(self.tr("error_audio_adjust_none"))
+        self.audio_adjust_skipped_unchanged_count = 0
+        if self.audio_adjust_batch_mode:
+            unchanged = [task for task in tasks if not audio_adjust_has_work(task)]
+            tasks = [task for task in tasks if audio_adjust_has_work(task)]
+            self.audio_adjust_skipped_unchanged_count = len(unchanged)
+            if not tasks:
+                return []
         for task in tasks:
             validate_audio_adjust_task(task)
         return tasks
@@ -1929,19 +2392,48 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         except UserVisibleError as exc:
             self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
+        if not tasks and self.audio_adjust_batch_mode:
+            self.queue_log(
+                self.tr(
+                    "log_audio_adjust_skipped_unchanged",
+                    count=self.audio_adjust_skipped_unchanged_count,
+                )
+            )
+            self.show_info(
+                self.tr("dialog_missing_info"),
+                self.tr("info_audio_adjust_no_changes"),
+            )
+            return
+        if self.audio_adjust_skipped_unchanged_count:
+            self.queue_log(
+                self.tr(
+                    "log_audio_adjust_skipped_unchanged",
+                    count=self.audio_adjust_skipped_unchanged_count,
+                )
+            )
         self.update_audio_adjust_apply_button_text()
 
         def work() -> None:
-            for task in tasks:
+            for index, task in enumerate(tasks, start=1):
                 self.check_cancelled()
-                run_audio_adjust_task(
+                episode_label = self.audio_adjust_episode_labels_by_dir.get(
+                    str(task.path.parent.resolve()),
+                    task.path.parent.name,
+                )
+                self.log_queue.put((
+                    "set_audio_adjust_current",
+                    f"{episode_label} · {task.path.name} ({index}/{len(tasks)})",
+                ))
+                output_path = run_audio_adjust_task(
                     task,
                     self.queue_log,
                     cancel_event=self.cancel_event,
                     register_process=self.register_active_process,
                     unregister_process=self.unregister_active_process,
                 )
-            self.log_queue.put(("close_audio_adjust", True))
+                self.log_queue.put(("audio_adjust_done", (task.path, output_path)))
+            if not self.audio_adjust_batch_mode:
+                self.log_queue.put(("close_audio_adjust", True))
 
         started = self.run_background(
             work, self.tr("status_adjusting_audio"), operation="audio_adjust"
@@ -1952,13 +2444,26 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     def _refresh_audio_headers(self) -> None:
         for label,key in getattr(self,"_audio_heading_labels",[]): label.setText(self.tr(key))
 
+    def mark_audio_adjust_done(self, source: Path, output: Path) -> None:
+        """Keep a batch dialog usable after one row has been regenerated."""
+        for row in self.audio_adjust_rows:
+            if Path(row["path"]) != source:
+                continue
+            row["path"] = output
+            row["selected"].set(False)
+            row["defaults"] = audio_probe_defaults(output)
+            label = row.get("name_label")
+            if isinstance(label, QLabel):
+                label.setText(output.name)
+            return
+
     def close_audio_adjust_window(self) -> None:
         if self.audio_adjust_window is not None: self.audio_adjust_window.close()
         self._clear_audio_refs()
 
     def _clear_audio_refs(self) -> None:
         if self.audio_adjust_progress_bar in self._progress_bars: self._progress_bars.remove(self.audio_adjust_progress_bar)
-        self.audio_adjust_window=None; self.audio_adjust_apply_button=None; self.audio_adjust_progress_bar=None; self.audio_adjust_rows=[]
+        self.audio_adjust_window=None; self.audio_adjust_apply_button=None; self.audio_adjust_apply_all_button=None; self.audio_adjust_progress_bar=None; self.audio_adjust_rows=[]; self.audio_adjust_rows_by_episode={}; self.audio_adjust_tabs=None; self.audio_adjust_groups=[]; self.audio_adjust_batch_mode=False; self.audio_adjust_presets_by_episode={}; self.audio_adjust_skipped_unchanged_count=0; self.audio_adjust_episode_labels_by_dir={}; self.audio_adjust_current_var.set(""); self._toast_widget=None
 
     def update_audio_adjust_apply_button_text(self) -> None:
         if self.audio_adjust_apply_button is None: return
@@ -2435,6 +2940,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         buttons=(self.scan_button,self.find_tmdb_button,self.tmdb_lookup_button,self.tmdb_search_action_button,self.download_button,self.subtitle_button,self.config_button,self.extract_scan_button,self.extract_toggle_button,self.extract_all_button,self.extract_button,self.batch_extract_button,self.batch_mux_button,self.third_party_button,self.subtitle_search_button,self.subtitle_download_button,self.subtitle_best_button)
         for button in buttons:
             if button is not None: button.setEnabled(not busy)
+        self.update_subtitle_search_button_text()
         if self.mux_button is not None:
             if busy and self.current_operation=="mux": self.mux_button.setEnabled(True); self.mux_button.setText(self.tr("button_cancel_job"))
             else: self.mux_button.setEnabled(not busy); self.mux_button.setText(self.tr("button_create_mkv"))
@@ -2508,8 +3014,14 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 if not bool(value):self.update_audio_adjust_apply_button_text()
             elif kind=="app_update_available" and isinstance(value,dict):self.show_app_update_available(value)
             elif kind=="close_audio_adjust":self.close_audio_adjust_window()
+            elif kind=="audio_adjust_done":
+                try: source, output = value
+                except (TypeError, ValueError): continue
+                self.mark_audio_adjust_done(Path(str(source)), Path(str(output)))
+            elif kind=="set_audio_adjust_current":self.audio_adjust_current_var.set(str(value))
             elif kind=="close_extract":self.close_extract_window()
             elif kind=="set_output":self.output_var.set(str(self.output_path_with_current_name_extra(Path(str(value)))))
+            elif kind=="set_batch_operation_current":self.batch_operation_current_var.set(str(value))
             elif kind=="set_tmdb_id":self.tmdb_id_var.set(str(value))
             elif kind=="set_tmdb_search_results":self.set_tmdb_search_results(list(value))
             elif kind=="set_tmdb_search_status":self.tmdb_search_status_var.set(str(value))
@@ -2524,6 +3036,9 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 if not current or current==self.auto_chapter_end_value:self.chapter_end_var.set(str(value));self.auto_chapter_end_value=str(value)
             elif kind=="set_extract_items":self.set_extract_items(value)
             elif kind=="set_subtitle_results":self.set_subtitle_results(value)
+            elif kind=="reset_subtitle_downloads":
+                self.subtitle_downloaded_paths = {}
+                self.remember_subtitle_session()
             elif kind=="set_subtitle_status":self.subtitle_status_var.set(str(value))
             elif kind=="mark_subtitle_downloaded":
                 try:result_key,destination=value

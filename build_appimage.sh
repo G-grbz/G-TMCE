@@ -106,7 +106,9 @@ build_binary() {
   if [[ -f "$ICON_FILE" ]]; then
     add_data_args+=(--add-data "${ICON_FILE}:assets")
   fi
-  for asset in assets/combo-arrow-dark.png assets/combo-arrow-light.png; do
+  for asset in assets/combo-arrow-dark.png assets/combo-arrow-light.png \
+    assets/tab-arrow-left-dark.png assets/tab-arrow-right-dark.png \
+    assets/tab-arrow-left-light.png assets/tab-arrow-right-light.png; do
     if [[ -f "$asset" ]]; then
       add_data_args+=(--add-data "${asset}:assets")
     fi

@@ -83,7 +83,11 @@ def main() -> int:
     if logo.exists():
         command += ["--add-data", f"{logo}{os.pathsep}assets"]
 
-    for asset_name in ("combo-arrow-dark.png", "combo-arrow-light.png"):
+    for asset_name in (
+        "combo-arrow-dark.png", "combo-arrow-light.png",
+        "tab-arrow-left-dark.png", "tab-arrow-right-dark.png",
+        "tab-arrow-left-light.png", "tab-arrow-right-light.png",
+    ):
         asset = root / "assets" / asset_name
         if asset.exists():
             command += ["--add-data", f"{asset}{os.pathsep}assets"]

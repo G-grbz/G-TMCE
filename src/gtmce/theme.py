@@ -120,6 +120,9 @@ def build_stylesheet(mode: str) -> str:
     p = palette_for(mode)
     arrow_name = "combo-arrow-light.png" if str(mode).lower() == "light" else "combo-arrow-dark.png"
     arrow_url = bundled_resource_path(arrow_name).as_posix()
+    tab_arrow_variant = "light" if str(mode).lower() == "light" else "dark"
+    tab_left_arrow = bundled_resource_path(f"tab-arrow-left-{tab_arrow_variant}.png").as_posix()
+    tab_right_arrow = bundled_resource_path(f"tab-arrow-right-{tab_arrow_variant}.png").as_posix()
     return f"""
     * {{
         font-family: 'Inter', 'Noto Sans', 'Segoe UI', sans-serif;
@@ -254,6 +257,50 @@ def build_stylesheet(mode: str) -> str:
         background: {p.surface_alt}; border: 1px solid {p.border}; border-radius: 8px;
         padding: 6px; selection-background-color: {p.accent};
     }}
+    QMenu {{
+        background: {p.surface}; color: {p.text}; border: 1px solid {p.border_strong};
+        border-radius: 7px; padding: 5px;
+    }}
+    QMenu::item {{
+        background: transparent; color: {p.text}; border-radius: 5px;
+        padding: 7px 26px 7px 10px;
+    }}
+    QMenu::item:selected {{ background: {p.selection}; color: {p.text}; }}
+    QMenu::item:disabled {{ color: {p.disabled}; }}
+    QMenu::separator {{ height: 1px; background: {p.border}; margin: 4px 7px; }}
+
+    QTabWidget::pane {{
+        background: {p.surface}; border: 1px solid {p.border}; border-radius: 8px;
+        top: -1px;
+    }}
+    QTabBar::tab {{
+        background: {p.surface_alt}; color: {p.muted}; border: 1px solid {p.border};
+        border-bottom: none; border-top-left-radius: 7px; border-top-right-radius: 7px;
+        padding: 7px 12px; margin-right: 3px; font-weight: 650;
+    }}
+    QTabBar::tab:hover {{ background: {p.surface_hover}; color: {p.text}; }}
+    QTabBar::tab:selected {{
+        background: {p.surface}; color: {p.text}; border-color: {p.border_strong};
+        border-bottom: 1px solid {p.surface};
+    }}
+    QTabBar QToolButton {{
+        background: {p.surface_alt}; border: 1px solid {p.border_strong}; border-radius: 6px;
+        min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px; padding: 0;
+    }}
+    QTabBar QToolButton:hover {{ background: {p.surface_hover}; border-color: {p.accent}; }}
+    QTabBar QToolButton:disabled {{ background: {p.surface}; border-color: {p.border}; }}
+    QTabBar::scroller {{ width: 62px; }}
+    QTabBar QToolButton::left-arrow {{ image: url("{tab_left_arrow}"); width: 6px; height: 10px; }}
+    QTabBar QToolButton::right-arrow {{ image: url("{tab_right_arrow}"); width: 6px; height: 10px; }}
+    QScrollArea {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 8px; }}
+    QScrollArea > QWidget > QWidget {{ background: {p.surface}; }}
+
+    QFrame#ToastSuccess, QFrame#ToastError {{
+        border-radius: 9px; padding: 3px;
+    }}
+    QFrame#ToastSuccess {{ background: {p.success}; border: 1px solid {p.success}; }}
+    QFrame#ToastError {{ background: {p.danger}; border: 1px solid {p.danger}; }}
+    QFrame#ToastSuccess QLabel, QFrame#ToastError QLabel {{ color: white; background: transparent; font-weight: 700; }}
 
     QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: {p.border_strong}; border-radius: 4px; min-height: 28px; }}
