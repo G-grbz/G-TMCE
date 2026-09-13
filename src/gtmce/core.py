@@ -4005,6 +4005,12 @@ def tmdb_search_query_variants(query: str) -> list[str]:
             variants.append(value)
 
     add(base)
+    # First installments are frequently stored as "Title" in TMDB even when
+    # folder and release names append a standalone "1" (for example,
+    # "Hep Yek 1"). Keep the original query first so genuine numbered titles
+    # remain the preferred match.
+    add(re.sub(r"\s+\d{1,2}$", "", base))
+
     # Release names often omit Turkish possessive apostrophes: Gölgenin ->
     # Gölge'nin and Günün -> Gü'nün.
     add(
@@ -4051,7 +4057,9 @@ def result_original_title(result: dict[str, Any]) -> str:
 
 def score_tmdb_result(result: dict[str, Any], query: str, year: str) -> float:
     query_key = normalise_title_for_match(query)
-    score = float(result.get("popularity") or 0)
+    # Popularity is only a tiebreaker.  Leaving it unbounded can select an
+    # unrelated, very popular title over a close title variant.
+    score = min(float(result.get("popularity") or 0), 100.0)
 
     # ``title`` can be translated according to the requested API language, so
     # the original title is an equally important matching target.
@@ -4060,15 +4068,15 @@ def score_tmdb_result(result: dict[str, Any], query: str, year: str) -> float:
         normalise_title_for_match(result_original_title(result)),
     }
     if query_key in title_keys:
-        score += 1000
+        score += 10000
     elif any(
         key.startswith(query_key) or query_key.startswith(key)
         for key in title_keys
         if key
     ):
-        score += 500
+        score += 5000
     elif query_key and any(query_key in key for key in title_keys):
-        score += 250
+        score += 2500
 
     found_year = result_year(result)
     if year and found_year == year:
@@ -8219,7 +8227,7 @@ def find_tmdb_match_from_folder(
         # An exact normalised title is already present.  This keeps the normal
         # case to one request, but tries spelling variants after an empty or
         # unrelated response.
-        if results and max(score_tmdb_result(result, query, year) for result in results) >= 1000:
+        if results and max(score_tmdb_result(result, query, year) for result in results) >= 10000:
             break
     if not results:
         year_text = f" ({year})" if year else ""

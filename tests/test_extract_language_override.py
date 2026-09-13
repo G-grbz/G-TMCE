@@ -50,6 +50,12 @@ def test_tmdb_search_variants_restore_turkish_punctuation_and_sequel_colon():
     )
 
 
+def test_tmdb_search_variants_try_unnumbered_first_installment_title():
+    variants = tmdb_search_query_variants("Hep Yek 1")
+
+    assert variants[:2] == ["Hep Yek 1", "Hep Yek"]
+
+
 def test_tmdb_score_uses_original_title_when_result_is_translated():
     result = {
         "id": 1,
@@ -59,6 +65,15 @@ def test_tmdb_score_uses_original_title_when_result_is_translated():
     }
 
     assert score_tmdb_result(result, "Köstebekgiller 2 Gölgenin Tılsımı", "") >= 1000
+
+
+def test_tmdb_title_match_beats_an_unrelated_popular_result():
+    matching = {"id": 1, "title": "Hep Yek", "popularity": 1}
+    unrelated = {"id": 2, "title": "Unrelated", "popularity": 999999}
+
+    assert score_tmdb_result(matching, "Hep Yek 1", "") > score_tmdb_result(
+        unrelated, "Hep Yek 1", ""
+    )
 
 
 def test_automatic_tmdb_lookup_tries_official_title_variant():
