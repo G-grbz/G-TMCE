@@ -22,6 +22,7 @@ import sys
 import tarfile
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -3910,8 +3911,16 @@ def parse_release_name(name: str) -> tuple[str, str]:
     tokens = [token for token in re.split(r"[._\-\s]+", stem) if token]
     title_tokens: list[str] = []
     for token in tokens:
-        normalised = re.sub(r"[^a-z0-9]+", "", token.lower())
-        if normalised in RELEASE_STOP_TOKENS or re.fullmatch(r"s\d{1,2}e\d{1,2}", normalised):
+        normalised = normalise_title_for_match(token)
+        if (
+            normalised in RELEASE_STOP_TOKENS
+            or re.fullmatch(r"s\d{1,2}e\d{1,2}", normalised)
+            # Release folders commonly append technical indexing data after an
+            # underscore or dash: ``_title25_109min``. It is not part of the
+            # TMDB title and neither is anything after it.
+            or re.fullmatch(r"(?:title|tmdb|imdb|episode|ep|part|disc|cd)\d+", normalised)
+            or re.fullmatch(r"\d{1,4}(?:min|mins|minute|minutes)", normalised)
+        ):
             break
         title_tokens.append(token)
     return clean_release_title(" ".join(title_tokens)), ""
@@ -3987,8 +3996,11 @@ def normalise_title_for_match(value: str) -> str:
     # (``Gölge'nin``), while release names commonly omit it (``Gölgenin``).
     # Removing punctuation before comparing deliberately treats those forms as
     # the same title. Transliteration also keeps Turkish letters comparable.
-    value = value.lower().translate(str.maketrans("çğıöşü", "cgiosu"))
-    return re.sub(r"[^a-z0-9]+", "", value)
+    value = value.casefold().translate(str.maketrans("çğıöşü", "cgiosu"))
+    # Keep every Unicode letter and number. The previous ASCII-only pattern
+    # erased Cyrillic, CJK, Arabic and many accented titles before scoring.
+    value = unicodedata.normalize("NFKD", value)
+    return "".join(char for char in value if char.isalnum())
 
 
 def tmdb_search_query_variants(query: str) -> list[str]:
@@ -4005,6 +4017,12 @@ def tmdb_search_query_variants(query: str) -> list[str]:
             variants.append(value)
 
     add(base)
+    # Dots and release separators are interchangeable in source names, so a
+    # manual search such as ``Avtostopom.po.galaktike`` also tries the human
+    # title spelling. ``parse_release_name`` removes technical suffixes such
+    # as ``_title25_109min`` without altering a normal title.
+    parsed_base, _parsed_year = parse_release_name(base)
+    add(parsed_base)
     # First installments are frequently stored as "Title" in TMDB even when
     # folder and release names append a standalone "1" (for example,
     # "Hep Yek 1"). Keep the original query first so genuine numbered titles
@@ -6708,23 +6726,30 @@ class TMDBClient:
         return self.get_json(path, fallback_params).get("results") or []
 
     def search_multi(self, query: str, language: str) -> list[dict[str, Any]]:
-        payload = self.get_json(
-            "/search/multi",
-            {
-                "query": query,
-                "include_adult": "false",
-                "language": language,
-                "page": "1",
-            },
-        )
+        # TMDB text search itself spans original, translated and alternative
+        # titles. ``language`` controls only localized response fields, so it
+        # must never limit which title languages can be matched.
         results: list[dict[str, Any]] = []
-        for result in payload.get("results") or []:
-            media_type = str(result.get("media_type") or "")
-            if media_type not in TMDB_MEDIA_TYPES:
-                continue
-            if not result.get("id") or not result_title(result):
-                continue
-            results.append(result)
+        seen_ids: set[str] = set()
+        for search_query in tmdb_search_query_variants(query):
+            payload = self.get_json(
+                "/search/multi",
+                {
+                    "query": search_query,
+                    "include_adult": "false",
+                    "language": language,
+                    "page": "1",
+                },
+            )
+            for result in payload.get("results") or []:
+                media_type = str(result.get("media_type") or "")
+                result_id = str(result.get("id") or "")
+                if media_type not in TMDB_MEDIA_TYPES or not result_id or not result_title(result):
+                    continue
+                if result_id in seen_ids:
+                    continue
+                seen_ids.add(result_id)
+                results.append(result)
         return results
 
     def download_bytes(self, file_path: str) -> bytes:

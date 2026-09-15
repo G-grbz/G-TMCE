@@ -7,6 +7,7 @@ from src.gtmce.core import (
     ExtractItem,
     extract_item_output_language,
     normalise_title_for_match,
+    parse_release_name,
     rebuild_extract_output_names,
     score_tmdb_result,
     tmdb_search_query_variants,
@@ -54,6 +55,25 @@ def test_tmdb_search_variants_try_unnumbered_first_installment_title():
     variants = tmdb_search_query_variants("Hep Yek 1")
 
     assert variants[:2] == ["Hep Yek 1", "Hep Yek"]
+
+
+def test_release_title_parser_preserves_unicode_and_drops_metadata_suffixes():
+    title, year = parse_release_name(
+        "Avtostopom.po.galaktike_title25_109min_tracks"
+    )
+    cyrillic_title, _ = parse_release_name("Автостопом.по.галактике_title25_109min")
+
+    assert (title, year) == ("Avtostopom po galaktike", "")
+    assert cyrillic_title == "Автостопом по галактике"
+    assert normalise_title_for_match(cyrillic_title) == normalise_title_for_match(
+        "Автостопом-по-галактике"
+    )
+
+
+def test_tmdb_search_variants_accept_dot_separated_foreign_titles():
+    assert "Avtostopom po galaktike" in tmdb_search_query_variants(
+        "Avtostopom.po.galaktike"
+    )
 
 
 def test_tmdb_score_uses_original_title_when_result_is_translated():
