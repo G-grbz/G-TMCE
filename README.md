@@ -113,9 +113,11 @@ Use the sun/moon button beside the interface-language selector to switch themes 
 **Runtime:**
 - Linux or Windows
 - Python 3.10+
-- PySide6 / Qt 6 (`>=6.8,<7`)
+- PySide6 / Qt 6 (`>=6.11.2,<7`)
 - Pillow (`>=12.3.0,<13`)
 - certifi (`>=2026.7.22,<2027`) for the bundled trusted CA certificate store
+- faster-whisper (`>=1.2.1,<2`) for local speech-to-subtitle generation
+- CTranslate2 (`>=4.0,<5`) for Whisper inference and GPU capability detection
 
 Install the runtime dependencies for a source checkout with:
 
@@ -585,3 +587,28 @@ The repository uses CI, CodeQL `security-extended`, Dependabot, and dependency a
 ## License
 
 [LICENSE](LICENSE)
+
+### Local audio-to-subtitle engine
+
+The **Adjust Audio / Ses Ayarla** window can create subtitles directly from each audio track.
+G-TMCE uses a local `faster-whisper`/CTranslate2 engine; audio is not uploaded to a transcription service.
+The track language is passed to the model explicitly (`tr` → Turkish, `en` → English, `de` → German, `fr` → French, etc.) and output is written next to the track as `*.generated.srt`.
+
+The default model is `turbo` (`large-v3-turbo`). It is downloaded on first use and cached outside the application bundle. Advanced overrides are available through `GTMCE_ASR_MODEL`, `GTMCE_ASR_MODEL_DIR`, and `GTMCE_ASR_DEVICE=auto|cpu|cuda`.
+
+Generated subtitles pass through a conservative hallucination-cleanup stage before long-gap recovery and again before the SRT is written. It removes subtitle-credit boilerplate (for example split `Altyazı M.K.`-style artifacts), detached punctuation/initial fragments, impossible multi-word micro-cues, and implausibly short creator/outro boilerplate while preserving ordinary dialogue. Cleanup counts and reasons are written to the ASR log.
+
+### ASR GPU runtime on Linux
+
+When the source installer detects an NVIDIA GPU on Linux x86-64, it installs
+`nvidia-cublas-cu12` and `nvidia-cudnn-cu12` into G-TMCE's private `vendor`
+directory and exposes those libraries only to the G-TMCE launcher. This keeps
+the host Python environment untouched while satisfying current faster-whisper /
+CTranslate2 CUDA runtime requirements. The first ASR model download is cached
+under `~/.cache/G-TMCE/models` and its progress is reported in the G-TMCE log.
+
+### Audio subtitle creation
+
+Clicking **Create Subtitle / Altyazı Oluştur** starts the local faster-whisper transcription directly; there is no subtitle-type selector. Generated output remains `*.generated.srt`.
+
+Normal dialogue transcription runs sensitive VAD rescue on subtitle gaps of 8 seconds or longer. The rescue pass still requires speech-like audio before invoking Whisper, so shorter genuine dialogue omissions can be recovered without blindly transcribing quiet film passages.

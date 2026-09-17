@@ -10,7 +10,6 @@ import math
 import mimetypes
 import os
 import platform
-import queue
 import re
 import secrets
 import shlex
@@ -21,12 +20,10 @@ import subprocess
 import sys
 import tarfile
 import threading
-import time
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
-import webbrowser
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, replace
@@ -149,7 +146,6 @@ def app_logo_path() -> Path:
     return bundled
 
 
-DEFAULT_TEMPLATE = bundled_resource_path("mkv.mtxcfg")
 APP_VERSION = read_app_version()
 LOGO_PATH = app_logo_path()
 # Compact defaults; the Qt window chooses a screen-relative size at runtime.
@@ -370,6 +366,21 @@ UI_TEXT = {
         "heading_audio_layout": "Layout",
         "heading_audio_volume": "Volume",
         "heading_audio_speed": "Audio FPS Sync",
+        "heading_audio_subtitle": "Subtitle",
+        "button_create_subtitle_from_audio": "Create Subtitle",
+        "button_recreate_subtitle_from_audio": "Recreate Subtitle",
+        "tooltip_subtitle_language_required": "Set a language for this audio track before creating subtitles.",
+        "dialog_overwrite_subtitle_title": "Replace Generated Subtitle",
+        "dialog_overwrite_subtitle_message": "{path} already exists. Recreate and replace it?",
+        "status_creating_subtitle": "Creating subtitle from audio...",
+        "status_creating_subtitle_from_audio": "Creating {language} subtitle from {name}...",
+        "log_audio_subtitle_ready": "Subtitle created from audio: {path}",
+        "error_asr_language_unknown": "Audio track language is unknown. Set a language before creating subtitles.",
+        "error_asr_language_unsupported": "Speech-to-text does not support the selected language: {language}",
+        "error_asr_dependency_missing": "Local subtitle engine is not installed. Install the G-TMCE ASR dependencies (faster-whisper).",
+        "error_asr_audio_missing": "Audio track not found: {path}",
+        "error_asr_failed": "Speech-to-text failed: {error}",
+        "error_asr_no_speech": "No speech could be transcribed from this audio track.",
         "button_apply_audio_adjust": "Apply",
         "button_apply_audio_to_all_episodes": "Apply Selected to All Episodes",
         "toast_audio_apply_all_success": "Applied settings to {tracks} matching audio tracks in {episodes} episodes.",
@@ -716,6 +727,21 @@ UI_TEXT = {
         "heading_audio_layout": "Layout",
         "heading_audio_volume": "Ses",
         "heading_audio_speed": "FPS Eşitle",
+        "heading_audio_subtitle": "Altyazı",
+        "button_create_subtitle_from_audio": "Altyazı Oluştur",
+        "button_recreate_subtitle_from_audio": "Altyazıyı Yenile",
+        "tooltip_subtitle_language_required": "Altyazı oluşturmadan önce bu ses parçasına bir dil atanmalı.",
+        "dialog_overwrite_subtitle_title": "Oluşturulan Altyazıyı Değiştir",
+        "dialog_overwrite_subtitle_message": "{path} zaten var. Yeniden oluşturup üzerine yazılsın mı?",
+        "status_creating_subtitle": "Sesten altyazı oluşturuluyor...",
+        "status_creating_subtitle_from_audio": "{name} sesinden {language} altyazı oluşturuluyor...",
+        "log_audio_subtitle_ready": "Sesten altyazı oluşturuldu: {path}",
+        "error_asr_language_unknown": "Ses parçasının dili bilinmiyor. Altyazı oluşturmadan önce bir dil ata.",
+        "error_asr_language_unsupported": "Sesten yazıya motoru seçili dili desteklemiyor: {language}",
+        "error_asr_dependency_missing": "Yerel altyazı motoru kurulu değil. G-TMCE ASR bağımlılıklarını (faster-whisper) yükle.",
+        "error_asr_audio_missing": "Ses parçası bulunamadı: {path}",
+        "error_asr_failed": "Sesten yazıya dönüştürme başarısız: {error}",
+        "error_asr_no_speech": "Bu ses parçasından yazıya dönüştürülebilecek konuşma bulunamadı.",
         "button_apply_audio_adjust": "Uygula",
         "button_apply_audio_to_all_episodes": "Seçilenleri Tüm Bölümlere Uygula",
         "toast_audio_apply_all_success": "Ayarlar {episodes} bölümdeki {tracks} eşleşen ses parçasına uygulandı.",

@@ -122,6 +122,11 @@ build_binary() {
     --hidden-import PySide6.QtGui \
     --hidden-import PySide6.QtWidgets \
     --collect-data certifi \
+    --collect-all faster_whisper \
+    --collect-all ctranslate2 \
+    --collect-all av \
+    --collect-all onnxruntime \
+    --collect-all huggingface_hub \
     "${add_data_args[@]}" \
     "$ENTRY_FILE"
 

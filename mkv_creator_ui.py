@@ -4,17 +4,15 @@ from __future__ import annotations
 import os
 import queue
 import re
-import shutil
 import subprocess
 import sys
 import threading
-import webbrowser
 import copy
 from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QLibraryInfo, QMimeData, QSignalBlocker, QSize, Qt, QTimer, QTranslator, QUrl
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QDrag, QFont, QIcon, QKeySequence, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QDrag, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -36,7 +34,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
-    QSpacerItem,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -49,6 +46,10 @@ from PySide6.QtWidgets import (
 from src.gtmce import core as _core
 from src.gtmce.core import *  # noqa: F401,F403
 from src.gtmce.controller import GTMCEControllerMixin
+from src.gtmce.transcription import (
+    generated_subtitle_path,
+    transcribe_audio_to_srt,
+)
 
 
 def load_saved_preferences() -> dict[str, str]:
@@ -323,6 +324,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.audio_adjust_presets_by_episode: dict[str, dict[str, dict[str, Any]]] = {}
         self.audio_adjust_skipped_unchanged_count = 0
         self.audio_adjust_episode_labels_by_dir: dict[str, str] = {}
+        self.audio_transcription_source: Path | None = None
         self.subtitle_window: QDialog | None = None
         self.subtitle_progress_bar: QProgressBar | None = None
         self.subtitle_results_tree: QTableWidget | None = None
@@ -2160,6 +2162,10 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.audio_adjust_apply_button=self._button("button_apply_audio_adjust", self.start_audio_adjust, primary=True); actions.addWidget(self.audio_adjust_apply_button); card_layout.addLayout(actions)
         self.update_audio_apply_all_button_state()
         self.sync_progress_widget(self.audio_adjust_progress_bar)
+        # If this dialog is being reopened during an active ASR job, immediately
+        # restore the active row as "İşi İptal Et" instead of presenting a stale
+        # "Altyazı Oluştur" action.
+        self.update_audio_transcription_buttons()
         dialog.finished.connect(lambda _r:self._clear_audio_refs()); dialog.show()
 
     def _build_audio_adjust_page(self, audio_items: list[Any]) -> tuple[QScrollArea, list[dict[str, Any]]]:
@@ -2167,7 +2173,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         rows_widget = QWidget(); grid = QGridLayout(rows_widget); grid.setContentsMargins(4,4,4,4); grid.setHorizontalSpacing(8); grid.setVerticalSpacing(9)
         grid.setAlignment(Qt.AlignTop)
         scroll.setWidget(rows_widget)
-        headings = ["", "heading_audio_file", "heading_audio_delta", "heading_audio_speed", "heading_audio_codec", "heading_audio_bitrate", "heading_audio_rate", "heading_audio_layout", "heading_audio_volume"]
+        headings = ["", "heading_audio_file", "heading_audio_delta", "heading_audio_speed", "heading_audio_codec", "heading_audio_bitrate", "heading_audio_rate", "heading_audio_layout", "heading_audio_volume", "heading_audio_subtitle"]
         for col,key in enumerate(headings):
             if not key: continue
             label = QLabel(); label.setObjectName("TableHeading"); self.localize_widget(label,key); grid.addWidget(label,0,col); self._audio_heading_labels.append((label,key))
@@ -2188,7 +2194,15 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             volume_host=QWidget(); vh=QHBoxLayout(volume_host); vh.setContentsMargins(0,0,0,0); slider=QSlider(Qt.Horizontal); slider.setRange(10,50); slider.setValue(10); value_label=QLabel("1.0x"); value_label.setMinimumWidth(42)
             slider.valueChanged.connect(lambda v,var=volume,lbl=value_label: (var.set(v/10.0), lbl.setText(f"{v/10.0:.1f}x")))
             vh.addWidget(slider,1); vh.addWidget(value_label); grid.addWidget(volume_host,r,8)
-            rows.append({"path":item.path,"language":track_language_value(item) or "und","selected":selected,"delta":delta,"codec":codec,"bitrate":bitrate,"sample_rate":rate,"layout":layout_var,"volume":volume,"volume_slider":slider,"volume_label":value_label,"speed":speed,"speed_values":speed_values,"defaults":defaults,"name_label":name})
+            language = track_language_value(item) or "und"
+            row_data = {"path":item.path,"language":language,"selected":selected,"delta":delta,"codec":codec,"bitrate":bitrate,"sample_rate":rate,"layout":layout_var,"volume":volume,"volume_slider":slider,"volume_label":value_label,"speed":speed,"speed_values":speed_values,"defaults":defaults,"name_label":name}
+            subtitle_button = self._button("button_create_subtitle_from_audio", lambda _checked=False, row=row_data: self.start_audio_transcription(row))
+            subtitle_button.setEnabled(language != "und")
+            if language == "und":
+                subtitle_button.setToolTip(self.tr("tooltip_subtitle_language_required"))
+            grid.addWidget(subtitle_button, r, 9)
+            row_data["subtitle_button"] = subtitle_button
+            rows.append(row_data)
         # Keep all headings and audio rows anchored to the top of the scroll viewport.
         # Any spare vertical room belongs below the final row instead of being spread
         # between the header and editors.
@@ -2440,6 +2454,120 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         )
         if started:
             self.update_audio_adjust_apply_button_text()
+
+    def start_audio_transcription(self, row: dict[str, Any]) -> None:
+        if self.worker is not None and self.worker.is_alive():
+            if self.current_operation == "audio_transcription":
+                self.cancel_current_operation()
+                self.update_audio_transcription_buttons()
+            else:
+                self.show_info(self.tr("dialog_in_progress_title"), self.tr("dialog_in_progress_message"))
+            return
+        source = Path(row["path"])
+        language = str(row.get("language") or "und")
+        try:
+            destination = generated_subtitle_path(source, language)
+        except UserVisibleError as exc:
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
+            return
+
+        if destination.exists():
+            answer = QMessageBox.question(
+                self.audio_adjust_window or self,
+                self.tr("dialog_overwrite_subtitle_title"),
+                self.tr("dialog_overwrite_subtitle_message", path=destination.name),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+        self.audio_adjust_current_var.set(
+            self.tr(
+                "status_creating_subtitle_from_audio",
+                name=source.name,
+                language=language,
+            )
+        )
+
+        def work() -> None:
+            output = transcribe_audio_to_srt(
+                source,
+                language,
+                output_path=destination,
+                cancel_event=self.cancel_event,
+                log=self.queue_log,
+            )
+            self.queue_log(self.tr("log_audio_subtitle_ready", path=output))
+            self.log_queue.put(("audio_subtitle_done", (source, output)))
+
+        self.audio_transcription_source = source
+        started = self.run_background(
+            work,
+            self.tr("status_creating_subtitle"),
+            operation="audio_transcription",
+        )
+        if started:
+            self.update_audio_transcription_buttons()
+
+    def update_audio_transcription_buttons(self) -> None:
+        running = (
+            self.current_operation == "audio_transcription"
+            and self.worker is not None
+            and self.worker.is_alive()
+        )
+        active_source = Path(str(getattr(self, "audio_transcription_source", "")))
+        cancelling = bool(running and self.cancel_event.is_set())
+        for row in getattr(self, "audio_adjust_rows", []):
+            button = row.get("subtitle_button")
+            if not isinstance(button, QPushButton):
+                continue
+            language = str(row.get("language") or "und")
+            source = Path(row["path"])
+            if running and source == active_source:
+                button.setText(
+                    self.tr("status_cancelling") if cancelling else self.tr("button_cancel_job")
+                )
+                button.setEnabled(not cancelling)
+                continue
+            if running:
+                button.setEnabled(False)
+                continue
+            if language == "und":
+                button.setText(self.tr("button_create_subtitle_from_audio"))
+                button.setEnabled(False)
+                continue
+            try:
+                destination = generated_subtitle_path(source, language)
+            except UserVisibleError:
+                button.setEnabled(False)
+                continue
+            button.setText(
+                self.tr("button_recreate_subtitle_from_audio")
+                if destination.exists()
+                else self.tr("button_create_subtitle_from_audio")
+            )
+            button.setEnabled(True)
+
+    def mark_audio_subtitle_done(self, source: Path, output: Path) -> None:
+        for row in self.audio_adjust_rows:
+            if Path(row["path"]) != source:
+                continue
+            button = row.get("subtitle_button")
+            if isinstance(button, QPushButton):
+                language = str(row.get("language") or "und")
+                try:
+                    normal_destination = generated_subtitle_path(source, language)
+                    button.setText(
+                        self.tr("button_recreate_subtitle_from_audio")
+                        if normal_destination.exists()
+                        else self.tr("button_create_subtitle_from_audio")
+                    )
+                except UserVisibleError:
+                    button.setText(self.tr("button_create_subtitle_from_audio"))
+                button.setToolTip(str(output))
+            break
+        self.audio_adjust_current_var.set(self.tr("log_audio_subtitle_ready", path=output))
 
     def _refresh_audio_headers(self) -> None:
         for label,key in getattr(self,"_audio_heading_labels",[]): label.setText(self.tr(key))
@@ -2937,9 +3065,18 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     # Busy/progress and worker queue
     # ------------------------------------------------------------------
     def set_busy(self,busy:bool,status:str|None=None)->None:
-        buttons=(self.scan_button,self.find_tmdb_button,self.tmdb_lookup_button,self.tmdb_search_action_button,self.download_button,self.subtitle_button,self.config_button,self.extract_scan_button,self.extract_toggle_button,self.extract_all_button,self.extract_button,self.batch_extract_button,self.batch_mux_button,self.third_party_button,self.subtitle_search_button,self.subtitle_download_button,self.subtitle_best_button)
+        # Audio transcription is started from the "Ses Ayarla" dialog. Keep the
+        # main Ses Ayarla button reachable while ASR is running so the user can
+        # close the dialog, reopen it, and still cancel the active job. All other
+        # long-running operations retain the normal global busy lock.
+        buttons=(self.find_tmdb_button,self.tmdb_lookup_button,self.tmdb_search_action_button,self.download_button,self.subtitle_button,self.config_button,self.extract_scan_button,self.extract_toggle_button,self.extract_all_button,self.extract_button,self.batch_extract_button,self.batch_mux_button,self.third_party_button,self.subtitle_search_button,self.subtitle_download_button,self.subtitle_best_button)
         for button in buttons:
             if button is not None: button.setEnabled(not busy)
+        if self.scan_button is not None:
+            keep_audio_adjust_reachable = bool(
+                busy and self.current_operation == "audio_transcription"
+            )
+            self.scan_button.setEnabled((not busy) or keep_audio_adjust_reachable)
         self.update_subtitle_search_button_text()
         if self.mux_button is not None:
             if busy and self.current_operation=="mux": self.mux_button.setEnabled(True); self.mux_button.setText(self.tr("button_cancel_job"))
@@ -3011,13 +3148,20 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 message=str(value);self.append_log(self.tr("error_prefix",message=message));self.set_progress_error(message);self.show_error(self.tr("dialog_error_title"),message)
             elif kind=="busy":
                 self.set_busy(bool(value));
-                if not bool(value):self.update_audio_adjust_apply_button_text()
+                self.update_audio_transcription_buttons()
+                if not bool(value):
+                    self.update_audio_adjust_apply_button_text()
+                    self.audio_transcription_source = None
             elif kind=="app_update_available" and isinstance(value,dict):self.show_app_update_available(value)
             elif kind=="close_audio_adjust":self.close_audio_adjust_window()
             elif kind=="audio_adjust_done":
                 try: source, output = value
                 except (TypeError, ValueError): continue
                 self.mark_audio_adjust_done(Path(str(source)), Path(str(output)))
+            elif kind=="audio_subtitle_done":
+                try: source, output = value
+                except (TypeError, ValueError): continue
+                self.mark_audio_subtitle_done(Path(str(source)), Path(str(output)))
             elif kind=="set_audio_adjust_current":self.audio_adjust_current_var.set(str(value))
             elif kind=="close_extract":self.close_extract_window()
             elif kind=="set_output":self.output_var.set(str(self.output_path_with_current_name_extra(Path(str(value)))))

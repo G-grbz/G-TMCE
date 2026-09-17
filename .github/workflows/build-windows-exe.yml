@@ -14,12 +14,10 @@ on:
       - "mkv_creator_ui.py"
       - "src/**"
       - "scripts/build_windows_exe.py"
-      - "G-TMCE.spec"
       - "requirements.txt"
       - "requirements-build.txt"
       - "VERSION"
       - "assets/**"
-      - "mkv.mtxcfg"
       - ".github/workflows/build-windows-exe.yml"
 
 permissions:

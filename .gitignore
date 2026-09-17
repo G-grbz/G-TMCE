@@ -16,6 +16,7 @@ venv/
 # Build outputs
 build/
 dist/
+*.spec
 *.spec.bak
 G-TMCE.AppDir/
 *.AppImage

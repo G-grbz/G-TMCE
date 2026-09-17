@@ -77,6 +77,16 @@ def main() -> int:
         APP_NAME,
         "--collect-data",
         "certifi",
+        "--collect-all",
+        "faster_whisper",
+        "--collect-all",
+        "ctranslate2",
+        "--collect-all",
+        "av",
+        "--collect-all",
+        "onnxruntime",
+        "--collect-all",
+        "huggingface_hub",
     ]
 
     logo = root / "assets" / "logo.png"
@@ -95,10 +105,6 @@ def main() -> int:
     icon = create_windows_icon(root)
     if icon is not None:
         command += ["--icon", str(icon)]
-
-    template = root / "mkv.mtxcfg"
-    if template.exists():
-        command += ["--add-data", f"{template}{os.pathsep}."]
 
     version_file = root / "VERSION"
     if version_file.exists():
