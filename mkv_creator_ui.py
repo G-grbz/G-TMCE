@@ -315,6 +315,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.audio_adjust_window: QDialog | None = None
         self.audio_adjust_apply_button: QPushButton | None = None
         self.audio_adjust_apply_all_button: QPushButton | None = None
+        self.audio_adjust_restore_button: QPushButton | None = None
         self.audio_adjust_progress_bar: QProgressBar | None = None
         self.audio_adjust_rows: list[dict[str, Any]] = []
         self.audio_adjust_rows_by_episode: dict[str, list[dict[str, Any]]] = {}
@@ -324,6 +325,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.audio_adjust_presets_by_episode: dict[str, dict[str, dict[str, Any]]] = {}
         self.audio_adjust_skipped_unchanged_count = 0
         self.audio_adjust_episode_labels_by_dir: dict[str, str] = {}
+        self.audio_adjust_delta_session_key = ""
+        self.audio_adjust_delta_by_track: dict[str, str] = {}
         self.audio_transcription_source: Path | None = None
         self.subtitle_window: QDialog | None = None
         self.subtitle_progress_bar: QProgressBar | None = None
@@ -418,6 +421,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.api_key_var.trace_add("write", self.on_api_key_changed)
         self.output_name_extra_var.trace_add("write", self.on_output_name_extra_changed)
         self.extract_source_var.trace_add("write", self.on_extract_source_changed)
+        self.folder_var.trace_add("write", self.on_audio_adjust_folder_changed)
         self.update_extract_source_mode()
 
         self._queue_timer = QTimer(self)
@@ -1163,7 +1167,16 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             self.output_var.set(path)
 
     def on_extract_source_changed(self, *_args: Any) -> None:
+        self.reset_audio_adjust_delta_session()
         self.update_extract_source_mode()
+
+    def on_audio_adjust_folder_changed(self, *_args: Any) -> None:
+        """A different extracted track folder starts a fresh adjust session."""
+        self.reset_audio_adjust_delta_session()
+
+    def reset_audio_adjust_delta_session(self) -> None:
+        self.audio_adjust_delta_session_key = ""
+        self.audio_adjust_delta_by_track = {}
 
     def update_extract_source_mode(self) -> None:
         """Keep the main Extract action aligned with the selected source type.
@@ -2088,6 +2101,24 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     # ------------------------------------------------------------------
     # Audio adjust dialog
     # ------------------------------------------------------------------
+    def begin_audio_adjust_delta_session(self, settings: AppSettings, batch_mode: bool) -> None:
+        """Keep typed delays only while the current mux/extract session is active."""
+        source_raw = self.extract_source_var.get().strip()
+        source = Path(source_raw).expanduser() if source_raw else None
+        if batch_mode and source is not None and source.is_dir():
+            session_root = source.resolve()
+        else:
+            session_root = settings.media_dir.resolve()
+        session_key = f"{'batch' if batch_mode else 'tracks'}:{session_root}"
+        if self.audio_adjust_delta_session_key != session_key:
+            self.audio_adjust_delta_session_key = session_key
+            self.audio_adjust_delta_by_track = {}
+
+    def remember_audio_adjust_delta(self, path: Path, value: Any) -> None:
+        if not self.audio_adjust_delta_session_key:
+            return
+        self.audio_adjust_delta_by_track[path_identity_key(path)] = str(value)
+
     def open_audio_adjust_window(self) -> None:
         try:
             settings = self.collect_settings()
@@ -2136,6 +2167,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.audio_adjust_current_var.set("")
         self.audio_adjust_groups = groups
         self.audio_adjust_batch_mode = batch_audio_mode
+        self.begin_audio_adjust_delta_session(settings, batch_audio_mode)
         self._audio_heading_labels: list[tuple[QLabel,str]] = []
         if len(groups) == 1:
             label, audio_items, key = groups[0]
@@ -2159,6 +2191,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.audio_adjust_apply_all_button = self._button("button_apply_audio_to_all_episodes", self.apply_audio_settings_to_all_episodes)
         self.audio_adjust_apply_all_button.setVisible(batch_audio_mode)
         actions.addWidget(self.audio_adjust_apply_all_button)
+        self.audio_adjust_restore_button = self._button("button_restore_audio_original", self.restore_selected_audio_originals)
+        actions.addWidget(self.audio_adjust_restore_button)
         self.audio_adjust_apply_button=self._button("button_apply_audio_adjust", self.start_audio_adjust, primary=True); actions.addWidget(self.audio_adjust_apply_button); card_layout.addLayout(actions)
         self.update_audio_apply_all_button_state()
         self.sync_progress_widget(self.audio_adjust_progress_bar)
@@ -2183,7 +2217,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         speed_values = [("auto", self.tr("speed_factor_auto"))] + [(key,self.tr(f"speed_factor_{key}")) for key in AUDIO_SPEED_FACTORS if key != "auto"]
         for r,item in enumerate(audio_items, start=1):
             defaults = audio_probe_defaults(item.path)
-            selected = ValueVar(False); delta = ValueVar(""); codec = ValueVar(defaults["codec"] if defaults["codec"] in SUPPORTED_AUDIO_ENCODERS else "eac3")
+            selected = ValueVar(False); delta = ValueVar(self.audio_adjust_delta_by_track.get(path_identity_key(item.path), "")); codec = ValueVar(defaults["codec"] if defaults["codec"] in SUPPORTED_AUDIO_ENCODERS else "eac3")
+            delta.bind(lambda value, path=item.path: self.remember_audio_adjust_delta(path, value))
             bitrate=ValueVar(defaults["bitrate"]); rate=ValueVar(defaults["sample_rate"]); layout_var=ValueVar(defaults["channel_layout"]); volume=ValueVar(1.0); speed=ValueVar(speed_values[0][1])
             check=self._bind_check(selected,QCheckBox()); check.toggled.connect(self.update_audio_apply_all_button_state); grid.addWidget(check,r,0)
             name=QLabel(item.path.name); name.setObjectName("FieldLabel"); grid.addWidget(name,r,1)
@@ -2281,6 +2316,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             if matches:
                 matched_tracks += len(matches)
                 matched_episodes.add(key)
+                for item in matches:
+                    self.remember_audio_adjust_delta(item.path, presets[track_language_value(item) or "und"]["delta"])
             episode_presets = self.audio_adjust_presets_by_episode.setdefault(key, {})
             episode_presets.update(presets)
             for row in self.audio_adjust_rows_by_episode.get(key, []):
@@ -2299,6 +2336,65 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             ),
             success=True,
         )
+
+    def restore_selected_audio_originals(self) -> None:
+        if self.worker is not None and self.worker.is_alive():
+            self.show_info(
+                self.tr("dialog_in_progress_title"),
+                self.tr("dialog_in_progress_message"),
+            )
+            return
+        rows = [row for row in self._current_audio_adjust_rows() if row["selected"].get()]
+        if not rows:
+            self.show_error(self.tr("dialog_missing_info"), self.tr("error_audio_restore_none"))
+            return
+
+        restored = 0
+        failures: list[str] = []
+        for row in rows:
+            current_path = Path(row["path"])
+            try:
+                original = restore_audio_adjust_original(current_path)
+            except UserVisibleError as exc:
+                failures.append(str(exc))
+                continue
+            defaults = audio_probe_defaults(original)
+            row["path"] = original
+            row["defaults"] = defaults
+            row["delta"].set("")
+            row["codec"].set(defaults["codec"] if defaults["codec"] in SUPPORTED_AUDIO_ENCODERS else "eac3")
+            row["bitrate"].set(defaults["bitrate"])
+            row["sample_rate"].set(defaults["sample_rate"])
+            row["layout"].set(defaults["channel_layout"])
+            row["volume"].set(1.0)
+            slider = row.get("volume_slider")
+            if isinstance(slider, QSlider):
+                slider.setValue(10)
+            speed_values = row.get("speed_values", [])
+            if speed_values:
+                row["speed"].set(speed_values[0][1])
+            row["selected"].set(False)
+            label = row.get("name_label")
+            if isinstance(label, QLabel):
+                label.setText(original.name)
+            subtitle_button = row.get("subtitle_button")
+            if isinstance(subtitle_button, QPushButton):
+                language = str(row.get("language") or "und")
+                if language != "und":
+                    subtitle_button.setText(
+                        self.tr("button_recreate_subtitle_from_audio")
+                        if generated_subtitle_path(original, language).exists()
+                        else self.tr("button_create_subtitle_from_audio")
+                    )
+                    subtitle_button.setToolTip("")
+            restored += 1
+            self.queue_log(self.tr("log_audio_adjust_ready", name=original.name))
+
+        self.update_audio_apply_all_button_state()
+        if restored:
+            self.show_toast(self.tr("toast_audio_restore_success", count=restored), success=True)
+        if failures:
+            self.show_error(self.tr("dialog_missing_info"), "\n".join(failures))
 
     def _audio_adjust_task_from_preset(
         self,
@@ -2591,7 +2687,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
 
     def _clear_audio_refs(self) -> None:
         if self.audio_adjust_progress_bar in self._progress_bars: self._progress_bars.remove(self.audio_adjust_progress_bar)
-        self.audio_adjust_window=None; self.audio_adjust_apply_button=None; self.audio_adjust_apply_all_button=None; self.audio_adjust_progress_bar=None; self.audio_adjust_rows=[]; self.audio_adjust_rows_by_episode={}; self.audio_adjust_tabs=None; self.audio_adjust_groups=[]; self.audio_adjust_batch_mode=False; self.audio_adjust_presets_by_episode={}; self.audio_adjust_skipped_unchanged_count=0; self.audio_adjust_episode_labels_by_dir={}; self.audio_adjust_current_var.set(""); self._toast_widget=None
+        self.audio_adjust_window=None; self.audio_adjust_apply_button=None; self.audio_adjust_apply_all_button=None; self.audio_adjust_restore_button=None; self.audio_adjust_progress_bar=None; self.audio_adjust_rows=[]; self.audio_adjust_rows_by_episode={}; self.audio_adjust_tabs=None; self.audio_adjust_groups=[]; self.audio_adjust_batch_mode=False; self.audio_adjust_presets_by_episode={}; self.audio_adjust_skipped_unchanged_count=0; self.audio_adjust_episode_labels_by_dir={}; self.audio_adjust_current_var.set(""); self._toast_widget=None
 
     def update_audio_adjust_apply_button_text(self) -> None:
         if self.audio_adjust_apply_button is None: return

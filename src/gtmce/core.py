@@ -347,7 +347,7 @@ UI_TEXT = {
         "button_scan_tracks": "Adjust Audio",
         "window_audio_adjust_title": "Audio Adjust",
         "window_mux_tracks_title": "Add Tracks",
-        "audio_adjust_hint": "Duration (ms): Enter a value in milliseconds. Positive (+) values create a new audio file with the specified amount of silence added to the beginning while preserving the original codec and channel layout, effectively delaying the audio. Negative (-) values trim the specified amount from the beginning of the audio track, effectively advancing the audio. Leave blank or set to 0 if you only want to change codec or output settings.\n\nVolume: 1x preserves the original volume level. Values between 1.1x and 5x increase the audio volume. Higher values may introduce distortion/clipping and should be used with caution.",
+        "audio_adjust_hint": "Duration (ms): Enter a value in milliseconds. Positive (+) values delay the audio by adding silence at the beginning; negative (-) values advance it by trimming from the beginning. The first Apply keeps a reusable original backup. Every later adjustment is rebuilt from that original, so you can safely change +5000 to +4000 without manually renaming files. Positive delays encode only a short silence segment and automatically mux it with the untouched original as one track, avoiding a full-audio re-encode. Select a track and use Restore Original to discard its generated version.\n\nVolume: 1x preserves the original volume level. Values between 1.1x and 5x increase the audio volume. Higher values may introduce distortion/clipping and should be used with caution. Verify final sync after creating the MKV.",
         "mux_tracks_drop_hint": "Drag and drop files to add tracks, chapters, tags, or artwork",
         "button_add_tracks": "Add Files",
         "button_include_track": "Include",
@@ -383,10 +383,14 @@ UI_TEXT = {
         "error_asr_no_speech": "No speech could be transcribed from this audio track.",
         "button_apply_audio_adjust": "Apply",
         "button_apply_audio_to_all_episodes": "Apply Selected to All Episodes",
+        "button_restore_audio_original": "Restore Original",
         "toast_audio_apply_all_success": "Applied settings to {tracks} matching audio tracks in {episodes} episodes.",
         "toast_audio_apply_all_error": "No matching selected audio settings were found to apply.",
+        "toast_audio_restore_success": "Restored the original audio for {count} selected track(s).",
         "error_ffmpeg_missing": "ffmpeg is not available in 3rdParty.",
         "error_audio_adjust_none": "Select at least one audio track and enter milliseconds or change codec/output settings.",
+        "error_audio_restore_none": "Select at least one audio track with a retained original to restore.",
+        "error_audio_restore_missing": "No retained original audio was found for: {name}",
         "info_audio_adjust_no_changes": "All selected audio tracks already have the requested settings.",
         "error_audio_adjust_numeric": "Milliseconds must be numeric, for example +1 or -967.",
         "error_audio_codec_unsupported": "Unsupported audio codec: {codec}",
@@ -708,7 +712,7 @@ UI_TEXT = {
         "button_scan_tracks": "Ses Ayarla",
         "window_audio_adjust_title": "Ses Ayarla",
         "window_mux_tracks_title": "Parça Ekle",
-        "audio_adjust_hint": "Süre (ms): Milisaniye cinsinden girilir. Pozitif (+) değerler, seçilen ses parçasının kodek ve kanal yapısını koruyarak başına belirtilen süre kadar sessizlik eklenmiş yeni bir ses dosyası oluşturur. Negatif (-) değerler ise ses parçasının başından belirtilen süreyi keserek sesi öne alır. Yalnızca kodek veya çıktı ayarlarını değiştirecekseniz boş bırakabilir ya da 0 girebilirsiniz.\n\nSes: 1x orijinal ses düzeyidir. 1.1x ile 5x arasındaki değerler sesi yükseltir. Yüksek değerlerde ses bozulması (distortion/clipping) oluşabileceğinden dikkatli kullanılması önerilir.",
+        "audio_adjust_hint": "Süre (ms): Milisaniye cinsinden girilir. Pozitif (+) değerler sesi başına sessizlik ekleyerek geciktirir; negatif (-) değerler ise baştan keserek öne alır. İlk Uygula işlemi tekrar kullanılabilir bir orijinal yedek saklar. Sonraki her ayar bu orijinalden yeniden üretilir; yani +5000 değerini dosya adı değiştirmeden güvenle +4000 yapabilirsin. Pozitif gecikmede tüm ses yeniden kodlanmaz: sadece kısa sessizlik parçası oluşturulur ve MKV yapılırken dokunulmamış orijinal sesle tek parça gibi otomatik birleştirilir. Oluşan sürümü silip orijinale dönmek için parçayı seçip Orijinali Geri Yükle'ye bas.\n\nSes: 1x orijinal ses düzeyidir. 1.1x ile 5x arasındaki değerler sesi yükseltir. Yüksek değerlerde ses bozulması (distortion/clipping) oluşabileceğinden dikkatli kullanılması önerilir. Son eşitlemeyi MKV oluştuktan sonra kontrol et.",
         "mux_tracks_drop_hint": "Parça, chapter, tag veya görsel eklemek için dosyaları sürükle & bırak",
         "button_add_tracks": "Dosya Ekle",
         "button_include_track": "Ekle",
@@ -744,10 +748,14 @@ UI_TEXT = {
         "error_asr_no_speech": "Bu ses parçasından yazıya dönüştürülebilecek konuşma bulunamadı.",
         "button_apply_audio_adjust": "Uygula",
         "button_apply_audio_to_all_episodes": "Seçilenleri Tüm Bölümlere Uygula",
+        "button_restore_audio_original": "Orijinali Geri Yükle",
         "toast_audio_apply_all_success": "Ayarlar {episodes} bölümdeki {tracks} eşleşen ses parçasına uygulandı.",
         "toast_audio_apply_all_error": "Uygulanacak eşleşen seçili ses ayarı bulunamadı.",
+        "toast_audio_restore_success": "{count} seçili parça için orijinal ses geri yüklendi.",
         "error_ffmpeg_missing": "ffmpeg 3rdParty içinde kullanıma hazır değil.",
         "error_audio_adjust_none": "En az bir ses parçası seç ve milisaniye gir ya da kodek/çıkış ayarını değiştir.",
+        "error_audio_restore_none": "Geri yüklenecek orijinal yedeği olan en az bir ses parçası seç.",
+        "error_audio_restore_missing": "Bu parça için saklanmış orijinal ses bulunamadı: {name}",
         "info_audio_adjust_no_changes": "Seçili ses parçalarının tamamı zaten istenen ayarlarda.",
         "error_audio_adjust_numeric": "Milisaniye sayısal olmalı, örnek +1 veya -967.",
         "error_audio_codec_unsupported": "Desteklenmeyen ses kodeki: {codec}",
@@ -4674,7 +4682,62 @@ def is_supported_mux_add_path(path: Path) -> bool:
 
 
 def is_media_track_path(path: Path) -> bool:
+    # ``name.source.ext`` is the retained original created by Audio Adjust.
+    # It is deliberately a playable file, but must never be offered as a
+    # second mux track beside its generated counterpart.
+    if path.stem.endswith(".source"):
+        return False
     return path.is_file() and media_kind_from_path(path) is not None
+
+
+def audio_adjust_delay_manifest_path(path: Path) -> Path:
+    """Path of the small manifest that joins a fast delayed-audio pair."""
+    return path.with_name(f"{path.name}.gtmce-delay.json")
+
+
+def read_audio_adjust_delay_append_path(path: Path) -> Path | None:
+    """Return the managed append source for a delayed audio track, if any."""
+    manifest = audio_adjust_delay_manifest_path(path)
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        append_name = str(payload.get("append") or "")
+    except (OSError, ValueError, TypeError):
+        return None
+    if not append_name or Path(append_name).name != append_name:
+        return None
+    append_path = path.parent / append_name
+    if not append_path.is_file() or media_kind_from_path(append_path) != "audio":
+        return None
+    return append_path
+
+
+def write_audio_adjust_delay_manifest(path: Path, append_path: Path, delta_seconds: float) -> None:
+    """Atomically record the append source used to preserve a positive delay."""
+    manifest = audio_adjust_delay_manifest_path(path)
+    temporary = manifest.with_name(f".{manifest.name}.tmp")
+    payload = {
+        "version": 1,
+        "append": append_path.name,
+        "delay_ms": round(delta_seconds * 1000),
+    }
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(manifest)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise UserVisibleError(ui_text("error_file_prepare_failed", name=manifest.name, error=exc)) from exc
+
+
+def remove_audio_adjust_delay_manifest(path: Path) -> None:
+    try:
+        audio_adjust_delay_manifest_path(path).unlink(missing_ok=True)
+    except OSError as exc:
+        raise UserVisibleError(
+            ui_text("error_file_prepare_failed", name=path.name, error=exc)
+        ) from exc
 
 
 def discover_media_track_paths(media_dir: Path) -> list[Path]:
@@ -4723,6 +4786,18 @@ def discover_media_track_paths_with_appends(
         )
         append_paths_by_base[base_name] = ordered_parts
         append_names.update(path.name.lower() for path in ordered_parts)
+
+    # Positive delays are stored as a tiny encoded-silence file plus the
+    # untouched source audio. The manifest makes that pair one logical track
+    # for every future MKV build, without re-encoding the full audio stream.
+    for path in paths:
+        if media_kind_from_path(path) != "audio":
+            continue
+        managed_append = read_audio_adjust_delay_append_path(path)
+        if managed_append is None:
+            continue
+        existing = append_paths_by_base.get(path.name.lower(), ())
+        append_paths_by_base[path.name.lower()] = (managed_append, *existing)
 
     root_paths = [path for path in paths if path.name.lower() not in append_names]
     return root_paths, append_paths_by_base, append_names
@@ -8392,22 +8467,123 @@ def parse_milliseconds_delta(value: str) -> float:
     return float(raw) / 1000
 
 
-def dedupe_sidecar_path(path: Path, marker: str) -> Path:
-    candidate = path.with_name(f"{path.name}.{marker}")
-    counter = 2
-    while candidate.exists():
-        candidate = path.with_name(f"{path.name}.{marker}{counter}")
-        counter += 1
-    return candidate
+def audio_adjust_backup_path(path: Path) -> Path:
+    """Return the stable, playable original-audio backup path.
+
+    Keeping the original extension is important: FFmpeg can determine the
+    input format without guessing, and the backup remains understandable when
+    inspected in a file manager (``tur.source.ac3``).
+    """
+    return path.with_name(f"{path.stem}.source{path.suffix}")
 
 
-def numbered_append_path(path: Path) -> Path:
-    candidate = path.with_name(f"{path.stem}.1{path.suffix}")
-    counter = 2
-    while candidate.exists():
-        candidate = path.with_name(f"{path.stem}.{counter}{path.suffix}")
-        counter += 1
-    return candidate
+def find_audio_adjust_source_backup(path: Path) -> Path | None:
+    """Find the original retained for an adjusted track.
+
+    Also accepts the old ``tur.ac3.source`` naming so existing folders remain
+    recoverable after the reversible adjustment workflow was introduced.
+    """
+    modern = audio_adjust_backup_path(path)
+    legacy = path.with_name(f"{path.name}.source")
+    for candidate in (modern, legacy):
+        if candidate.is_file():
+            return candidate
+
+    modern_prefix = f"{path.stem}.source."
+    legacy_prefix = f"{path.name}.source"
+    try:
+        candidates = sorted(path.parent.iterdir(), key=lambda item: item.name.casefold())
+    except OSError:
+        return None
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        if candidate.name.startswith(modern_prefix) or candidate.name.startswith(legacy_prefix):
+            return candidate
+    return None
+
+
+def audio_adjust_original_path(backup_path: Path) -> Path:
+    """Derive the original track name from modern or legacy backup names."""
+    if backup_path.stem.endswith(".source"):
+        return backup_path.with_name(f"{backup_path.stem[:-7]}{backup_path.suffix}")
+    legacy_match = re.fullmatch(r"(.+)\.source\d*", backup_path.name)
+    if legacy_match:
+        return backup_path.with_name(legacy_match.group(1))
+    raise UserVisibleError(ui_text("error_audio_restore_missing", name=backup_path.name))
+
+
+def prepare_audio_adjust_source(path: Path) -> tuple[Path, bool]:
+    """Return the preserved original, creating it once when needed."""
+    backup = find_audio_adjust_source_backup(path)
+    if backup is not None:
+        return backup, False
+    if not path.is_file():
+        raise UserVisibleError(ui_text("error_asr_audio_missing", path=path))
+    backup = audio_adjust_backup_path(path)
+    try:
+        path.rename(backup)
+    except OSError as exc:
+        raise UserVisibleError(ui_text("error_file_prepare_failed", name=path.name, error=exc)) from exc
+    return backup, True
+
+
+def upgrade_audio_adjust_backup_path(backup_path: Path) -> Path:
+    """Give legacy ``track.ext.source`` backups a usable media extension."""
+    if backup_path.stem.endswith(".source"):
+        return backup_path
+    original = audio_adjust_original_path(backup_path)
+    modern = audio_adjust_backup_path(original)
+    if modern.exists():
+        return backup_path
+    try:
+        backup_path.rename(modern)
+    except OSError:
+        return backup_path
+    return modern
+
+
+def legacy_audio_adjust_append_paths(path: Path) -> list[Path]:
+    """Find the numbered parts created by the pre-reversible delay workflow."""
+    pattern = re.compile(rf"{re.escape(path.stem)}\.([1-9]\d*)$")
+    try:
+        candidates = list(path.parent.iterdir())
+    except OSError:
+        return []
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.is_file()
+        and candidate.suffix.lower() in AUDIO_EXTENSIONS
+        and pattern.fullmatch(candidate.stem) is not None
+    ]
+
+
+def restore_audio_adjust_original(path: Path) -> Path:
+    """Discard one generated version and put its retained original back."""
+    backup = find_audio_adjust_source_backup(path)
+    if backup is None:
+        raise UserVisibleError(ui_text("error_audio_restore_missing", name=path.name))
+    original = audio_adjust_original_path(backup)
+    managed_append = read_audio_adjust_delay_append_path(path)
+    if original.exists() and original != path:
+        raise UserVisibleError(ui_text("error_output_exists_choose", name=original.name))
+    try:
+        if path.exists() and path != backup:
+            path.unlink()
+        if managed_append is not None and managed_append != backup:
+            managed_append.unlink(missing_ok=True)
+        remove_audio_adjust_delay_manifest(path)
+        # Old positive delays consisted of ``track.ext`` (silence) plus
+        # ``track.1.ext`` (audio). A legacy sidecar identifies that layout,
+        # so restore can safely clear those obsolete generated parts too.
+        if re.fullmatch(r".+\.source\d*", backup.name):
+            for append_path in legacy_audio_adjust_append_paths(path):
+                append_path.unlink()
+        backup.rename(original)
+    except OSError as exc:
+        raise UserVisibleError(ui_text("error_file_prepare_failed", name=original.name, error=exc)) from exc
+    return original
 
 
 def channel_layout_from_channels(channels: int) -> str:
@@ -8669,7 +8845,7 @@ def ffmpeg_audio_output_args(task: AudioAdjustTask) -> list[str]:
     return args
 
 
-def ffmpeg_audio_filter_args(task: AudioAdjustTask) -> list[str]:
+def ffmpeg_audio_filter_chain(task: AudioAdjustTask) -> list[str]:
     filters = []
     volume = normalise_audio_volume_multiplier(task.volume_multiplier)
     if volume != 1:
@@ -8697,6 +8873,11 @@ def ffmpeg_audio_filter_args(task: AudioAdjustTask) -> list[str]:
         else:
             filters.append(f"atempo={speed:.6f}")
 
+    return filters
+
+
+def ffmpeg_audio_filter_args(task: AudioAdjustTask) -> list[str]:
+    filters = ffmpeg_audio_filter_chain(task)
     if not filters:
         return []
     return ["-filter:a", ",".join(filters)]
@@ -8769,40 +8950,6 @@ def run_cancellable_logged_process(
         raise UserVisibleError(ui_text("error_ffmpeg_exit", code=return_code))
 
 
-def cleanup_failed_audio_adjust(
-    original_path: Path,
-    restore_path: Path | None,
-    generated_paths: list[Path],
-    log: Callable[[str], None],
-) -> None:
-    seen: set[Path] = set()
-    for generated_path in generated_paths:
-        if restore_path is not None and generated_path == restore_path:
-            continue
-        if generated_path in seen:
-            continue
-        seen.add(generated_path)
-        if not generated_path.exists():
-            continue
-        try:
-            generated_path.unlink()
-        except OSError as exc:
-            log(ui_text("error_output_delete_failed", name=generated_path.name, error=exc))
-
-    if restore_path is None or not restore_path.exists():
-        return
-    if original_path.exists():
-        try:
-            original_path.unlink()
-        except OSError as exc:
-            log(ui_text("error_output_delete_failed", name=original_path.name, error=exc))
-            return
-    try:
-        restore_path.rename(original_path)
-    except OSError as exc:
-        log(ui_text("error_file_prepare_failed", name=original_path.name, error=exc))
-
-
 def run_audio_adjust_task(
     task: AudioAdjustTask,
     log: Callable[[str], None],
@@ -8816,26 +8963,41 @@ def run_audio_adjust_task(
     output_suffix = AUDIO_OUTPUT_SUFFIXES.get(task.codec, task.path.suffix)
     target = task.path.with_suffix(output_suffix)
     needs_reencode = audio_adjust_requires_reencode(task)
-    restore_path: Path | None = None
-    generated_paths: list[Path] = []
+    temporary_target = target.with_name(f".{target.stem}.gtmce-adjust{target.suffix}")
+    temporary_append: Path | None = None
+    managed_append: Path | None = None
+    backup_path: Path | None = None
+    created_backup = False
+    previous_managed_append = read_audio_adjust_delay_append_path(task.path)
 
     if target != task.path and target.exists():
         raise UserVisibleError(ui_text("error_output_exists_choose", name=target.name))
 
     try:
+        if temporary_target.exists():
+            temporary_target.unlink()
+        backup_path, created_backup = prepare_audio_adjust_source(task.path)
+        backup_path = upgrade_audio_adjust_backup_path(backup_path)
         if task.delta_seconds > 0:
-            source_path = dedupe_sidecar_path(task.path, "source")
-            task.path.rename(source_path)
-            restore_path = source_path
-
-            original_path = numbered_append_path(target)
+            lavfi = f"anullsrc=channel_layout={task.channel_layout}:sample_rate={task.sample_rate}"
             if needs_reencode:
-                generated_paths.append(original_path)
-                encode_original_args = [
+                managed_append = target.with_name(
+                    f"{target.stem}.delay-source{target.suffix}"
+                )
+                temporary_append = managed_append.with_name(
+                    f".{managed_append.stem}.gtmce-adjust{managed_append.suffix}"
+                )
+                if temporary_append.exists():
+                    temporary_append.unlink()
+                if managed_append.exists() and managed_append != previous_managed_append:
+                    raise UserVisibleError(
+                        ui_text("error_output_exists_choose", name=managed_append.name)
+                    )
+                source_args = [
                     ffmpeg,
                     "-y",
                     "-i",
-                    str(source_path),
+                    str(backup_path),
                     "-map",
                     "0:a:0",
                     "-vn",
@@ -8843,45 +9005,43 @@ def run_audio_adjust_task(
                     "-dn",
                     *ffmpeg_audio_filter_args(task),
                     *ffmpeg_audio_output_args(task),
-                    str(original_path),
+                    str(temporary_append),
                 ]
                 run_cancellable_logged_process(
-                    encode_original_args,
+                    source_args,
                     log,
                     cancel_event=cancel_event,
                     register_process=register_process,
                     unregister_process=unregister_process,
                 )
             else:
-                source_path.rename(original_path)
-                restore_path = original_path
-
-            generated_paths.append(target)
-            lavfi = f"anullsrc=channel_layout={task.channel_layout}:sample_rate={task.sample_rate}"
-            silence_args = [
+                # No conversion, speed, or volume change: only encode the
+                # short silence segment. The full original stream stays
+                # untouched and is appended during muxing.
+                managed_append = backup_path
+            delay_args = [
                 ffmpeg,
                 "-y",
                 "-f",
                 "lavfi",
-                "-i",
-                lavfi,
-                *ffmpeg_audio_output_args(task),
                 "-t",
                 f"{task.delta_seconds:.6f}".rstrip("0").rstrip("."),
-                str(target),
+                "-i",
+                lavfi,
+                "-vn",
+                "-sn",
+                "-dn",
+                *ffmpeg_audio_output_args(task),
+                str(temporary_target),
             ]
             run_cancellable_logged_process(
-                silence_args,
+                delay_args,
                 log,
                 cancel_event=cancel_event,
                 register_process=register_process,
                 unregister_process=unregister_process,
             )
         elif task.delta_seconds < 0:
-            backup_path = dedupe_sidecar_path(task.path, "source")
-            task.path.rename(backup_path)
-            restore_path = backup_path
-            generated_paths.append(target)
             trim_args = [
                 ffmpeg,
                 "-y",
@@ -8900,7 +9060,7 @@ def run_audio_adjust_task(
                 trim_args.extend(ffmpeg_audio_output_args(task))
             else:
                 trim_args.extend(["-c:a", "copy"])
-            trim_args.append(str(target))
+            trim_args.append(str(temporary_target))
             run_cancellable_logged_process(
                 trim_args,
                 log,
@@ -8909,10 +9069,6 @@ def run_audio_adjust_task(
                 unregister_process=unregister_process,
             )
         else:
-            backup_path = dedupe_sidecar_path(task.path, "source")
-            task.path.rename(backup_path)
-            restore_path = backup_path
-            generated_paths.append(target)
             encode_args = [
                 ffmpeg,
                 "-y",
@@ -8925,7 +9081,7 @@ def run_audio_adjust_task(
                 "-dn",
                 *ffmpeg_audio_filter_args(task),
                 *ffmpeg_audio_output_args(task),
-                str(target),
+                str(temporary_target),
             ]
             run_cancellable_logged_process(
                 encode_args,
@@ -8935,8 +9091,42 @@ def run_audio_adjust_task(
                 unregister_process=unregister_process,
             )
     except Exception:
-        cleanup_failed_audio_adjust(task.path, restore_path, generated_paths, log)
+        for temporary in (temporary_target, temporary_append):
+            if temporary is None or not temporary.exists():
+                continue
+            try:
+                temporary.unlink()
+            except OSError as exc:
+                log(ui_text("error_output_delete_failed", name=temporary.name, error=exc))
+        if created_backup and backup_path is not None and backup_path.exists() and not task.path.exists():
+            try:
+                backup_path.rename(task.path)
+            except OSError as exc:
+                log(ui_text("error_file_prepare_failed", name=task.path.name, error=exc))
         raise
+
+    try:
+        temporary_target.replace(target)
+        if temporary_append is not None and managed_append is not None:
+            temporary_append.replace(managed_append)
+        if task.path != target and task.path.exists():
+            task.path.unlink()
+        if task.delta_seconds > 0 and managed_append is not None:
+            if task.path != target:
+                remove_audio_adjust_delay_manifest(task.path)
+            write_audio_adjust_delay_manifest(target, managed_append, task.delta_seconds)
+        else:
+            remove_audio_adjust_delay_manifest(task.path)
+            if task.path != target:
+                remove_audio_adjust_delay_manifest(target)
+        if (
+            previous_managed_append is not None
+            and previous_managed_append != backup_path
+            and previous_managed_append != managed_append
+        ):
+            previous_managed_append.unlink(missing_ok=True)
+    except OSError as exc:
+        raise UserVisibleError(ui_text("error_file_prepare_failed", name=target.name, error=exc)) from exc
 
     log(ui_text("log_audio_adjust_ready", name=target.name))
     return target

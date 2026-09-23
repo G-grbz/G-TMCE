@@ -148,8 +148,8 @@ PY
   fi
 
   echo "Installing Python package into app vendor directory: $package"
-  PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    python3 -m pip install --upgrade --ignore-installed --target "$VENDOR_DIR" "$package"
+  python3 -m pip --isolated install --disable-pip-version-check --root-user-action=ignore \
+    --no-warn-conflicts --upgrade --ignore-installed --target "$VENDOR_DIR" "$package"
 }
 
 install_application() {
@@ -162,15 +162,15 @@ install_application() {
 
   mkdir -p "$VENDOR_DIR"
   echo "Installing Python runtime requirements into app vendor directory..."
-  PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    python3 -m pip install --upgrade --ignore-installed --target "$VENDOR_DIR" -r "$INSTALL_DIR/requirements.txt"
+  python3 -m pip --isolated install --disable-pip-version-check --root-user-action=ignore \
+    --no-warn-conflicts --upgrade --ignore-installed --target "$VENDOR_DIR" -r "$INSTALL_DIR/requirements.txt"
 
   # Current faster-whisper/CTranslate2 GPU wheels require CUDA 12 cuBLAS
   # and cuDNN 9. Keep them app-local instead of modifying the host Python.
   if command -v nvidia-smi >/dev/null 2>&1 && [[ "$(uname -m)" == "x86_64" ]]; then
     echo "NVIDIA GPU detected; installing app-local CUDA 12 runtime libraries for ASR..."
-    if ! PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1 \
-      python3 -m pip install --upgrade --ignore-installed --target "$VENDOR_DIR" \
+    if ! python3 -m pip --isolated install --disable-pip-version-check --root-user-action=ignore \
+      --no-warn-conflicts --upgrade --ignore-installed --target "$VENDOR_DIR" \
         "nvidia-cublas-cu12" "nvidia-cudnn-cu12==9.*"; then
       echo "Warning: CUDA runtime libraries could not be installed. ASR will fall back to CPU."
     fi
