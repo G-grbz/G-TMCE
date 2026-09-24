@@ -310,9 +310,10 @@ def build_stylesheet(mode: str) -> str:
     QScrollBar::handle:horizontal {{ background: {p.border_strong}; border-radius: 4px; min-width: 28px; }}
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
+    QSlider:horizontal {{ min-height: 26px; }}
     QSlider::groove:horizontal {{ height: 6px; background: {p.border}; border-radius: 3px; }}
     QSlider::sub-page:horizontal {{ background: {p.accent}; border-radius: 3px; }}
-    QSlider::handle:horizontal {{ width: 16px; margin: -5px 0; background: {p.text}; border: 2px solid {p.accent}; border-radius: 8px; }}
+    QSlider::handle:horizontal {{ width: 16px; height: 16px; margin: -5px 0; background: {p.text}; border: 2px solid {p.accent}; border-radius: 8px; }}
 
     QToolTip {{ background: {p.surface_alt}; color: {p.text}; border: 1px solid {p.border_strong}; padding: 5px; }}
     """

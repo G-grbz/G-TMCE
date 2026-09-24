@@ -2226,7 +2226,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             speed_combo=QComboBox(); speed_combo.addItems([label for _,label in speed_values]); self._bind_combo_text(speed,speed_combo); grid.addWidget(speed_combo,r,3)
             codec_combo=QComboBox(); codec_combo.setEditable(True); codec_combo.addItems(codec_values); self._bind_combo_text(codec,codec_combo); grid.addWidget(codec_combo,r,4)
             grid.addWidget(self._bind_line(bitrate,QLineEdit()),r,5); grid.addWidget(self._bind_line(rate,QLineEdit()),r,6); grid.addWidget(self._bind_line(layout_var,QLineEdit()),r,7)
-            volume_host=QWidget(); vh=QHBoxLayout(volume_host); vh.setContentsMargins(0,0,0,0); slider=QSlider(Qt.Horizontal); slider.setRange(10,50); slider.setValue(10); value_label=QLabel("1.0x"); value_label.setMinimumWidth(42)
+            volume_host=QWidget(); volume_host.setMinimumHeight(32); vh=QHBoxLayout(volume_host); vh.setContentsMargins(0,3,0,3); slider=QSlider(Qt.Horizontal); slider.setMinimumHeight(26); slider.setRange(10,50); slider.setValue(10); value_label=QLabel("1.0x"); value_label.setMinimumWidth(42)
             slider.valueChanged.connect(lambda v,var=volume,lbl=value_label: (var.set(v/10.0), lbl.setText(f"{v/10.0:.1f}x")))
             vh.addWidget(slider,1); vh.addWidget(value_label); grid.addWidget(volume_host,r,8)
             language = track_language_value(item) or "und"

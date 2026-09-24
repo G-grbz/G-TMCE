@@ -1937,6 +1937,7 @@ INTRO_DETECTION_WINDOW_SECONDS = 4 * 60
 INTRO_DETECTION_MIN_SECONDS = 35.0
 INTRO_DETECTION_MAX_SECONDS = 4 * 60
 INTRO_DETECTION_CLUSTER_SECONDS = 4.0
+INTRO_DETECTION_BLACK_SUBTITLE_CLUSTER_SECONDS = 6.0
 INTRO_DETECTION_MIN_CONFIDENCE = 88.0
 INTRO_DETECTION_TOP_CANDIDATES = 12
 RELEASE_STOP_TOKENS = {
@@ -2457,6 +2458,7 @@ class IntroDetectionCandidate:
     seconds: float
     score: float
     source: str
+    interval_start_seconds: float | None = None
 
 
 @dataclass
@@ -5659,9 +5661,16 @@ def top_intro_candidates(
         for candidate in candidates
         if intro_candidate_is_valid(candidate.seconds, duration_seconds)
     ]
-    return sorted(valid, key=lambda candidate: candidate.score, reverse=True)[
-        :INTRO_DETECTION_TOP_CANDIDATES
-    ]
+    ranked = sorted(valid, key=lambda candidate: candidate.score, reverse=True)
+    top = ranked[:INTRO_DETECTION_TOP_CANDIDATES]
+    if len(ranked) > INTRO_DETECTION_TOP_CANDIDATES:
+        # Dense dialogue or a late scene can fill the score-only shortlist and
+        # hide the first sustained post-opening cue entirely. Keep that early
+        # clue available for corroboration by independent media signals.
+        earliest = min(valid, key=lambda candidate: candidate.seconds)
+        if earliest not in top:
+            top[-1] = earliest
+    return top
 
 
 def parse_intro_timestamp_seconds(value: str) -> float | None:
@@ -5974,7 +5983,14 @@ def blackdetect_intro_candidates(
         score = 46.0 + min(black_duration, 2.0) * 8.0 + intro_common_time_bonus(black_end)
         if black_duration >= 0.35:
             score += 8.0
-        candidates.append(IntroDetectionCandidate(black_end, score, "blackdetect"))
+        candidates.append(
+            IntroDetectionCandidate(
+                black_end,
+                score,
+                "blackdetect",
+                interval_start_seconds=black_start,
+            )
+        )
     return top_intro_candidates(candidates, duration_seconds)
 
 
@@ -6211,10 +6227,36 @@ def intro_candidate_is_media_boundary(candidate: IntroDetectionCandidate) -> boo
     return intro_candidate_group(candidate) in {"video", "audio"}
 
 
+def subtitle_starts_during_final_black_frames(
+    black: IntroDetectionCandidate,
+    subtitle: IntroDetectionCandidate,
+) -> bool:
+    """Recognize sustained dialogue that begins before the picture returns."""
+    return (
+        black.source == "blackdetect"
+        and black.interval_start_seconds is not None
+        and subtitle.source.startswith("subtitle")
+        and black.interval_start_seconds <= subtitle.seconds <= black.seconds
+        and black.seconds - subtitle.seconds <= INTRO_DETECTION_BLACK_SUBTITLE_CLUSTER_SECONDS
+    )
+
+
 def intro_boundary_anchor(
     cluster: list[IntroDetectionCandidate],
 ) -> IntroDetectionCandidate:
     """Choose an actual cut/end timestamp rather than averaging clocks."""
+    dialogue_over_black = [
+        subtitle
+        for black in cluster
+        for subtitle in cluster
+        if subtitle_starts_during_final_black_frames(black, subtitle)
+    ]
+    if dialogue_over_black:
+        # The story has already started audibly. Anchoring to black_end would
+        # skip the first spoken line when the image returns several seconds
+        # later.
+        return min(dialogue_over_black, key=lambda item: item.seconds)
+
     non_scene = [item for item in cluster if item.source != "scenechange"]
     center_items = non_scene or cluster
     center = sum(item.seconds * max(item.score, 1.0) for item in center_items) / sum(
@@ -6255,11 +6297,24 @@ def select_intro_detection_candidate(
         placed = False
         for cluster in reversed(clusters):
             center = mean_value([item.seconds for item in cluster])
-            if abs(candidate.seconds - center) <= INTRO_DETECTION_CLUSTER_SECONDS:
+            # Spoken dialogue may start over the final black frames before
+            # the first visible shot. Keep that subtitle cue with the black
+            # interval's end instead of treating the two as unrelated cuts.
+            black_subtitle_pair = any(
+                subtitle_starts_during_final_black_frames(candidate, item)
+                or subtitle_starts_during_final_black_frames(item, candidate)
+                for item in cluster
+            )
+            cluster_limit = (
+                INTRO_DETECTION_BLACK_SUBTITLE_CLUSTER_SECONDS
+                if black_subtitle_pair
+                else INTRO_DETECTION_CLUSTER_SECONDS
+            )
+            if abs(candidate.seconds - center) <= cluster_limit:
                 cluster.append(candidate)
                 placed = True
                 break
-            if candidate.seconds - center > INTRO_DETECTION_CLUSTER_SECONDS:
+            if candidate.seconds - center > INTRO_DETECTION_BLACK_SUBTITLE_CLUSTER_SECONDS:
                 break
         if not placed:
             clusters.append([candidate])
@@ -6312,7 +6367,10 @@ def select_intro_detection_candidate(
         return None
 
     strongest = max(candidate.score for candidate in scored)
-    threshold = max(INTRO_DETECTION_MIN_CONFIDENCE, strongest - 10.0)
+    # A later scene can accumulate more subtitle/audio hints simply because
+    # dialogue and cuts are denser there. Once an earlier boundary has strong
+    # independent support, do not require it to nearly tie that later score.
+    threshold = max(INTRO_DETECTION_MIN_CONFIDENCE, strongest * 0.75)
     plausible = [candidate for candidate in scored if candidate.score >= threshold]
     if not plausible:
         return None
@@ -6439,29 +6497,33 @@ def write_auto_chapters_file(
             raise UserVisibleError(ui_text("error_auto_chapter_end_required"))
         end_minutes = duration_seconds / 60
 
-    interval_seconds = interval_minutes * 60
-    end_seconds = end_minutes * 60
-    fallback_start_seconds = interval_seconds * start_number
-    if intro_start_seconds > 0:
-        # The start number controls the chapter label only.  The first generated
-        # chapter must be placed exactly at the detected end of the intro.
-        current_seconds = intro_start_seconds
-    else:
-        current_seconds = fallback_start_seconds
-
-    if current_seconds > end_seconds and intro_start_seconds > 0:
-        current_seconds = fallback_start_seconds
-    if current_seconds > end_seconds:
+    # Work in milliseconds, the precision written to the chapter file. This
+    # keeps every regular chapter on an exact interval boundary and avoids a
+    # duplicate when the intro ends on one of those boundaries.
+    interval_ms = round(interval_minutes * 60_000)
+    end_ms = round(end_minutes * 60_000)
+    intro_ms = round(intro_start_seconds * 1000)
+    if interval_ms <= 0:
+        raise UserVisibleError(ui_text("error_minutes_positive", label=ui_text("field_chapter_interval")))
+    use_intro = 0 < intro_ms <= end_ms
+    current_ms = intro_ms if use_intro else interval_ms * start_number
+    if current_ms > end_ms:
         raise UserVisibleError(ui_text("error_chapter_start_after_end"))
 
     lines: list[str] = []
     chapter_number = start_number
-    while current_seconds <= end_seconds + 1e-9:
+    while current_ms <= end_ms:
         marker = f"CHAPTER{chapter_number:02d}"
-        lines.append(f"{marker}={format_chapter_timestamp(current_seconds)}")
+        lines.append(f"{marker}={format_chapter_timestamp(current_ms / 1000)}")
         lines.append(f"{marker}NAME= {name} {chapter_number}")
         chapter_number += 1
-        current_seconds += interval_seconds
+        if use_intro:
+            # The intro is a one-off chapter start. Continue at 10:00,
+            # 20:00, ... rather than adding the interval to the intro time.
+            current_ms = (intro_ms // interval_ms + 1) * interval_ms
+            use_intro = False
+        else:
+            current_ms += interval_ms
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
