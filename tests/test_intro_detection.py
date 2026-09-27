@@ -7,12 +7,38 @@ from src.gtmce.core import (
     ChapterOptions,
     IntroDetectionCandidate,
     select_intro_detection_candidate,
+    subtitle_consensus_intro_candidate,
     top_intro_candidates,
     write_auto_chapters_file,
 )
 
 
 class IntroDetectionSelectionTests(unittest.TestCase):
+    def test_early_dialogue_agreed_by_two_subtitle_tracks_beats_later_pause(self):
+        turkish = IntroDetectionCandidate(18.080, 87.5, "subtitle-dialogue")
+        english = IntroDetectionCandidate(18.120, 73.7, "subtitle-dialogue")
+        consensus = subtitle_consensus_intro_candidate([[turkish], [english]])
+
+        self.assertIsNotNone(consensus)
+        selected = select_intro_detection_candidate(
+            [
+                turkish,
+                english,
+                consensus,
+                IntroDetectionCandidate(99.009, 84.9, "subtitle-dialogue"),
+                IntroDetectionCandidate(99.009, 51.4, "silencedetect"),
+            ]
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.seconds, 18.080)
+
+    def test_single_early_subtitle_track_does_not_establish_consensus(self):
+        lone_subtitle = IntroDetectionCandidate(18.080, 87.5, "subtitle-dialogue")
+
+        self.assertIsNone(subtitle_consensus_intro_candidate([[lone_subtitle]]))
+        self.assertIsNone(select_intro_detection_candidate([lone_subtitle]))
+
     def test_earliest_dialogue_survives_dense_later_subtitle_shortlist(self):
         candidates = [IntroDetectionCandidate(61.979, 68.7, "subtitle-dialogue")]
         candidates.extend(

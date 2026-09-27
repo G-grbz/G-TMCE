@@ -87,6 +87,8 @@ def main() -> int:
         "onnxruntime",
         "--collect-all",
         "huggingface_hub",
+        "--collect-all",
+        "sentencepiece",
     ]
 
     logo = root / "assets" / "logo.png"

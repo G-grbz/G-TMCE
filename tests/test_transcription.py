@@ -1,5 +1,12 @@
 from pathlib import Path
 
+from src.gtmce.core import (
+    TrackItem,
+    append_source_options,
+    infer_language_from_filename,
+    infer_subtitle_track_flags,
+    make_minimal_track_entry,
+)
 from src.gtmce.transcription import (
     SubtitleCue,
     _best_cuda_compute_type,
@@ -7,8 +14,12 @@ from src.gtmce.transcription import (
     _merge_cues,
     _suspicious_gaps,
     generated_subtitle_path,
+    generated_translation_path,
     normalise_asr_language,
+    read_srt,
     srt_timestamp,
+    translate_cues_with_ai,
+    translate_srt_with_ai,
     write_srt,
 )
 
@@ -27,6 +38,43 @@ def test_generated_subtitle_keeps_existing_language_token():
 
 def test_generated_subtitle_adds_language_when_filename_has_none():
     assert generated_subtitle_path(Path("commentary.flac"), "fr") == Path("commentary.fr.generated.srt")
+
+
+def test_generated_translation_uses_selected_target_language():
+    assert generated_translation_path(Path("eng.ac3"), "tr") == Path("eng.tr.generated.srt")
+    assert generated_translation_path(Path("eng.ac3"), "de") == Path("eng.de.generated.srt")
+
+
+def test_generated_audio_subtitles_receive_a_localized_track_name():
+    english = infer_subtitle_track_flags(Path("eng.generated.srt"))
+    turkish = infer_subtitle_track_flags(Path("tur.generated.srt"))
+
+    assert english["language"] == "en"
+    assert english["name"] == "Generated from Audio"
+    assert turkish["language"] == "tr"
+    assert turkish["name"] == "Sesten Oluşturuldu"
+
+
+def test_ai_generated_subtitle_uses_target_language_and_track_name():
+    turkish = infer_subtitle_track_flags(Path("eng.tr.generated.srt"))
+    english = infer_subtitle_track_flags(Path("tur.en.generated.srt"))
+
+    assert infer_language_from_filename(Path("eng.tr.generated.srt")) == "tr"
+    assert turkish["language"] == "tr"
+    assert turkish["name"] == "AI ile Çevrildi"
+    assert english["language"] == "en"
+    assert english["name"] == "AI Translated"
+
+
+def test_ai_generated_subtitle_passes_target_language_and_name_to_mkvmerge():
+    path = Path("eng.tr.generated.srt")
+    entry, _ = make_minimal_track_entry(path, 1)
+    args: list[str] = []
+
+    append_source_options(args, TrackItem(entry, path, None))
+
+    assert "0:tr" in args
+    assert "0:AI ile Çevrildi" in args
 
 
 def test_srt_timestamp_rounding():
@@ -198,3 +246,414 @@ def test_hallucination_cleanup_keeps_fast_but_plausible_dialogue():
 def test_sensitive_gap_rescue_can_target_twenty_second_hole():
     cues = [SubtitleCue(0.0, 10.0, "önce"), SubtitleCue(30.5, 32.0, "sonra")]
     assert _suspicious_gaps(cues, 40.0, minimum_gap=8.0)[0] == (10.0, 30.5)
+
+
+def test_multilingual_ai_translation_preserves_timestamps(monkeypatch, tmp_path):
+    import src.gtmce.transcription as transcription
+    from types import SimpleNamespace
+
+    class FakeTokenizer:
+        def encode(self, text, out_type=str):
+            assert out_type is str
+            return text.split()
+
+        def decode(self, tokens):
+            return " ".join(tokens)
+
+    class FakeTranslator:
+        def translate_batch(self, source_tokens, **_kwargs):
+            assert source_tokens == [["<2tr>", "We", "must", "go."]]
+            return [SimpleNamespace(hypotheses=[["Gitmeliyiz.", "</s>"]])]
+
+    monkeypatch.setattr(
+        transcription,
+        "_prepare_translation_model",
+        lambda *_args, **_kwargs: tmp_path,
+    )
+    monkeypatch.setattr(
+        transcription,
+        "_load_translation_runtime",
+        lambda *_args, **_kwargs: (FakeTranslator(), FakeTokenizer()),
+    )
+
+    result = translate_cues_with_ai(
+        [SubtitleCue(1.25, 2.75, "We must go.")],
+        "en",
+        "tr",
+    )
+    assert result == [SubtitleCue(1.25, 2.75, "Gitmeliyiz.")]
+
+
+def test_ai_translation_merges_split_sentence_fragments(monkeypatch, tmp_path):
+    import src.gtmce.transcription as transcription
+    from types import SimpleNamespace
+
+    class FakeTokenizer:
+        def encode(self, text, out_type=str):
+            return text.split()
+
+        def decode(self, tokens):
+            return " ".join(tokens)
+
+    class FakeTranslator:
+        def translate_batch(self, source_tokens, **_kwargs):
+            assert source_tokens == [[
+                "<2tr>", "Caring", "for", "a", "child", "no", "one", "tells", "you", "jack", "shit."
+            ]]
+            return [SimpleNamespace(hypotheses=[["Bir", "çocuğa", "bakmayı", "kimse", "sana", "öğretmiyor."]])]
+
+    monkeypatch.setattr(transcription, "_prepare_translation_model", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(
+        transcription,
+        "_load_translation_runtime",
+        lambda *_args, **_kwargs: (FakeTranslator(), FakeTokenizer()),
+    )
+
+    result = translate_cues_with_ai(
+        [
+            SubtitleCue(1.0, 2.0, "Caring for a child no one tells you"),
+            SubtitleCue(2.1, 2.8, "jack shit."),
+        ],
+        "en",
+        "tr",
+    )
+    assert len(result) == 2
+    assert [(cue.start, cue.end) for cue in result] == [(1.0, 2.0), (2.1, 2.8)]
+    assert " ".join(cue.text.replace("\n", " ") for cue in result) == (
+        "Bir çocuğa bakmayı kimse sana öğretmiyor."
+    )
+
+
+
+def test_context_translation_keeps_original_cue_count_and_short_blocks(monkeypatch, tmp_path):
+    import src.gtmce.transcription as transcription
+    from types import SimpleNamespace
+
+    class FakeTokenizer:
+        def encode(self, text, out_type=str):
+            return text.split()
+
+        def decode(self, tokens):
+            return " ".join(tokens)
+
+    translated = (
+        "Sonra taşındıktan sonra onları gördüğünüz geri kalan zamanı eve yaptığınız "
+        "ziyaretleri birlikte geçirdiğiniz tatilleri hayatınızın geri kalanı boyunca "
+        "onlarla paylaştığınız değerli anları topladığınızda eğer onları bir yıl daha "
+        "görürseniz şanslısınız ve bu kadar."
+    )
+
+    class FakeTranslator:
+        def translate_batch(self, source_tokens, **_kwargs):
+            assert len(source_tokens) == 1
+            return [SimpleNamespace(hypotheses=[translated.split() + ["</s>"]])]
+
+    monkeypatch.setattr(transcription, "_prepare_translation_model", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(
+        transcription,
+        "_load_translation_runtime",
+        lambda *_args, **_kwargs: (FakeTranslator(), FakeTokenizer()),
+    )
+
+    source = [
+        SubtitleCue(349.390, 353.950, "Then after they move out, when you add up all the remaining time you see them,"),
+        SubtitleCue(353.950, 359.860, "the visits home the vacations together precious snatch moments"),
+        SubtitleCue(359.860, 362.200, "you share with them for the rest"),
+        SubtitleCue(362.200, 368.070, "of your life you're lucky if you see them for one more year that's it"),
+    ]
+    result = translate_cues_with_ai(source, "en", "tr")
+
+    assert len(result) >= 4
+    assert result[0].start == 349.390
+    assert result[-1].end == 368.070
+    assert " ".join(cue.text.replace("\n", " ") for cue in result) == translated
+    assert max(len(cue.text.replace("\n", " ")) for cue in result) <= 84
+
+def test_read_srt_and_translate_existing_text(monkeypatch, tmp_path):
+    import src.gtmce.transcription as transcription
+
+    source = tmp_path / "eng.generated.srt"
+    source.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nHello there.\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "eng.de.generated.srt"
+    assert read_srt(source) == [SubtitleCue(1.0, 2.0, "Hello there.")]
+
+    monkeypatch.setattr(
+        transcription,
+        "translate_cues_with_ai",
+        lambda cues, source_language, target_language, **_kwargs: [
+            SubtitleCue(cue.start, cue.end, "Hallo.") for cue in cues
+        ],
+    )
+    result = translate_srt_with_ai(
+        source,
+        "en",
+        "de",
+        output_path=target,
+    )
+    assert result == target
+    assert "Hallo." in target.read_text(encoding="utf-8")
+
+
+
+def test_translation_degeneration_detects_runaway_but_keeps_real_repetition():
+    from src.gtmce.transcription import _translation_degeneration_reason
+
+    assert _translation_degeneration_reason("The", "The The The The The The The") is not None
+    assert _translation_degeneration_reason("possibility it", "olasılık " * 36) is not None
+    assert _translation_degeneration_reason(
+        "Go, go, go, go, go, go, go.",
+        "Hadi, hadi, hadi, hadi, hadi, hadi, hadi, hadi.",
+    ) is None
+
+
+def test_ai_translation_retries_decoder_loop_with_strict_settings(monkeypatch, tmp_path):
+    import src.gtmce.transcription as transcription
+    from types import SimpleNamespace
+
+    class FakeTokenizer:
+        def encode(self, text, out_type=str):
+            assert out_type is str
+            return text.split()
+
+        def decode(self, tokens):
+            return " ".join(tokens)
+
+    class FakeTranslator:
+        def __init__(self):
+            self.calls = []
+
+        def translate_batch(self, source_tokens, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs.get("beam_size") == 1:
+                return [SimpleNamespace(hypotheses=[["Bu", "</s>"]])]
+            return [SimpleNamespace(hypotheses=[["The"] * 7 + [["</s>"]][0]])]
+
+    translator = FakeTranslator()
+    monkeypatch.setattr(transcription, "_prepare_translation_model", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(
+        transcription,
+        "_load_translation_runtime",
+        lambda *_args, **_kwargs: (translator, FakeTokenizer()),
+    )
+
+    result = translate_cues_with_ai(
+        [SubtitleCue(1.0, 2.0, "The")],
+        "en",
+        "tr",
+    )
+    assert result == [SubtitleCue(1.0, 2.0, "Bu")]
+    assert translator.calls[0]["repetition_penalty"] > 1
+    assert translator.calls[0]["no_repeat_ngram_size"] == 3
+    assert translator.calls[1]["beam_size"] == 1
+    assert translator.calls[1]["no_repeat_ngram_size"] == 2
+
+
+def test_translation_degeneration_detects_duplicate_alternative_sentence():
+    from src.gtmce.transcription import _translation_degeneration_reason
+
+    source = "They say on average, a child spends the first 18 years with their parents."
+    output = (
+        "Ortalama olarak, bir çocuğun ilk 18 yılını ebeveynleriyle geçirdiğini söylüyorlar. "
+        "Çocuklar ilk 20 yılını anne ve babalarıyla geçirirler."
+    )
+    assert _translation_degeneration_reason(source, output) is not None
+    assert _translation_degeneration_reason("No, no.", "Hayır, hayır.") is None
+
+
+def test_long_translation_cue_is_split_for_readability():
+    from src.gtmce.transcription import _split_long_translation_cue
+
+    text = (
+        "Bu çok uzun bir altyazı cümlesidir ve ekranda tek parça olarak gösterildiğinde "
+        "izleyicinin sahneyi takip etmesini zorlaştırdığı için iki satırlık okunabilir "
+        "altyazı bloklarına ayrılması gerekir."
+    )
+    result = _split_long_translation_cue(SubtitleCue(10.0, 18.0, text))
+    assert len(result) >= 2
+    assert result[0].start == 10.0
+    assert result[-1].end == 18.0
+    assert max(len(cue.text.replace("\n", " ")) for cue in result) <= 84
+    assert " ".join(cue.text.replace("\n", " ") for cue in result) == text
+
+
+def test_translation_degeneration_rejects_tiny_input_hallucination():
+    from src.gtmce.transcription import _translation_degeneration_reason
+
+    assert _translation_degeneration_reason(
+        "The",
+        "1960'lı yılların ortalarında The New Yorker dergisinde yayınlanan",
+    ) == "tiny-input-expansion:1->8"
+
+
+def test_translation_invalid_reason_retries_source_echo():
+    from src.gtmce.transcription import _translation_invalid_reason
+
+    assert _translation_invalid_reason(
+        "Use of lethal force is authorized.",
+        "Use of lethal force is authorized.",
+    ) == "source-echo"
+    assert _translation_invalid_reason("human traffickers.", "human traffickers.") == "source-echo-short"
+    assert _translation_invalid_reason("My daughter.", "My daughter.") == "source-echo-short"
+    assert _translation_invalid_reason("Yeah.", "Yeah.") == "source-echo-single"
+    assert _translation_invalid_reason("Yep.", "Yep.") == "source-echo-single"
+    assert _translation_invalid_reason("Nope.", "Nope.") == "source-echo-single"
+    assert _translation_invalid_reason("I mean, that's late.", "I mean, that's late.") == "source-echo"
+    assert _translation_invalid_reason("do", "do") == "source-echo-single"
+    # Proper names may legitimately remain unchanged.
+    assert _translation_invalid_reason("New Mexico", "New Mexico") is None
+    assert _translation_invalid_reason("Chloe", "Chloe") is None
+
+
+def test_rebalance_translation_timings_uses_following_silence_for_unreadable_cue():
+    from src.gtmce.transcription import _rebalance_translation_timings
+
+    cues = [
+        SubtitleCue(
+            158.670,
+            158.870,
+            "1960'lı yılların ortalarında, The New Yorker dergisinde yayınlanan",
+        ),
+        SubtitleCue(168.790, 172.410, "Sonraki altyazı."),
+    ]
+    result = _rebalance_translation_timings(cues)
+    assert result[0].start == 158.670
+    assert result[0].end > 161.0
+    assert result[0].end < result[1].start
+    assert result[1] == cues[1]
+
+
+def test_rebalance_translation_timings_does_not_move_normal_fast_dialogue():
+    from src.gtmce.transcription import _rebalance_translation_timings
+
+    cue = SubtitleCue(1.0, 2.0, "Bir çocuğa bakmayı kimse")
+    assert _rebalance_translation_timings([cue]) == [cue]
+
+
+def test_source_echo_rescue_uses_sentence_case_variant():
+    from src.gtmce.transcription import _rescue_source_echo_translation
+    from types import SimpleNamespace
+
+    class FakeTokenizer:
+        def encode(self, text, out_type=str):
+            assert out_type is str
+            return text.split()
+
+        def decode(self, tokens):
+            return " ".join(tokens)
+
+    class FakeTranslator:
+        def translate_batch(self, source_tokens, **_kwargs):
+            text = " ".join(source_tokens[0])
+            if "Human traffickers" in text:
+                return [SimpleNamespace(hypotheses=[["İnsan", "kaçakçıları", "</s>"]])]
+            return [SimpleNamespace(hypotheses=[["human", "traffickers", "</s>"]])]
+
+    result = _rescue_source_echo_translation(
+        FakeTranslator(), FakeTokenizer(), "human traffickers.", "tr"
+    )
+    assert result == "İnsan kaçakçıları"
+
+
+def test_source_echo_rescue_can_use_neighbor_separator():
+    from src.gtmce.transcription import _TranslationUnit, _rescue_translation_with_neighbor
+    from types import SimpleNamespace
+
+    class FakeTokenizer:
+        def encode(self, text, out_type=str):
+            assert out_type is str
+            return text.split()
+
+        def decode(self, tokens):
+            return " ".join(tokens)
+
+    class FakeTranslator:
+        def translate_batch(self, source_tokens, **_kwargs):
+            return [SimpleNamespace(hypotheses=[[
+                "İnsan", "kaçakçıları.", "|||", "Orta", "Doğu'ya", "askerler.", "</s>"
+            ]])]
+
+    units = [
+        _TranslationUnit((SubtitleCue(1.0, 2.0, "human traffickers."),), "human traffickers."),
+        _TranslationUnit((SubtitleCue(3.0, 4.0, "Troops to the Middle East."),), "Troops to the Middle East."),
+    ]
+    result = _rescue_translation_with_neighbor(
+        FakeTranslator(), FakeTokenizer(), units, 0, "tr"
+    )
+    assert result == "İnsan kaçakçıları."
+
+
+def test_english_dialogue_rescue_variants_cover_short_phrases_without_names():
+    from src.gtmce.transcription import _english_dialogue_rescue_variants
+
+    assert _english_dialogue_rescue_variants("Yeah.")[0] == "Yes."
+    assert _english_dialogue_rescue_variants("Yep!")[0] == "Yes."
+    assert _english_dialogue_rescue_variants("Nope.")[0] == "No."
+    assert _english_dialogue_rescue_variants("I know.")[0] == "I understand."
+    assert _english_dialogue_rescue_variants("Okay.")[0] == "All right."
+    assert _english_dialogue_rescue_variants("Thanks!")[0] == "Thank you."
+    assert _english_dialogue_rescue_variants("Sorry.")[0] == "I am sorry."
+    assert _english_dialogue_rescue_variants("I mean, that's late.")[0] == "What I mean is that it is late."
+    assert _english_dialogue_rescue_variants("Chloe") == []
+    assert _english_dialogue_rescue_variants("Ellie") == []
+    assert _english_dialogue_rescue_variants("Sullivan") == []
+
+
+def test_source_echo_rescue_prefers_explicit_short_dialogue_paraphrase():
+    from src.gtmce.transcription import _rescue_source_echo_translation
+    from types import SimpleNamespace
+
+    class FakeTokenizer:
+        def encode(self, text, out_type=str):
+            assert out_type is str
+            return text.split()
+
+        def decode(self, tokens):
+            return " ".join(tokens)
+
+    class FakeTranslator:
+        def translate_batch(self, source_tokens, **_kwargs):
+            text = " ".join(source_tokens[0])
+            if "Yes." in text:
+                return [SimpleNamespace(hypotheses=[["Evet.", "</s>"]])]
+            return [SimpleNamespace(hypotheses=[["Yeah.", "</s>"]])]
+
+    result = _rescue_source_echo_translation(
+        FakeTranslator(), FakeTokenizer(), "Yeah.", "tr"
+    )
+    assert result == "Evet."
+
+
+def test_translation_degeneration_rejects_six_word_hallucination_from_the():
+    from src.gtmce.transcription import _translation_degeneration_reason
+
+    assert _translation_degeneration_reason(
+        "The", "The, 1980'de yayınlanan bir Amerikan animasyon"
+    ) == "tiny-input-expansion:1->6"
+
+
+def test_ai_translation_drops_tiny_incomplete_english_function_word(monkeypatch, tmp_path):
+    import src.gtmce.transcription as transcription
+
+    class NeverCalledTranslator:
+        def translate_batch(self, *_args, **_kwargs):
+            raise AssertionError("tiny ASR fragment should be dropped before translation")
+
+    class DummyTokenizer:
+        pass
+
+    monkeypatch.setattr(transcription, "_prepare_translation_model", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(
+        transcription,
+        "_load_translation_runtime",
+        lambda *_args, **_kwargs: (NeverCalledTranslator(), DummyTokenizer()),
+    )
+
+    result = transcription.translate_cues_with_ai(
+        [transcription.SubtitleCue(158.670, 158.870, "The")],
+        "en",
+        "tr",
+    )
+    assert result == []

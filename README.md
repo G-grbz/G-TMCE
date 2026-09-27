@@ -215,7 +215,7 @@ The right-click integration is opt-in: enable **Extract right-click menu** once 
 
 The EXE is copied to the stable `%LOCALAPPDATA%\G-TMCE\G-TMCE.exe` launcher path; Explorer always uses that path rather than a versioned GitHub download name. Open a newer release once and it atomically updates this stable launcher, so the right-click menu keeps working without unregistering an old version or registering every new one.
 
-On Linux, double-clicking any AppImage version atomically refreshes the stable per-user AppImage and **G-TMCE** application-search entry under `~/.local/share/`. This keeps application search on the newest version without administrator privileges or duplicate entries. The same option additionally enables the user-level KDE/Dolphin service menu; other Linux file managers do not share Dolphin's service-menu API. When the AUR package or `install.sh` installation is launched instead, G-TMCE removes only its stale per-user AppImage menu so the system `g-tmce` right-click action takes precedence. Turning the option off removes only the AppImage context-menu integration.
+On Linux, double-clicking any AppImage version atomically refreshes the stable per-user AppImage and **G-TMCE** application-search entry under `~/.local/share/`. This keeps application search on the newest version without administrator privileges or duplicate entries. The same option additionally enables the user-level KDE/Dolphin service menu; other Linux file managers do not share Dolphin's service-menu API. When the AUR package or `install.sh` installation is launched instead, G-TMCE removes only its own stale per-user AppImage application and service-menu entries so the system `g-tmce` launchers take precedence. `install.sh` also clears the invoking user's stale AppImage application entry during installation. Customized user entries are left untouched. Turning the option off removes only the AppImage context-menu integration.
 
 ```powershell
 dist\G-TMCE.exe --install-context-menu
@@ -596,6 +596,10 @@ The track language is passed to the model explicitly (`tr` → Turkish, `en` →
 
 The default model is `turbo` (`large-v3-turbo`). It is downloaded on first use and cached outside the application bundle. Advanced overrides are available through `GTMCE_ASR_MODEL`, `GTMCE_ASR_MODEL_DIR`, and `GTMCE_ASR_DEVICE=auto|cpu|cuda`.
 
+The same window also exposes **AI Translate / AI Çeviri** for every audio track with a known language. Clicking it opens a target-language picker. G-TMCE reuses an existing `*.generated.srt` source subtitle when available; otherwise it runs Whisper once and then translates the generated text. Translated files remain separate by target language (for example `eng.generated.srt` → `eng.tr.generated.srt`, `eng.de.generated.srt`, etc.). **This local AI translation feature is currently beta:** review translated subtitles before publishing or muxing final media.
+
+AI translation is local and uses a CTranslate2 INT8 build of `MADLAD-400-3B-MT`, a multilingual translation model covering hundreds of languages. The ~2.98 GB INT8 model is downloaded on first use and cached under the G-TMCE model cache; no API key, account, cloud inference, or subscription is required. Adjacent Whisper cues that appear to be fragments of the same sentence are conservatively joined only as translation context to reduce context-free errors such as split idioms. After translation, the result is redistributed onto the original cue timing windows so long sentences do not collapse into oversized subtitle paragraphs. Any translated piece that still exceeds roughly two 42-character lines is split again inside that timing window for readability. Decoder loops and source-language echoes are retried with conservative decoding; stubborn echoes are additionally retried with sentence reshaping and, as a final local rescue, one neighbouring cue as translation-only context while preserving proper names. `GTMCE_TRANSLATION_MODEL` can point to another compatible MADLAD CTranslate2 model/repository and `GTMCE_TRANSLATION_MODEL_DIR` can override its cache directory. The default MADLAD-400 model is Apache-2.0.
+
 Generated subtitles pass through a conservative hallucination-cleanup stage before long-gap recovery and again before the SRT is written. It removes subtitle-credit boilerplate (for example split `Altyazı M.K.`-style artifacts), detached punctuation/initial fragments, impossible multi-word micro-cues, and implausibly short creator/outro boilerplate while preserving ordinary dialogue. Cleanup counts and reasons are written to the ASR log.
 
 ### ASR GPU runtime on Linux
@@ -609,6 +613,6 @@ under `~/.cache/G-TMCE/models` and its progress is reported in the G-TMCE log.
 
 ### Audio subtitle creation
 
-Clicking **Create Subtitle / Altyazı Oluştur** starts the local faster-whisper transcription directly; there is no subtitle-type selector. Generated output remains `*.generated.srt`.
+Clicking **Create Subtitle / Altyazı Oluştur** starts the local faster-whisper transcription directly. **AI Translate / AI Çeviri** asks for a target language and translates the generated subtitle text locally. If the source `*.generated.srt` already exists, Whisper is not run again. The original and translated outputs remain separate `*.generated.srt` files.
 
 Normal dialogue transcription runs sensitive VAD rescue on subtitle gaps of 8 seconds or longer. The rescue pass still requires speech-like audio before invoking Whisper, so shorter genuine dialogue omissions can be recovered without blindly transcribing quiet film passages.

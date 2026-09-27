@@ -369,18 +369,32 @@ UI_TEXT = {
         "heading_audio_subtitle": "Subtitle",
         "button_create_subtitle_from_audio": "Create Subtitle",
         "button_recreate_subtitle_from_audio": "Recreate Subtitle",
+        "button_ai_translate": "AI Translate",
         "tooltip_subtitle_language_required": "Set a language for this audio track before creating subtitles.",
+        "tooltip_ai_translation": "Translate the generated subtitle locally with AI. Choose the target language after clicking; if no source subtitle exists, G-TMCE transcribes the audio first.",
+        "dialog_ai_translation_language_title": "AI Translation",
+        "dialog_ai_translation_language_label": "Translate to:",
         "dialog_overwrite_subtitle_title": "Replace Generated Subtitle",
         "dialog_overwrite_subtitle_message": "{path} already exists. Recreate and replace it?",
         "status_creating_subtitle": "Creating subtitle from audio...",
         "status_creating_subtitle_from_audio": "Creating {language} subtitle from {name}...",
+        "status_creating_translated_subtitle": "Creating AI-translated subtitle...",
+        "status_creating_translated_subtitle_from_audio": "Transcribing {name} and translating it to {language}...",
+        "status_translating_existing_subtitle": "Translating {name} to {language} with local AI...",
         "log_audio_subtitle_ready": "Subtitle created from audio: {path}",
+        "log_audio_translation_ready": "AI-translated subtitle created: {path}",
         "error_asr_language_unknown": "Audio track language is unknown. Set a language before creating subtitles.",
         "error_asr_language_unsupported": "Speech-to-text does not support the selected language: {language}",
         "error_asr_dependency_missing": "Local subtitle engine is not installed. Install the G-TMCE ASR dependencies (faster-whisper).",
         "error_asr_audio_missing": "Audio track not found: {path}",
         "error_asr_failed": "Speech-to-text failed: {error}",
         "error_asr_no_speech": "No speech could be transcribed from this audio track.",
+        "error_translation_dependency_missing": "Local translation engine is not installed. Install the G-TMCE translation dependency (sentencepiece).",
+        "error_translation_target_unsupported": "The selected AI translation target is not available: {language}",
+        "error_translation_same_language": "The source and target languages are the same: {language}",
+        "error_translation_model_invalid": "The local translation model is incomplete or invalid: {path}",
+        "error_translation_failed": "Local AI translation failed: {error}",
+        "error_translation_no_output": "The local translator did not produce any subtitle text.",
         "button_apply_audio_adjust": "Apply",
         "button_apply_audio_to_all_episodes": "Apply Selected to All Episodes",
         "button_restore_audio_original": "Restore Original",
@@ -734,18 +748,32 @@ UI_TEXT = {
         "heading_audio_subtitle": "Altyazı",
         "button_create_subtitle_from_audio": "Altyazı Oluştur",
         "button_recreate_subtitle_from_audio": "Altyazıyı Yenile",
+        "button_ai_translate": "AI Çeviri",
         "tooltip_subtitle_language_required": "Altyazı oluşturmadan önce bu ses parçasına bir dil atanmalı.",
+        "tooltip_ai_translation": "Oluşturulan altyazı metnini yerel AI ile çevirir. Tıklayınca hedef dil seçilir; kaynak altyazı yoksa önce ses yazıya dökülür.",
+        "dialog_ai_translation_language_title": "AI Çeviri",
+        "dialog_ai_translation_language_label": "Çevrilecek dil:",
         "dialog_overwrite_subtitle_title": "Oluşturulan Altyazıyı Değiştir",
         "dialog_overwrite_subtitle_message": "{path} zaten var. Yeniden oluşturup üzerine yazılsın mı?",
         "status_creating_subtitle": "Sesten altyazı oluşturuluyor...",
         "status_creating_subtitle_from_audio": "{name} sesinden {language} altyazı oluşturuluyor...",
+        "status_creating_translated_subtitle": "AI çeviri altyazısı oluşturuluyor...",
+        "status_creating_translated_subtitle_from_audio": "{name} yazıya dökülüp {language} diline çevriliyor...",
+        "status_translating_existing_subtitle": "{name} yerel AI ile {language} diline çevriliyor...",
         "log_audio_subtitle_ready": "Sesten altyazı oluşturuldu: {path}",
+        "log_audio_translation_ready": "AI çeviri altyazısı oluşturuldu: {path}",
         "error_asr_language_unknown": "Ses parçasının dili bilinmiyor. Altyazı oluşturmadan önce bir dil ata.",
         "error_asr_language_unsupported": "Sesten yazıya motoru seçili dili desteklemiyor: {language}",
         "error_asr_dependency_missing": "Yerel altyazı motoru kurulu değil. G-TMCE ASR bağımlılıklarını (faster-whisper) yükle.",
         "error_asr_audio_missing": "Ses parçası bulunamadı: {path}",
         "error_asr_failed": "Sesten yazıya dönüştürme başarısız: {error}",
         "error_asr_no_speech": "Bu ses parçasından yazıya dönüştürülebilecek konuşma bulunamadı.",
+        "error_translation_dependency_missing": "Yerel çeviri motoru kurulu değil. G-TMCE çeviri bağımlılığını (sentencepiece) yükle.",
+        "error_translation_target_unsupported": "Seçilen AI çeviri hedef dili kullanılamıyor: {language}",
+        "error_translation_same_language": "Kaynak ve hedef dil aynı: {language}",
+        "error_translation_model_invalid": "Yerel çeviri modeli eksik veya geçersiz: {path}",
+        "error_translation_failed": "Yerel AI çevirisi başarısız: {error}",
+        "error_translation_no_output": "Yerel çeviri motoru herhangi bir altyazı metni üretmedi.",
         "button_apply_audio_adjust": "Uygula",
         "button_apply_audio_to_all_episodes": "Seçilenleri Tüm Bölümlere Uygula",
         "button_restore_audio_original": "Orijinali Geri Yükle",
@@ -1839,6 +1867,25 @@ def remove_stale_appimage_service_menu_for_system_install() -> list[str]:
     return errors
 
 
+def remove_stale_appimage_desktop_entry_for_system_install() -> list[str]:
+    """Unshadow the system launcher only when the user entry is ours."""
+    if not is_system_linux_install():
+        return []
+    data_home = linux_user_data_home()
+    if data_home is None:
+        return []
+    path = data_home / "applications" / f"{APP_ID}.desktop"
+    expected = linux_appimage_desktop_entry_contents(data_home / APP_ID / f"{APP_NAME}.AppImage")
+    try:
+        if path.is_symlink() or not path.is_file() or path.read_text(encoding="utf-8") != expected:
+            return []
+        path.unlink()
+        refresh_linux_kde_service_menu_cache()
+    except OSError as exc:
+        return [f"{path}: {exc}"]
+    return []
+
+
 def context_menu_integration_supported() -> bool:
     return os.name == "nt" or current_appimage_path() is not None
 
@@ -1934,10 +1981,11 @@ FONT_ATTACHMENT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"}
 MUX_UNKNOWN_LANGUAGE = "und"
 DEFAULT_OUTPUT_NAME = "output.mkv"
 INTRO_DETECTION_WINDOW_SECONDS = 4 * 60
-INTRO_DETECTION_MIN_SECONDS = 35.0
+INTRO_DETECTION_MIN_SECONDS = 12.0
 INTRO_DETECTION_MAX_SECONDS = 4 * 60
 INTRO_DETECTION_CLUSTER_SECONDS = 4.0
 INTRO_DETECTION_BLACK_SUBTITLE_CLUSTER_SECONDS = 6.0
+INTRO_DETECTION_SUBTITLE_AGREEMENT_SECONDS = 0.5
 INTRO_DETECTION_MIN_CONFIDENCE = 88.0
 INTRO_DETECTION_TOP_CANDIDATES = 12
 RELEASE_STOP_TOKENS = {
@@ -4642,7 +4690,55 @@ def next_object_id_for_items(config: dict[str, Any], items: list[TrackItem]) -> 
     return max_id + 1
 
 
+def generated_subtitle_info_from_filename(path: Path) -> tuple[str, bool] | None:
+    """Return the target language and AI-translation state of a G-TMCE SRT.
+
+    Audio transcription uses ``<audio>.<language>.generated.srt`` while AI
+    translation uses ``<source>.<target>.generated.srt``.  The last language
+    token is therefore the output language; scanning from the start would mark
+    ``eng.tr.generated.srt`` as English instead of Turkish.
+    """
+    tokens = [token for token in re.split(r"[._\-\s()]+", path.stem.lower()) if token]
+    if not tokens or tokens[-1] != "generated":
+        return None
+
+    languages: list[str] = []
+    for token in tokens[:-1]:
+        if token in SUBTITLE_DESCRIPTOR_TOKENS:
+            continue
+        if token in LANG_ALIASES:
+            languages.append(LANG_ALIASES[token])
+        elif re.fullmatch(r"[a-z]{2}", token):
+            languages.append(token)
+    if not languages:
+        return None
+
+    target_language = languages[-1]
+    is_ai_translation = len(languages) >= 2 and languages[-2] != target_language
+    return target_language, is_ai_translation
+
+
+def generated_subtitle_track_name(path: Path) -> str:
+    """Give locally produced subtitles a useful Matroska track title."""
+    info = generated_subtitle_info_from_filename(path)
+    if info is None:
+        return ""
+    language, is_ai_translation = info
+    if is_ai_translation:
+        return {
+            "tr": "AI ile Çevrildi",
+            "en": "AI Translated",
+        }.get(language, "AI Translated")
+    return {
+        "tr": "Sesten Oluşturuldu",
+        "en": "Generated from Audio",
+    }.get(language, "Generated from Audio")
+
+
 def infer_language_from_filename(path: Path, unknown_language: str = "und") -> str:
+    generated_info = generated_subtitle_info_from_filename(path)
+    if generated_info is not None:
+        return generated_info[0]
     tokens = [token for token in re.split(r"[._\-\s]+", path.stem.lower()) if token]
     for token in tokens:
         if token in SUBTITLE_DESCRIPTOR_TOKENS:
@@ -4870,6 +4966,9 @@ def infer_subtitle_track_flags(
     forced = bool(tokens & {"forced", "force", "forc"})
     sdh = bool(tokens & {"sdh", "hi", "cc", "hearing"})
     name_parts = []
+    generated_name = generated_subtitle_track_name(path)
+    if generated_name:
+        name_parts.append(generated_name)
     if forced:
         name_parts.append("Forced")
     if sdh:
@@ -5842,6 +5941,34 @@ def subtitle_intro_candidates(
     return top_intro_candidates(candidates, duration_seconds)
 
 
+def subtitle_consensus_intro_candidate(
+    subtitle_candidates_by_track: list[list[IntroDetectionCandidate]],
+    duration_seconds: float = 0.0,
+) -> IntroDetectionCandidate | None:
+    """Find the first sustained dialogue independently timed by two tracks."""
+    matches: list[IntroDetectionCandidate] = []
+    for index, first_track in enumerate(subtitle_candidates_by_track):
+        for second_track in subtitle_candidates_by_track[index + 1 :]:
+            for first in first_track:
+                if first.score < 65.0:
+                    continue
+                for second in second_track:
+                    if second.score < 65.0:
+                        continue
+                    if abs(first.seconds - second.seconds) > INTRO_DETECTION_SUBTITLE_AGREEMENT_SECONDS:
+                        continue
+                    seconds = min(first.seconds, second.seconds)
+                    if intro_candidate_is_valid(seconds, duration_seconds):
+                        matches.append(
+                            IntroDetectionCandidate(
+                                seconds,
+                                min(first.score, second.score),
+                                "subtitle-consensus",
+                            )
+                        )
+    return min(matches, key=lambda candidate: candidate.seconds) if matches else None
+
+
 def intro_item_paths(
     items: list[TrackItem],
     *,
@@ -6214,6 +6341,8 @@ def audio_energy_intro_candidates(
 
 
 def intro_candidate_group(candidate: IntroDetectionCandidate) -> str:
+    if candidate.source == "subtitle-consensus":
+        return "dialogue-consensus"
     if candidate.source.startswith("subtitle"):
         return "subtitle"
     if candidate.source in {"blackdetect", "scenechange"}:
@@ -6244,7 +6373,7 @@ def subtitle_starts_during_final_black_frames(
 def intro_boundary_anchor(
     cluster: list[IntroDetectionCandidate],
 ) -> IntroDetectionCandidate:
-    """Choose an actual cut/end timestamp rather than averaging clocks."""
+    """Choose a confirmed dialogue start or media boundary, not an average."""
     dialogue_over_black = [
         subtitle
         for black in cluster
@@ -6267,6 +6396,7 @@ def intro_boundary_anchor(
     # are already end boundaries. Prefer them over a scene cut at the *start*
     # of the transition, which would place the chapter slightly too early.
     priority = {
+        "subtitle-consensus": -1,
         "blackdetect": 0,
         "silencedetect": 1,
         "scenechange": 2,
@@ -6329,12 +6459,13 @@ def select_intro_detection_candidate(
                 group_best[group] = item
 
         evidence_groups = {group for group in group_best if group != "other"}
-        media_groups = evidence_groups & {"video", "audio"}
+        support_groups = evidence_groups & {"video", "audio", "dialogue-consensus"}
 
         # One black frame, one silence, or one RMS drop is not enough. A valid
-        # boundary needs independent agreement from at least two evidence
-        # groups, one of which must come from the media itself.
-        if len(evidence_groups) < 2 or not media_groups:
+        # boundary needs independent agreement. Two separately timed subtitle
+        # tracks can also confirm sustained early dialogue before media
+        # heuristics find a nearby cut or silence.
+        if len(evidence_groups) < 2 or not support_groups:
             continue
 
         ordered = sorted(
@@ -6392,12 +6523,21 @@ def detect_intro_chapter_start_seconds(
     unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
 ) -> float:
     candidates: list[IntroDetectionCandidate] = []
+    subtitle_candidates_by_track: list[list[IntroDetectionCandidate]] = []
 
-    # Subtitle timestamps are collected only as supporting hints.  Media
-    # analysis is always performed, even when subtitles exist.
+    # Sustained dialogue agreed by two subtitle tracks can establish an early
+    # boundary. Media analysis still runs to catch single-track cases.
     for item in items:
         if track_type_value(item) == 2 or media_kind_from_path(item.path) == "subtitle":
-            candidates.extend(subtitle_intro_candidates(item, duration_seconds))
+            subtitle_candidates = subtitle_intro_candidates(item, duration_seconds)
+            subtitle_candidates_by_track.append(subtitle_candidates)
+            candidates.extend(subtitle_candidates)
+    subtitle_consensus = subtitle_consensus_intro_candidate(
+        subtitle_candidates_by_track,
+        duration_seconds,
+    )
+    if subtitle_consensus is not None:
+        candidates.append(subtitle_consensus)
 
     source = analysis_source if analysis_source is not None and analysis_source.is_file() else None
     if source is not None:

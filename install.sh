@@ -260,23 +260,6 @@ StartupNotify=true
 
 MimeType=application/octet-stream;video/*;
 
-Patterns=\
-*.mkv;\
-*.mk3d;\
-*.mka;\
-*.mks;\
-*.webm;\
-*.mp4;\
-*.m4v;\
-*.mov;\
-*.avi;\
-*.wmv;\
-*.mpg;\
-*.mpeg;\
-*.ts;\
-*.m2ts;\
-*.mts
-
 Categories=AudioVideo;Video;Utility;
 
 Keywords=G-TMCE;mkv;matroska;tmdb;metadata;extract;tracks;subtitles;chapters;attachments;
@@ -284,6 +267,31 @@ Keywords[tr]=G-TMCE;mkv;matroska;tmdb;metadata;çıkar;parça;altyazı;chapter;e
 EOF
 
   chmod 644 "$APP_DESKTOP_DIR/${APP_ID}.desktop"
+}
+
+remove_invoking_users_stale_appimage_entry() {
+  # XDG prefers a user's applications/ entry over /usr/share/applications/.
+  # A previous AppImage launch may therefore keep shadowing this installation.
+  # Run the exact-content check as that user; never delete a customized entry.
+  if [[ -z "${SUDO_USER:-}" || "${SUDO_USER}" == "root" ]]; then
+    return
+  fi
+  local user_home
+  user_home="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
+  if [[ -z "$user_home" ]]; then
+    return
+  fi
+  # Run from the copied installation.  Otherwise Python imports src/ from the
+  # directory from which install.sh was invoked, so it mistakes this for a
+  # source checkout and leaves the higher-priority AppImage launcher behind.
+  if ! (
+    cd "$INSTALL_DIR"
+    sudo -u "$SUDO_USER" env -u XDG_DATA_HOME HOME="$user_home" \
+      PYTHONPATH="$INSTALL_DIR:$VENDOR_DIR" python3 -c \
+      'import sys; from src.gtmce.core import remove_stale_appimage_desktop_entry_for_system_install as clean; errors = clean(); print("\n".join(errors)); sys.exit(bool(errors))'
+  ); then
+    echo "Warning: Could not remove the invoking user's stale AppImage launcher."
+  fi
 }
 
 install_dolphin_service_menu() {
@@ -407,6 +415,7 @@ main() {
   install_launcher
   install_icon
   install_desktop_entry
+  remove_invoking_users_stale_appimage_entry
   install_dolphin_service_menu
   update_caches
 

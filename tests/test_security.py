@@ -183,6 +183,38 @@ class WindowsContextMenuLauncherTests(unittest.TestCase):
             self.assertTrue(unrelated_menu.exists())
             refresh_cache.assert_called_once()
 
+    def test_system_install_unshadows_only_its_own_appimage_desktop_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_home = Path(tmp) / "share"
+            launcher = data_home / "applications" / "g-tmce.desktop"
+            launcher.parent.mkdir(parents=True)
+            stale = app.linux_appimage_desktop_entry_contents(
+                data_home / "g-tmce" / "G-TMCE.AppImage"
+            )
+            launcher.write_text(stale, encoding="utf-8")
+            with (
+                mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(data_home)}, clear=False),
+                mock.patch.object(app._core, "APP_DIR", Path("/opt/G-TMCE")),
+                mock.patch.object(app._core, "refresh_linux_kde_service_menu_cache") as refresh_cache,
+            ):
+                self.assertEqual(app.remove_stale_appimage_desktop_entry_for_system_install(), [])
+                self.assertFalse(launcher.exists())
+                refresh_cache.assert_called_once()
+
+                launcher.write_text(stale + "# customized\n", encoding="utf-8")
+                self.assertEqual(app.remove_stale_appimage_desktop_entry_for_system_install(), [])
+                self.assertTrue(launcher.exists())
+                refresh_cache.assert_called_once()
+
+                launcher.unlink()
+                target = data_home / "custom.desktop"
+                target.write_text(stale, encoding="utf-8")
+                launcher.symlink_to(target)
+                self.assertEqual(app.remove_stale_appimage_desktop_entry_for_system_install(), [])
+                self.assertTrue(launcher.is_symlink())
+                self.assertTrue(target.exists())
+                refresh_cache.assert_called_once()
+
 class UrlSecurityTests(unittest.TestCase):
     def test_opensubtitles_base_url_accepts_official_hosts(self) -> None:
         self.assertEqual(
