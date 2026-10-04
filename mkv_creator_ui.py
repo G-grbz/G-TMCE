@@ -51,6 +51,7 @@ from src.gtmce.transcription import (
     TRANSLATION_TARGET_LANGUAGES,
     generated_subtitle_path,
     generated_translation_path,
+    normalise_asr_language,
     transcribe_audio_to_srt,
     translate_srt_with_ai,
     translation_language_name,
@@ -2238,7 +2239,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             language = track_language_value(item) or "und"
             row_data = {"path":item.path,"language":language,"selected":selected,"delta":delta,"codec":codec,"bitrate":bitrate,"sample_rate":rate,"layout":layout_var,"volume":volume,"volume_slider":slider,"volume_label":value_label,"speed":speed,"speed_values":speed_values,"defaults":defaults,"name_label":name}
             subtitle_host = QWidget(); subtitle_layout = QHBoxLayout(subtitle_host); subtitle_layout.setContentsMargins(0,0,0,0); subtitle_layout.setSpacing(6)
-            subtitle_button = self._button("button_create_subtitle_from_audio", lambda _checked=False, row=row_data: self.start_audio_transcription(row))
+            subtitle_button = self._button("button_create_subtitle_from_audio", lambda _checked=False, row=row_data: self.prompt_audio_transcription(row))
             translation_button = self._button("button_ai_translate", lambda _checked=False, row=row_data: self.start_audio_ai_translation(row))
             subtitle_button.setEnabled(language != "und")
             translation_button.setEnabled(language != "und")
@@ -2575,29 +2576,137 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             self.update_audio_adjust_apply_button_text()
 
     def choose_ai_translation_target(self, source_language: str) -> str | None:
-        source_language = str(source_language or "").strip().lower()
-        options = [
-            (code, name)
-            for code, name in TRANSLATION_TARGET_LANGUAGES
-            if code != source_language
-        ]
-        labels = [f"{name} ({code})" for code, name in options]
-        if not labels:
-            return None
-        selected, accepted = QInputDialog.getItem(
-            self.audio_adjust_window or self,
-            self.tr("dialog_ai_translation_language_title"),
-            self.tr("dialog_ai_translation_language_label"),
-            labels,
-            0,
-            False,
-        )
-        if not accepted:
-            return None
+        """Choose an AI translation target while still showing the source language.
+
+        Hiding the source language made a valid target such as Turkish appear to
+        be missing whenever the selected audio track was already Turkish.  Keep
+        every supported target visible instead, but disable the source language
+        so users can see that it is supported without allowing a same-language
+        translation (which would collide with the generated source SRT path).
+        """
         try:
-            return options[labels.index(selected)][0]
-        except ValueError:
+            source_code = normalise_asr_language(source_language)
+        except UserVisibleError:
+            source_code = str(source_language or "").strip().lower()
+
+        dialog = QDialog(self.audio_adjust_window or self)
+        dialog.setWindowTitle(self.tr("dialog_ai_translation_language_title"))
+        dialog.setModal(True)
+        dialog.setMinimumWidth(390)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        label = QLabel(self.tr("dialog_ai_translation_language_label"))
+        layout.addWidget(label)
+        combo = QComboBox()
+        first_enabled = -1
+        source_index = -1
+        for index, (code, name) in enumerate(TRANSLATION_TARGET_LANGUAGES):
+            display = f"{name} ({code})"
+            if code == source_code:
+                display += self.tr("ai_translation_source_language_suffix")
+                source_index = index
+            elif first_enabled < 0:
+                first_enabled = index
+            combo.addItem(display, code)
+
+        # QComboBox uses a QStandardItemModel on Qt. Disable only the source
+        # item so it remains visible but cannot be selected as a translation
+        # target. Guard the model access for alternative Qt implementations.
+        if source_index >= 0:
+            model = combo.model()
+            item_getter = getattr(model, "item", None)
+            if callable(item_getter):
+                item = item_getter(source_index)
+                if item is not None:
+                    item.setEnabled(False)
+        if first_enabled >= 0:
+            combo.setCurrentIndex(first_enabled)
+        layout.addWidget(combo)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton(self.tr("button_cancel"))
+        cancel.setObjectName("GhostButton")
+        accept = QPushButton(self.tr("button_continue"))
+        accept.setDefault(True)
+        cancel.clicked.connect(dialog.reject)
+        accept.clicked.connect(dialog.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(accept)
+        layout.addLayout(buttons)
+
+        if first_enabled < 0 or dialog.exec() != QDialog.Accepted:
             return None
+        target = str(combo.currentData() or "").strip().lower()
+        if not target or target == source_code:
+            return None
+        return target
+
+    def choose_audio_transcription_quality(self) -> str | None:
+        """Ask for a per-job ASR speed/accuracy profile.
+
+        The choice is intentionally not persisted: different source mixes can
+        benefit from different Whisper models/decoding effort.
+        """
+        dialog = QDialog(self.audio_adjust_window or self)
+        dialog.setWindowTitle(self.tr("dialog_asr_quality_title"))
+        dialog.setModal(True)
+        dialog.setMinimumWidth(360)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        message = QLabel(self.tr("dialog_asr_quality_message"))
+        message.setWordWrap(True)
+        layout.addWidget(message)
+
+        resource_warning = QLabel(self.tr("dialog_asr_quality_resource_warning"))
+        resource_warning.setWordWrap(True)
+        resource_warning.setObjectName("AsrResourceWarning")
+        resource_warning.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(resource_warning)
+
+        selected: dict[str, str | None] = {"value": None}
+        choices = (
+            ("fast", "asr_quality_fast", "asr_quality_fast_hint"),
+            ("medium", "asr_quality_medium", "asr_quality_medium_hint"),
+            ("slow", "asr_quality_slow", "asr_quality_slow_hint"),
+            ("slower", "asr_quality_slower", "asr_quality_slower_hint"),
+        )
+        for profile, label_key, hint_key in choices:
+            button = QPushButton(self.tr(label_key))
+            button.setMinimumHeight(42)
+            button.setToolTip(self.tr(hint_key))
+            button.setAccessibleDescription(self.tr(hint_key))
+            button.clicked.connect(
+                lambda _checked=False, value=profile: (
+                    selected.__setitem__("value", value),
+                    dialog.accept(),
+                )
+            )
+            layout.addWidget(button)
+
+        cancel = QPushButton(self.tr("button_cancel"))
+        cancel.setObjectName("GhostButton")
+        cancel.clicked.connect(dialog.reject)
+        layout.addWidget(cancel)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return selected["value"]
+
+    def prompt_audio_transcription(self, row: dict[str, Any]) -> None:
+        # Preserve the existing one-click cancel behavior while a transcription
+        # job is active; only open the profile picker for a new job.
+        if self.worker is not None and self.worker.is_alive():
+            self.start_audio_transcription(row)
+            return
+        quality_profile = self.choose_audio_transcription_quality()
+        if quality_profile is None:
+            return
+        self.start_audio_transcription(row, quality_profile=quality_profile)
 
     def start_audio_ai_translation(self, row: dict[str, Any]) -> None:
         # The AI-translation button doubles as the cancel button while an
@@ -2625,9 +2734,35 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         target_language = self.choose_ai_translation_target(language)
         if target_language is None:
             return
-        self.start_audio_transcription(row, translate_to=target_language)
 
-    def start_audio_transcription(self, row: dict[str, Any], translate_to: str | None = None) -> None:
+        # AI translation reuses an existing generated source-language SRT when
+        # available. If Whisper still has to create that intermediate subtitle,
+        # ask for the same per-job ASR profile used by the normal Subtitle
+        # Create action instead of silently falling back to the default model.
+        source = Path(row["path"])
+        try:
+            source_generated_subtitle = generated_subtitle_path(source, language)
+        except UserVisibleError as exc:
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
+            return
+        quality_profile: str | None = None
+        if not source_generated_subtitle.exists():
+            quality_profile = self.choose_audio_transcription_quality()
+            if quality_profile is None:
+                return
+
+        self.start_audio_transcription(
+            row,
+            translate_to=target_language,
+            quality_profile=quality_profile,
+        )
+
+    def start_audio_transcription(
+        self,
+        row: dict[str, Any],
+        translate_to: str | None = None,
+        quality_profile: str | None = None,
+    ) -> None:
         if self.worker is not None and self.worker.is_alive():
             if self.current_operation == "audio_transcription":
                 self.cancel_current_operation()
@@ -2659,6 +2794,14 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 return
 
         source_generated_subtitle = generated_subtitle_path(source, language)
+        defaults = row.get("defaults") if isinstance(row.get("defaults"), dict) else {}
+        source_channel_layout = str(defaults.get("channel_layout") or "").strip()
+        if not source_channel_layout:
+            layout_var = row.get("layout")
+            try:
+                source_channel_layout = str(layout_var.get() or "").strip()
+            except Exception:
+                source_channel_layout = str(layout_var or "").strip()
         target_name = translation_language_name(target_language) if target_language else ""
         if target_language is not None:
             if source_generated_subtitle.exists():
@@ -2693,6 +2836,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                         source,
                         language,
                         output_path=source_generated_subtitle,
+                        quality_profile=quality_profile,
+                        channel_layout=source_channel_layout,
                         cancel_event=self.cancel_event,
                         log=self.queue_log,
                     )
@@ -2709,6 +2854,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                     source,
                     language,
                     output_path=destination,
+                    quality_profile=quality_profile,
+                    channel_layout=source_channel_layout,
                     cancel_event=self.cancel_event,
                     log=self.queue_log,
                 )

@@ -657,3 +657,165 @@ def test_ai_translation_drops_tiny_incomplete_english_function_word(monkeypatch,
         "tr",
     )
     assert result == []
+
+
+def test_default_asr_model_prefers_accuracy_for_subtitle_creation():
+    from src.gtmce.transcription import DEFAULT_ASR_MODEL
+
+    assert DEFAULT_ASR_MODEL == "large-v3"
+
+
+def test_hallucination_cleanup_removes_stock_intro_boilerplate_from_sample():
+    from src.gtmce.transcription import _filter_hallucinated_cues
+
+    cues = [
+        SubtitleCue(2.14, 3.98, "İzlediğiniz için teşekkür ederim."),
+        SubtitleCue(17.92, 19.74, "Abi, ben diyeceğim seni öldürecek."),
+    ]
+    assert _filter_hallucinated_cues(cues) == [cues[1]]
+
+
+def test_asr_has_no_builtin_turkish_hotword_bias(monkeypatch):
+    from src.gtmce.transcription import _asr_hotwords
+
+    monkeypatch.delenv("GTMCE_ASR_HOTWORDS", raising=False)
+    assert _asr_hotwords("tr") is None
+
+
+def test_asr_custom_hotwords_remain_opt_in(monkeypatch):
+    from src.gtmce.transcription import _asr_hotwords
+
+    monkeypatch.setenv("GTMCE_ASR_HOTWORDS", "özel terim")
+    assert _asr_hotwords("tr") == "özel terim"
+
+
+def test_dialogue_mix_uses_center_channel_for_surround_layouts():
+    from src.gtmce.transcription import _dialogue_mix_filter
+
+    for layout in ("5.1", "5.1(side)", "7.1", "3.0"):
+        mix = _dialogue_mix_filter(layout)
+        assert mix is not None
+        assert "FC" in mix
+        assert "FL" in mix
+        assert "FR" in mix
+
+
+def test_dialogue_mix_leaves_stereo_and_centerless_layouts_unchanged():
+    from src.gtmce.transcription import _dialogue_mix_filter
+
+    for layout in ("mono", "stereo", "2.1", "quad", ""):
+        assert _dialogue_mix_filter(layout) is None
+
+
+def test_large_v3_plus_uses_heavier_decode_than_large_v3():
+    from src.gtmce.transcription import ASR_QUALITY_PROFILES
+
+    regular = ASR_QUALITY_PROFILES["slow"]
+    plus = ASR_QUALITY_PROFILES["slower"]
+    assert regular["model"] == plus["model"] == "large-v3"
+    assert plus["beam_size"] > regular["beam_size"]
+    assert plus["beam_size"] <= 8
+    assert plus["patience"] > regular["patience"]
+    assert plus["patience"] <= 1.5
+
+
+def test_repetition_loop_cleanup_removes_multiword_prompt_lock_region():
+    from src.gtmce.transcription import _filter_repetition_loops
+
+    cues = [SubtitleCue(0.0, 1.0, "Gerçek cümle.")]
+    for i in range(8):
+        start = 2.0 + i * 2.0
+        cues.append(SubtitleCue(start, start + 1.0, "Ne yapar?"))
+    cues.append(SubtitleCue(19.0, 20.0, "Sonraki gerçek cümle."))
+
+    cleaned = _filter_repetition_loops(cues)
+    assert [cue.text for cue in cleaned] == ["Gerçek cümle.", "Sonraki gerçek cümle."]
+
+
+def test_repetition_loop_cleanup_catches_long_single_word_lock_but_keeps_short_repetition():
+    from src.gtmce.transcription import _filter_repetition_loops
+
+    short = [SubtitleCue(i * 1.5, i * 1.5 + 0.5, "Kimsin?") for i in range(4)]
+    assert _filter_repetition_loops(short) == short
+
+    long = [SubtitleCue(i * 1.5, i * 1.5 + 0.5, "Kimsin?") for i in range(10)]
+    assert _filter_repetition_loops(long) == []
+
+
+def test_local_context_ranges_overlap_without_output_gaps():
+    from src.gtmce.transcription import _local_context_ranges
+
+    ranges = _local_context_ranges(250.0, block_seconds=120.0, overlap_seconds=3.0)
+    assert ranges == [
+        (0.0, 120.0, 0.0, 118.5),
+        (117.0, 237.0, 118.5, 235.5),
+        (234.0, 250.0, 235.5, 250.0),
+    ]
+    # Decode windows overlap, but ownership windows are continuous.
+    assert ranges[0][1] > ranges[1][0]
+    assert ranges[1][1] > ranges[2][0]
+    assert ranges[0][3] == ranges[1][2]
+    assert ranges[1][3] == ranges[2][2]
+
+
+def test_local_context_ranges_keep_short_audio_in_one_block():
+    from src.gtmce.transcription import _local_context_ranges
+
+    assert _local_context_ranges(75.0) == [(0.0, 75.0, 0.0, 75.0)]
+
+
+def test_vad_boundary_prefers_nearby_real_silence():
+    from src.gtmce.transcription import _choose_vad_silence_boundary
+
+    # Nominal 120 s falls inside speech; nearest useful silence is 121.4-123.0.
+    boundary = _choose_vad_silence_boundary(
+        120.0,
+        108.0,
+        132.0,
+        [(108.0, 121.4), (123.0, 132.0)],
+        min_silence_seconds=0.55,
+    )
+    assert 121.5 <= boundary <= 122.9
+
+
+def test_vad_boundary_keeps_target_when_target_is_already_silent():
+    from src.gtmce.transcription import _choose_vad_silence_boundary
+
+    boundary = _choose_vad_silence_boundary(
+        120.0,
+        108.0,
+        132.0,
+        [(108.0, 118.5), (121.0, 132.0)],
+    )
+    assert boundary == 120.0
+
+
+def test_context_ranges_use_silence_boundaries_with_small_overlap():
+    from src.gtmce.transcription import _local_context_ranges_from_boundaries
+
+    ranges = _local_context_ranges_from_boundaries(
+        250.0,
+        [121.8, 239.2],
+        overlap_seconds=1.0,
+    )
+    assert ranges == [
+        (0.0, 122.3, 0.0, 121.8),
+        (121.3, 239.7, 121.8, 239.2),
+        (238.7, 250.0, 239.2, 250.0),
+    ]
+    assert ranges[0][3] == ranges[1][2]
+    assert ranges[1][3] == ranges[2][2]
+
+
+def test_boundary_duplicate_cleanup_catches_shifted_whisper_sentence():
+    from src.gtmce.transcription import _deduplicate_boundary_cues
+
+    cues = [
+        SubtitleCue(116.08, 120.40, "Senin ağabeyin var ya, senin ağabin gelsin beni öldürsün."),
+        SubtitleCue(117.00, 121.10, "Senin abin var ya, senin abin gelsin beni öldürsün."),
+        SubtitleCue(124.00, 125.00, "Başka bir cümle."),
+    ]
+    cleaned = _deduplicate_boundary_cues(cues, [120.0])
+    assert len(cleaned) == 2
+    assert any("öldürsün" in cue.text for cue in cleaned)
+    assert any(cue.text == "Başka bir cümle." for cue in cleaned)

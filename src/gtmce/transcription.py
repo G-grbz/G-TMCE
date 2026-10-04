@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import json
+from difflib import SequenceMatcher
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import time
 import unicodedata
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -18,12 +23,531 @@ from .core import (
     OperationCancelled,
     UserVisibleError,
     app_config_dir,
+    ffmpeg_path,
+    subprocess_common_kwargs,
+    third_party_subprocess_env,
+    third_party_subprocess_executable,
     ui_text,
 )
 
 
-DEFAULT_ASR_MODEL = "turbo"
+DEFAULT_ASR_MODEL = "large-v3"
 ASR_RUNTIME_STATE_VERSION = 1
+
+# Per-job subtitle creation profiles used by the UI.  The labels stay in the
+# presentation layer; these stable keys let callers choose speed/accuracy for
+# each source without changing a global preference.
+ASR_QUALITY_PROFILES: dict[str, dict[str, Any]] = {
+    "fast": {"model": "turbo", "beam_size": 3, "patience": 1.0, "repetition_penalty": 1.05, "no_repeat_ngram_size": 3},
+    "medium": {"model": "medium", "beam_size": 5, "patience": 1.0, "repetition_penalty": 1.06, "no_repeat_ngram_size": 3},
+    "slow": {"model": "large-v3", "beam_size": 5, "patience": 1.0, "repetition_penalty": 1.07, "no_repeat_ngram_size": 3},
+    # Same acoustic model, but a wider/more patient beam search. Keep the
+    # extra search effort bounded: very large beams can cause severe RAM/VRAM
+    # pressure on long-form transcription and may trigger the Linux OOM killer.
+    # This is intentionally exposed as large-v3+ in the UI rather than
+    # pretending that Whisper ships a separate xlarge checkpoint.
+    "slower": {"model": "large-v3", "beam_size": 8, "patience": 1.5, "repetition_penalty": 1.08, "no_repeat_ngram_size": 3},
+}
+
+def _asr_hotwords(_language: str) -> str | None:
+    """Return only explicitly user-supplied ASR hotwords.
+
+    Do not ship language-wide lexical hints. In real film dialogue, biasing a
+    whole inflection family (for example Turkish ``abi/ağabey`` forms) can make
+    Whisper repeat those words even where the acoustics do not support them.
+    The environment override remains available for advanced, source-specific
+    terminology without imposing a global bias on normal users.
+    """
+    extra = os.environ.get("GTMCE_ASR_HOTWORDS", "").strip()
+    return extra or None
+
+
+def _normalise_channel_layout_name(channel_layout: str | None) -> str:
+    return re.sub(r"\s+", "", str(channel_layout or "").strip().lower())
+
+
+def _dialogue_mix_filter(channel_layout: str | None) -> str | None:
+    """Return an FFmpeg dialogue-focused downmix for center-channel layouts.
+
+    Stereo/mono and layouts without a declared front-center channel are left to
+    faster-whisper's normal decoder. For common cinema layouts, favour FC while
+    retaining a little FL/FR so deliberately panned dialogue is not lost.
+    """
+    layout = _normalise_channel_layout_name(channel_layout)
+    if not layout:
+        return None
+    center_layout_prefixes = (
+        "3.0", "3.1", "4.0", "4.1",
+        "5.0", "5.1", "6.0", "6.1",
+        "7.0", "7.1",
+    )
+    if not layout.startswith(center_layout_prefixes):
+        return None
+    return "pan=mono|c0=0.80*FC+0.10*FL+0.10*FR"
+
+
+def _prepare_asr_audio_input(
+    audio_path: Path,
+    channel_layout: str | None,
+    *,
+    cancel_event: Any | None,
+    logger: Callable[[str], None],
+) -> tuple[Path, Path | None]:
+    """Prepare a temporary dialogue-focused mono source when appropriate.
+
+    Returns ``(input_path, temporary_path)``. If preprocessing is unavailable or
+    fails, ASR safely falls back to the original source.
+    """
+    layout = _normalise_channel_layout_name(channel_layout)
+    mix_filter = _dialogue_mix_filter(layout)
+    if mix_filter is None:
+        if layout:
+            logger(f"G-TMCE ASR audio: layout={layout}; using standard decoder downmix")
+        else:
+            logger("G-TMCE ASR audio: layout unknown; using standard decoder downmix")
+        return audio_path, None
+
+    fd, temp_name = tempfile.mkstemp(prefix="gtmce-asr-dialogue-", suffix=".wav")
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        ffmpeg = ffmpeg_path()
+        args = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(audio_path),
+            "-map",
+            "0:a:0",
+            "-af",
+            mix_filter,
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            str(temp_path),
+        ]
+        logger(
+            f"G-TMCE ASR audio: layout={layout}; preparing dialogue-focused mono "
+            "(FC 80% + FL 10% + FR 10%)"
+        )
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=third_party_subprocess_env(),
+            executable=third_party_subprocess_executable(args),
+            **subprocess_common_kwargs(),
+        )
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                process.terminate()
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2.0)
+                raise OperationCancelled()
+            time.sleep(0.1)
+        _stdout, stderr = process.communicate()
+        if process.returncode != 0 or not temp_path.exists() or temp_path.stat().st_size < 44:
+            detail = (stderr or "").strip()
+            if detail:
+                detail = detail.splitlines()[-1][:240]
+                logger(f"G-TMCE ASR audio: dialogue downmix failed; using original audio ({detail})")
+            else:
+                logger("G-TMCE ASR audio: dialogue downmix failed; using original audio")
+            temp_path.unlink(missing_ok=True)
+            return audio_path, None
+        logger("G-TMCE ASR audio: dialogue-focused mono ready")
+        return temp_path, temp_path
+    except OperationCancelled:
+        temp_path.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        temp_path.unlink(missing_ok=True)
+        logger(f"G-TMCE ASR audio: dialogue downmix unavailable; using original audio ({exc})")
+        return audio_path, None
+
+
+LOCAL_CONTEXT_BLOCK_SECONDS = 120.0
+# Boundaries are moved onto nearby VAD-confirmed silence, so only a small
+# safety overlap is needed. The previous 3 s hard-boundary overlap could
+# decode the same sentence twice when Whisper shifted cue timestamps.
+LOCAL_CONTEXT_OVERLAP_SECONDS = 1.0
+LOCAL_CONTEXT_BOUNDARY_SEARCH_SECONDS = 12.0
+LOCAL_CONTEXT_MIN_SILENCE_SECONDS = 0.55
+
+
+def _wav_is_pcm_16k_mono(path: Path) -> bool:
+    """Return True when *path* is already the PCM format used by ASR blocks."""
+    try:
+        with wave.open(str(path), "rb") as source:
+            return (
+                source.getnchannels() == 1
+                and source.getsampwidth() == 2
+                and source.getframerate() == 16000
+                and source.getcomptype() == "NONE"
+            )
+    except (OSError, wave.Error, EOFError):
+        return False
+
+
+def _prepare_local_context_audio_input(
+    audio_path: Path,
+    *,
+    cancel_event: Any | None,
+    logger: Callable[[str], None],
+) -> tuple[Path, Path | None]:
+    """Ensure local-context decoding reads a seekable 16 kHz mono PCM WAV.
+
+    Blocked transcription intentionally resets Whisper's text prompt between
+    blocks.  A small on-disk PCM working file lets us read one block at a time
+    without decoding the entire film into RAM, which is important for large-v3
+    on memory-constrained Linux systems.
+    """
+    if _wav_is_pcm_16k_mono(audio_path):
+        return audio_path, None
+
+    fd, temp_name = tempfile.mkstemp(prefix="gtmce-asr-context-", suffix=".wav")
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        ffmpeg = ffmpeg_path()
+        args = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(audio_path),
+            "-map",
+            "0:a:0",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            str(temp_path),
+        ]
+        logger("G-TMCE ASR: preparing 16 kHz mono working audio for local-context blocks...")
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=third_party_subprocess_env(),
+            executable=third_party_subprocess_executable(args),
+            **subprocess_common_kwargs(),
+        )
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                process.terminate()
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2.0)
+                raise OperationCancelled()
+            time.sleep(0.1)
+        _stdout, stderr = process.communicate()
+        if process.returncode != 0 or not _wav_is_pcm_16k_mono(temp_path):
+            detail = (stderr or "").strip()
+            if detail:
+                detail = detail.splitlines()[-1][:240]
+            raise RuntimeError(detail or "could not prepare PCM working audio")
+        logger("G-TMCE ASR: local-context working audio ready")
+        return temp_path, temp_path
+    except OperationCancelled:
+        temp_path.unlink(missing_ok=True)
+        raise
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _local_context_ranges(
+    duration: float,
+    *,
+    block_seconds: float = LOCAL_CONTEXT_BLOCK_SECONDS,
+    overlap_seconds: float = LOCAL_CONTEXT_OVERLAP_SECONDS,
+) -> list[tuple[float, float, float, float]]:
+    """Return ``(start, end, keep_start, keep_end)`` ranges for local context.
+
+    Adjacent decode blocks overlap so words near a hard boundary are heard in
+    full by at least one block.  The keep-range splits that overlap at its
+    midpoint, preventing duplicate cues while preserving continuous coverage.
+    """
+    duration = max(0.0, float(duration))
+    block_seconds = max(30.0, float(block_seconds))
+    overlap_seconds = max(0.0, min(float(overlap_seconds), block_seconds / 4.0))
+    if duration <= 0.0:
+        return []
+    if duration <= block_seconds:
+        return [(0.0, duration, 0.0, duration)]
+
+    step = block_seconds - overlap_seconds
+    starts: list[float] = []
+    start = 0.0
+    while start < duration:
+        starts.append(start)
+        if start + block_seconds >= duration:
+            break
+        start += step
+
+    ranges: list[tuple[float, float, float, float]] = []
+    half_overlap = overlap_seconds / 2.0
+    for index, start in enumerate(starts):
+        end = min(duration, start + block_seconds)
+        keep_start = start if index == 0 else min(end, start + half_overlap)
+        keep_end = end if index == len(starts) - 1 else max(keep_start, end - half_overlap)
+        ranges.append((start, end, keep_start, keep_end))
+    return ranges
+
+
+def _choose_vad_silence_boundary(
+    target: float,
+    window_start: float,
+    window_end: float,
+    speech_ranges: Iterable[tuple[float, float]],
+    *,
+    min_silence_seconds: float = LOCAL_CONTEXT_MIN_SILENCE_SECONDS,
+) -> float:
+    """Move a nominal block boundary onto nearby VAD-confirmed silence."""
+    window_start = float(window_start)
+    window_end = max(window_start, float(window_end))
+    target = min(window_end, max(window_start, float(target)))
+    min_silence_seconds = max(0.1, float(min_silence_seconds))
+
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted((float(a), float(b)) for a, b in speech_ranges):
+        start = max(window_start, start)
+        end = min(window_end, end)
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1] + 0.02:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    gaps: list[tuple[float, float]] = []
+    cursor = window_start
+    for start, end in merged:
+        if start - cursor >= min_silence_seconds:
+            gaps.append((cursor, start))
+        cursor = max(cursor, end)
+    if window_end - cursor >= min_silence_seconds:
+        gaps.append((cursor, window_end))
+    if not gaps:
+        return target
+
+    best_point = target
+    best_score: tuple[float, float] | None = None
+    for gap_start, gap_end in gaps:
+        gap_length = gap_end - gap_start
+        margin = min(0.20, gap_length / 4.0)
+        safe_start = gap_start + margin
+        safe_end = gap_end - margin
+        if safe_end < safe_start:
+            safe_start = safe_end = (gap_start + gap_end) / 2.0
+        point = min(safe_end, max(safe_start, target))
+        score = (abs(point - target), -gap_length)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_point = point
+    return best_point
+
+
+def _vad_aligned_context_boundaries(
+    source: wave.Wave_read,
+    duration: float,
+    *,
+    block_seconds: float = LOCAL_CONTEXT_BLOCK_SECONDS,
+    search_seconds: float = LOCAL_CONTEXT_BOUNDARY_SEARCH_SECONDS,
+    cancel_event: Any | None = None,
+    logger: Callable[[str], None] | None = None,
+) -> list[float]:
+    """Find ~2 minute boundaries near real VAD silence without loading the film."""
+    duration = max(0.0, float(duration))
+    block_seconds = max(30.0, float(block_seconds))
+    search_seconds = max(2.0, min(float(search_seconds), block_seconds / 3.0))
+    if duration <= block_seconds:
+        return []
+
+    try:
+        from faster_whisper.vad import VadOptions, get_speech_timestamps  # type: ignore
+    except Exception:
+        return [
+            point
+            for point in (block_seconds * index for index in range(1, int(duration // block_seconds) + 1))
+            if 30.0 <= point <= duration - 30.0
+        ]
+
+    sampling_rate = int(source.getframerate())
+    boundaries: list[float] = []
+    previous = 0.0
+    target = block_seconds
+    shifted = 0
+    max_shift = 0.0
+    while target < duration - 30.0:
+        if cancel_event is not None and cancel_event.is_set():
+            raise OperationCancelled()
+        window_start = max(previous + 45.0, target - search_seconds)
+        window_end = min(duration - 30.0, target + search_seconds)
+        if window_end <= window_start:
+            boundary = target
+        else:
+            clip = _read_pcm_wav_range(source, window_start, window_end)
+            speech_ranges: list[tuple[float, float]] = []
+            if getattr(clip, "size", 0) > 0:
+                chunks = get_speech_timestamps(
+                    clip,
+                    VadOptions(
+                        threshold=0.30,
+                        min_speech_duration_ms=120,
+                        min_silence_duration_ms=500,
+                        speech_pad_ms=120,
+                    ),
+                )
+                for chunk in chunks:
+                    start = window_start + float(chunk["start"]) / sampling_rate
+                    end = window_start + float(chunk["end"]) / sampling_rate
+                    speech_ranges.append((start, end))
+            boundary = _choose_vad_silence_boundary(
+                target,
+                window_start,
+                window_end,
+                speech_ranges,
+            )
+        boundary = min(target + search_seconds, max(target - search_seconds, boundary))
+        boundary = max(previous + 45.0, boundary)
+        if duration - boundary < 30.0:
+            break
+        shift = abs(boundary - target)
+        if shift >= 0.05:
+            shifted += 1
+            max_shift = max(max_shift, shift)
+        boundaries.append(boundary)
+        previous = boundary
+        target = boundary + block_seconds
+
+    if logger is not None and boundaries:
+        logger(
+            "G-TMCE ASR: VAD-aligned "
+            f"{shifted}/{len(boundaries)} context boundary(s) to nearby silence "
+            f"(max shift {max_shift:.1f}s)"
+        )
+    return boundaries
+
+
+def _local_context_ranges_from_boundaries(
+    duration: float,
+    boundaries: Iterable[float],
+    *,
+    overlap_seconds: float = LOCAL_CONTEXT_OVERLAP_SECONDS,
+) -> list[tuple[float, float, float, float]]:
+    """Build decode/ownership ranges around silence-aligned core boundaries."""
+    duration = max(0.0, float(duration))
+    if duration <= 0.0:
+        return []
+    cleaned = sorted({
+        min(duration, max(0.0, float(point)))
+        for point in boundaries
+        if 0.0 < float(point) < duration
+    })
+    cores = [0.0, *cleaned, duration]
+    overlap_seconds = max(0.0, float(overlap_seconds))
+    half = overlap_seconds / 2.0
+    ranges: list[tuple[float, float, float, float]] = []
+    for index in range(len(cores) - 1):
+        keep_start = cores[index]
+        keep_end = cores[index + 1]
+        decode_start = keep_start if index == 0 else max(0.0, keep_start - half)
+        decode_end = keep_end if index == len(cores) - 2 else min(duration, keep_end + half)
+        ranges.append((decode_start, decode_end, keep_start, keep_end))
+    return ranges
+
+
+def _normalise_cue_compare_text(text: str) -> str:
+    text = unicodedata.normalize("NFKD", str(text or "")).casefold()
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9çğıöşü]+", " ", text).strip()
+
+
+def _deduplicate_boundary_cues(
+    cues: Iterable[SubtitleCue],
+    boundaries: Iterable[float],
+    *,
+    boundary_margin: float = 4.0,
+    logger: Callable[[str], None] | None = None,
+) -> list[SubtitleCue]:
+    """Remove near-identical overlapping cues created around block boundaries."""
+    boundary_points = [float(point) for point in boundaries]
+    ordered = sorted(cues, key=lambda cue: (cue.start, cue.end))
+    result: list[SubtitleCue] = []
+    removed = 0
+    for cue in ordered:
+        duplicate_index: int | None = None
+        cue_mid = (cue.start + cue.end) / 2.0
+        near_boundary = any(abs(cue_mid - point) <= boundary_margin for point in boundary_points)
+        if near_boundary:
+            cue_norm = _normalise_cue_compare_text(cue.text)
+            for index in range(len(result) - 1, -1, -1):
+                existing = result[index]
+                if existing.end < cue.start - 0.25:
+                    break
+                existing_mid = (existing.start + existing.end) / 2.0
+                if not any(abs(existing_mid - point) <= boundary_margin for point in boundary_points):
+                    continue
+                overlap = min(cue.end, existing.end) - max(cue.start, existing.start)
+                shorter = min(cue.end - cue.start, existing.end - existing.start)
+                if overlap <= 0.0 or shorter <= 0.0 or overlap / shorter < 0.30:
+                    continue
+                existing_norm = _normalise_cue_compare_text(existing.text)
+                if not cue_norm or not existing_norm:
+                    continue
+                if min(len(cue_norm), len(existing_norm)) < 12:
+                    similar = cue_norm == existing_norm
+                else:
+                    similar = SequenceMatcher(None, cue_norm, existing_norm).ratio() >= 0.72
+                if similar:
+                    duplicate_index = index
+                    break
+        if duplicate_index is None:
+            result.append(cue)
+            continue
+        existing = result[duplicate_index]
+        existing_score = (len(_normalise_cue_compare_text(existing.text)), existing.end - existing.start)
+        cue_score = (len(_normalise_cue_compare_text(cue.text)), cue.end - cue.start)
+        if cue_score > existing_score:
+            result[duplicate_index] = cue
+        removed += 1
+    if logger is not None and removed:
+        logger(f"G-TMCE ASR: removed {removed} duplicate cue(s) near context boundaries")
+    return sorted(result, key=lambda cue: (cue.start, cue.end))
+
+
+def _read_pcm_wav_range(source: wave.Wave_read, start: float, end: float) -> Any:
+    """Read one mono PCM WAV range as the float32 array faster-whisper expects."""
+    import numpy as np
+
+    sampling_rate = source.getframerate()
+    start_frame = max(0, int(round(start * sampling_rate)))
+    end_frame = min(source.getnframes(), int(round(end * sampling_rate)))
+    source.setpos(start_frame)
+    raw = source.readframes(max(0, end_frame - start_frame))
+    if not raw:
+        return np.empty((0,), dtype=np.float32)
+    audio = np.frombuffer(raw, dtype="<i2").astype(np.float32)
+    audio *= 1.0 / 32768.0
+    return audio
+
 # Multilingual, local translation model. MADLAD-400 uses a <2xx> target
 # language prefix and does not require a source-language-specific checkpoint.
 # The CT2 INT8 conversion keeps runtime memory reasonable while preserving a
@@ -123,6 +647,9 @@ TRANSLATION_TARGET_CODES = {code for code, _name in TRANSLATION_TARGET_LANGUAGES
 MODEL_DOWNLOAD_BYTES = {
     "turbo": 1_625_000_000,
     "large-v3-turbo": 1_625_000_000,
+    "medium": 1_500_000_000,
+    # Keep this approximate: it is used only for a friendly first-download log.
+    "large-v3": 3_100_000_000,
 }
 
 
@@ -282,10 +809,19 @@ def _hallucination_reason(cue: SubtitleCue) -> str | None:
         "danke furs zuschauen",
         "gracias por ver",
     }
-    if duration > 0 and duration < 1.50 and normalised in outro_phrases:
-        chars_per_second = compact_chars / duration
-        if chars_per_second > 24.0:
+    if normalised in outro_phrases:
+        # Whisper frequently emits these stock creator/outro phrases over the
+        # opening silence/music of films.  The supplied Turkish sample produced
+        # exactly "İzlediğiniz için teşekkür ederim." at 00:00:02 even though
+        # no dialogue exists there.  Keep the old impossible-speed guard for
+        # arbitrary positions, and additionally reject an exact stock phrase
+        # near the beginning of the programme.
+        if 0.0 <= float(cue.start) < 8.0 and duration < 4.0:
             return "outro-boilerplate"
+        if duration > 0 and duration < 1.50:
+            chars_per_second = compact_chars / duration
+            if chars_per_second > 24.0:
+                return "outro-boilerplate"
 
     # Reserve the generic speed rejection for truly extreme cases.  This keeps
     # fast arguments/dialogue while still rejecting text that cannot possibly
@@ -318,6 +854,89 @@ def _filter_hallucinated_cues(
         total = sum(counts.values())
         detail = ", ".join(f"{reason}={count}" for reason, count in sorted(counts.items()))
         logger(f"G-TMCE ASR: hallucination cleanup ({stage}) removed {total} cue(s): {detail}")
+    return kept
+
+
+def _filter_repetition_loops(
+    cues: Iterable[SubtitleCue],
+    *,
+    logger: Callable[[str], None] | None = None,
+    stage: str = "final",
+) -> list[SubtitleCue]:
+    """Remove high-confidence long-form Whisper repetition loops.
+
+    Long recordings can make Whisper latch onto a short sentence and emit it
+    again for unrelated audio.  We only flag a region when the *same*
+    multi-word phrase appears at least six times with no more than 30 seconds
+    between occurrences and the cluster spans at least eight seconds.  The
+    whole contaminated interval is removed so the existing gap-rescue pass can
+    decode that audio again independently without previous-text conditioning.
+    """
+    cue_list = list(cues)
+    if len(cue_list) < 6:
+        return cue_list
+
+    occurrences: dict[str, list[tuple[int, SubtitleCue]]] = {}
+    for index, cue in enumerate(cue_list):
+        normalised = _normalise_hallucination_text(cue.text)
+        tokens = normalised.split()
+        token_count = len(tokens)
+        if not (1 <= token_count <= 10) or len(normalised) > 100:
+            continue
+        # Single-word loops need a higher bar because real dialogue can repeat
+        # short interjections. Ignore tiny words such as "ha"/"ne" entirely.
+        if token_count == 1 and len(normalised) < 5:
+            continue
+        occurrences.setdefault(normalised, []).append((index, cue))
+
+    bad_windows: list[tuple[float, float, str, int]] = []
+    for phrase, items in occurrences.items():
+        cluster: list[tuple[int, SubtitleCue]] = []
+        required_count = 8 if len(phrase.split()) == 1 else 6
+        required_span = 10.0 if len(phrase.split()) == 1 else 8.0
+        for item in items:
+            cue = item[1]
+            if not cluster or cue.start - cluster[-1][1].start <= 30.0:
+                cluster.append(item)
+            else:
+                if len(cluster) >= required_count:
+                    start = cluster[0][1].start
+                    end = cluster[-1][1].end
+                    if end - start >= required_span:
+                        bad_windows.append((start, end, phrase, len(cluster)))
+                cluster = [item]
+        if len(cluster) >= required_count:
+            start = cluster[0][1].start
+            end = cluster[-1][1].end
+            if end - start >= required_span:
+                bad_windows.append((start, end, phrase, len(cluster)))
+
+    if not bad_windows:
+        return cue_list
+
+    # Merge overlapping contaminated windows before filtering.
+    merged: list[tuple[float, float]] = []
+    for start, end, _phrase, _count in sorted(bad_windows):
+        start = max(0.0, start - 0.35)
+        end += 0.35
+        if merged and start <= merged[-1][1] + 0.5:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    kept = [
+        cue for cue in cue_list
+        if not any(cue.start < end and cue.end > start for start, end in merged)
+    ]
+    if logger is not None:
+        removed = len(cue_list) - len(kept)
+        examples = ", ".join(
+            f"'{phrase[:36]}' x{count}" for _s, _e, phrase, count in bad_windows[:3]
+        )
+        logger(
+            f"G-TMCE ASR: repetition-loop cleanup ({stage}) removed {removed} cue(s) "
+            f"across {len(merged)} region(s) ({examples})"
+        )
     return kept
 
 
@@ -649,6 +1268,185 @@ def _format_bytes(value: int) -> str:
             return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
         amount /= 1024.0
     return f"{value} B"
+
+
+def _parse_linux_meminfo(text: str) -> dict[str, int]:
+    """Parse /proc/meminfo into byte values without requiring psutil."""
+    values: dict[str, int] = {}
+    for raw_line in str(text or "").splitlines():
+        if ":" not in raw_line:
+            continue
+        key, raw_value = raw_line.split(":", 1)
+        parts = raw_value.strip().split()
+        if not parts:
+            continue
+        try:
+            amount = int(parts[0])
+        except ValueError:
+            continue
+        # Linux reports these fields in KiB. Keep a defensive fallback for any
+        # future/unit-less fields so the logger can never break transcription.
+        multiplier = 1024 if len(parts) > 1 and parts[1].lower() == "kb" else 1
+        values[key.strip()] = amount * multiplier
+    return values
+
+
+def _linux_memory_snapshot() -> dict[str, int] | None:
+    try:
+        meminfo = _parse_linux_meminfo(Path("/proc/meminfo").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        return None
+    total = int(meminfo.get("MemTotal", 0))
+    available = int(meminfo.get("MemAvailable", meminfo.get("MemFree", 0)))
+    if total <= 0:
+        return None
+    swap_total = int(meminfo.get("SwapTotal", 0))
+    swap_free = int(meminfo.get("SwapFree", 0))
+    return {
+        "total": total,
+        "available": max(0, available),
+        "used": max(0, total - available),
+        "swap_total": max(0, swap_total),
+        "swap_used": max(0, swap_total - swap_free),
+    }
+
+
+def _process_rss_bytes() -> int | None:
+    try:
+        status = Path("/proc/self/status").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    match = re.search(r"^VmRSS:\s+(\d+)\s+kB\s*$", status, flags=re.MULTILINE | re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1)) * 1024
+
+
+def _nvidia_resource_snapshot() -> dict[str, Any] | None:
+    """Best-effort NVIDIA status via nvidia-smi; never a runtime dependency."""
+    executable = shutil.which("nvidia-smi")
+    if not executable:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                executable,
+                "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+                "--format=csv,noheader,nounits",
+                "-i",
+                "0",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        fields = [part.strip() for part in result.stdout.splitlines()[0].split(",")]
+        if len(fields) < 4:
+            return None
+        name = fields[0]
+        used_mib = float(fields[1])
+        total_mib = float(fields[2])
+        util = float(fields[3])
+        process_mib: float | None = None
+        process_result = subprocess.run(
+            [
+                executable,
+                "--query-compute-apps=pid,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if process_result.returncode == 0:
+            current_pid = os.getpid()
+            for line in process_result.stdout.splitlines():
+                parts = [part.strip() for part in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                try:
+                    if int(parts[0]) == current_pid:
+                        process_mib = float(parts[1])
+                        break
+                except ValueError:
+                    continue
+        return {
+            "name": name,
+            "used": int(used_mib * 1024 * 1024),
+            "total": int(total_mib * 1024 * 1024),
+            "util": util,
+            "process_used": None if process_mib is None else int(process_mib * 1024 * 1024),
+        }
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _asr_resource_log_lines(
+    device: str,
+    compute_type: str,
+    *,
+    large_profile: bool = False,
+) -> list[str]:
+    """Return concise RAM/VRAM status lines plus non-fatal pressure warnings."""
+    lines: list[str] = []
+    memory = _linux_memory_snapshot()
+    rss = _process_rss_bytes()
+    if memory is not None:
+        process_part = f"process={_format_bytes(rss)} | " if rss is not None else ""
+        lines.append(
+            "G-TMCE ASR resources: RAM "
+            f"{process_part}system={_format_bytes(memory['used'])}/{_format_bytes(memory['total'])} "
+            f"| available={_format_bytes(memory['available'])} "
+            f"| swap={_format_bytes(memory['swap_used'])}/{_format_bytes(memory['swap_total'])}"
+        )
+        available = memory["available"]
+        if available < int(1.5 * 1024**3):
+            lines.append(
+                "G-TMCE ASR WARNING: available RAM is critical "
+                f"({_format_bytes(available)}); Linux may invoke the OOM killer."
+            )
+        elif available < 3 * 1024**3:
+            lines.append(
+                "G-TMCE ASR WARNING: available RAM is low "
+                f"({_format_bytes(available)}); monitor memory pressure."
+            )
+        if large_profile and memory["swap_total"] == 0:
+            lines.append(
+                "G-TMCE ASR WARNING: swap is disabled; large-v3/large-v3+ has less "
+                "protection against sudden RAM spikes."
+            )
+
+    if device == "cuda":
+        gpu = _nvidia_resource_snapshot()
+        if gpu is not None:
+            process_gpu = (
+                f" | process VRAM={_format_bytes(gpu['process_used'])}"
+                if gpu.get("process_used") is not None
+                else ""
+            )
+            lines.append(
+                "G-TMCE ASR GPU: "
+                f"{gpu['name']} | CUDA/{compute_type} | "
+                f"VRAM={_format_bytes(gpu['used'])}/{_format_bytes(gpu['total'])}"
+                f"{process_gpu} | util={gpu['util']:.0f}%"
+            )
+            free_vram = max(0, int(gpu["total"]) - int(gpu["used"]))
+            if gpu["total"] and free_vram < max(512 * 1024**2, int(gpu["total"] * 0.08)):
+                lines.append(
+                    "G-TMCE ASR WARNING: GPU memory headroom is low "
+                    f"({_format_bytes(free_vram)} free); CUDA OOM is possible."
+                )
+        else:
+            lines.append(
+                f"G-TMCE ASR GPU: CUDA/{compute_type} active; nvidia-smi telemetry unavailable."
+            )
+    else:
+        lines.append(f"G-TMCE ASR device: CPU/{compute_type}")
+    return lines
 
 
 def _directory_size(path: Path) -> int:
@@ -1804,6 +2602,8 @@ def transcribe_audio_to_srt(
     *,
     output_path: Path | None = None,
     model_name: str | None = None,
+    quality_profile: str | None = None,
+    channel_layout: str | None = None,
     translate_to: str | None = None,
     cancel_event: Any | None = None,
     log: Callable[[str], None] | None = None,
@@ -1830,8 +2630,30 @@ def transcribe_audio_to_srt(
             else generated_subtitle_path(audio_path, language)
         )
     )
+    profile_key = str(quality_profile or "").strip().lower()
+    profile = ASR_QUALITY_PROFILES.get(profile_key) if profile_key else None
+    if quality_profile is not None and profile is None:
+        raise ValueError(f"Unknown ASR quality profile: {quality_profile}")
+    if model_name is None and profile is not None:
+        model_name = str(profile["model"])
     model_name = (model_name or os.environ.get("GTMCE_ASR_MODEL", DEFAULT_ASR_MODEL)).strip() or DEFAULT_ASR_MODEL
+    beam_size = int(profile.get("beam_size", 5)) if profile is not None else 5
+    patience = float(profile.get("patience", 1.0)) if profile is not None else 1.0
+    repetition_penalty = float(profile.get("repetition_penalty", 1.06)) if profile is not None else 1.06
+    no_repeat_ngram_size = int(profile.get("no_repeat_ngram_size", 3)) if profile is not None else 3
+    hotwords = _asr_hotwords(language)
     logger = log or (lambda _message: None)
+    asr_audio_path, temporary_asr_audio = _prepare_asr_audio_input(
+        audio_path,
+        channel_layout,
+        cancel_event=cancel_event,
+        logger=logger,
+    )
+    context_audio_path, temporary_context_audio = _prepare_local_context_audio_input(
+        asr_audio_path,
+        cancel_event=cancel_event,
+        logger=logger,
+    )
 
     def cancelled() -> bool:
         return bool(cancel_event is not None and cancel_event.is_set())
@@ -1839,7 +2661,28 @@ def transcribe_audio_to_srt(
     def run(device: str, compute_type: str, *, remember_runtime: bool) -> list[SubtitleCue]:
         if cancelled():
             raise OperationCancelled()
-        logger(f"G-TMCE ASR: model={model_name}, language={language}, device={device}, compute={compute_type}")
+        profile_log = f", profile={profile_key}" if profile_key else ""
+        large_profile = model_name == "large-v3" or profile_key in {"slow", "slower"}
+        last_resource_percent = -10
+        emitted_static_resource_warnings: set[str] = set()
+
+        def log_resources() -> None:
+            for resource_line in _asr_resource_log_lines(
+                device,
+                compute_type,
+                large_profile=large_profile,
+            ):
+                # Static configuration warnings (most notably disabled swap)
+                # should be useful, not repeated at every progress checkpoint.
+                if "swap is disabled" in resource_line:
+                    if resource_line in emitted_static_resource_warnings:
+                        continue
+                    emitted_static_resource_warnings.add(resource_line)
+                logger(resource_line)
+
+        logger(f"G-TMCE ASR: model={model_name}{profile_log}, language={language}, device={device}, compute={compute_type}")
+        if hotwords:
+            logger("G-TMCE ASR: applying custom recognition hotwords")
         logger("G-TMCE ASR: preparing model...")
         model = _load_whisper_model(
             model_name,
@@ -1853,53 +2696,122 @@ def transcribe_audio_to_srt(
             logger(f"G-TMCE ASR: saved working runtime {device}/{compute_type}")
         if cancelled():
             raise OperationCancelled()
+        log_resources()
 
-        # Film mixes often keep dialogue lower than music/effects.  A slightly
-        # more sensitive VAD catches quiet/centre-channel speech that the stock
-        # threshold can discard, while still avoiding full-film silence decode.
-        segments, info = model.transcribe(
-            str(audio_path),
-            language=language,
-            task="transcribe",
-            beam_size=5,
-            word_timestamps=True,
-            vad_filter=True,
-            vad_parameters={
-                "threshold": 0.30,
-                "min_speech_duration_ms": 120,
-                "min_silence_duration_ms": 700,
-                "speech_pad_ms": 350,
-            },
-            # The faster-whisper documentation notes that disabling previous
-            # text conditioning reduces repetition loops and timestamp drift.
-            condition_on_previous_text=False,
-            hallucination_silence_threshold=2.0,
-        )
-        duration = float(getattr(info, "duration", 0.0) or 0.0)
-        duration_after_vad = float(getattr(info, "duration_after_vad", 0.0) or 0.0)
+        # Preserve short-range linguistic context without allowing a prompt to
+        # survive for the entire film.  Each ~2 minute block gets its own
+        # previous-text history; the prompt is reset at the next block.  A small
+        # audio overlap protects words that straddle a block boundary, while the
+        # keep-range below prevents duplicate subtitle cues.
+        with wave.open(str(context_audio_path), "rb") as pcm_source:
+            sampling_rate = int(pcm_source.getframerate())
+            duration = float(pcm_source.getnframes()) / sampling_rate
+            context_boundaries = _vad_aligned_context_boundaries(
+                pcm_source,
+                duration,
+                cancel_event=cancel_event,
+                logger=logger,
+            )
+            context_ranges = _local_context_ranges_from_boundaries(
+                duration,
+                context_boundaries,
+            )
+            logger(
+                "G-TMCE ASR: local context enabled: "
+                f"~{LOCAL_CONTEXT_BLOCK_SECONDS:.0f}s blocks aligned to VAD silence, "
+                f"{LOCAL_CONTEXT_OVERLAP_SECONDS:.0f}s safety overlap; prompt resets between blocks"
+            )
+            collected_cues: list[SubtitleCue] = []
+            duration_after_vad = 0.0
+            last_percent = -1
+            total_blocks = len(context_ranges)
+            for block_index, (block_start, block_end, keep_start, keep_end) in enumerate(
+                context_ranges, start=1
+            ):
+                if cancelled():
+                    raise OperationCancelled()
+                clip = _read_pcm_wav_range(pcm_source, block_start, block_end)
+                if getattr(clip, "size", 0) <= 0:
+                    continue
+                segments, info = model.transcribe(
+                    clip,
+                    language=language,
+                    task="transcribe",
+                    beam_size=beam_size,
+                    patience=patience,
+                    temperature=0.0,
+                    word_timestamps=True,
+                    vad_filter=True,
+                    vad_parameters={
+                        "threshold": 0.30,
+                        "min_speech_duration_ms": 120,
+                        "min_silence_duration_ms": 700,
+                        "speech_pad_ms": 350,
+                    },
+                    # Context is useful for Turkish inflection and sentence
+                    # continuity inside a scene, but never crosses a block.
+                    condition_on_previous_text=True,
+                    repetition_penalty=repetition_penalty,
+                    no_repeat_ngram_size=no_repeat_ngram_size,
+                    max_new_tokens=128,
+                    hotwords=hotwords,
+                    hallucination_silence_threshold=2.0,
+                )
+                duration_after_vad += float(getattr(info, "duration_after_vad", 0.0) or 0.0)
+                local_segments: list[Any] = []
+                for segment in segments:
+                    if cancelled():
+                        raise OperationCancelled()
+                    local_segments.append(segment)
+                    global_end = block_start + float(getattr(segment, "end", 0.0) or 0.0)
+                    if duration > 0:
+                        percent = max(1, min(89, int(global_end / duration * 89)))
+                        if percent > last_percent:
+                            logger(f"Progress: {percent}%")
+                            last_percent = percent
+                        if percent >= last_resource_percent + 10:
+                            log_resources()
+                            last_resource_percent = (percent // 10) * 10
+
+                # Keep only the half-overlap owned by this block.  Midpoint
+                # ownership is stable even when Whisper shifts cue boundaries a
+                # little between the two overlapping decodes.
+                for cue in cues_from_segments(local_segments):
+                    shifted = SubtitleCue(
+                        cue.start + block_start,
+                        cue.end + block_start,
+                        cue.text,
+                    )
+                    midpoint = (shifted.start + shifted.end) / 2.0
+                    if keep_start <= midpoint <= keep_end:
+                        collected_cues.append(shifted)
+                logger(
+                    f"G-TMCE ASR: local-context block {block_index}/{total_blocks} "
+                    f"complete ({block_start:.0f}-{block_end:.0f}s)"
+                )
+
         if duration > 0 and duration_after_vad > 0:
+            # Neighbouring blocks overlap by a few seconds, so their VAD totals
+            # can double-count speech in the overlap. Clamp the display value
+            # to the programme duration; this is diagnostic only.
+            displayed_vad_duration = min(duration, duration_after_vad)
             logger(
                 "G-TMCE ASR: VAD kept "
-                f"{duration_after_vad:.1f}s / {duration:.1f}s of audio for the primary pass"
+                f"{displayed_vad_duration:.1f}s / {duration:.1f}s of audio across local-context blocks"
             )
-        collected: list[Any] = []
-        last_percent = -1
-        for segment in segments:
-            if cancelled():
-                raise OperationCancelled()
-            collected.append(segment)
-            if duration > 0:
-                # Reserve the final 10% for the optional dialogue-gap rescue pass.
-                percent = max(1, min(89, int(float(getattr(segment, "end", 0.0)) / duration * 89)))
-                if percent != last_percent:
-                    logger(f"Progress: {percent}%")
-                    last_percent = percent
+            log_resources()
 
+        collected_cues = _deduplicate_boundary_cues(
+            collected_cues,
+            context_boundaries,
+            logger=logger,
+        )
         primary = _filter_hallucinated_cues(
-            cues_from_segments(collected),
+            collected_cues,
             logger=logger,
             stage="primary",
         )
+        primary = _filter_repetition_loops(primary, logger=logger, stage="primary")
         # 30 s was too coarse for films: the verified betting-shop scene in
         # our real test sample loses ~20 s of dialogue. Sensitive VAD is still
         # the gate, so scanning 8 s+ subtitle holes does not blindly transcribe
@@ -1908,6 +2820,7 @@ def transcribe_audio_to_srt(
         if not gaps or cancelled():
             return primary
 
+        log_resources()
         logger(
             f"G-TMCE ASR: checking {len(gaps)} suspicious subtitle gap(s) with sensitive speech detection..."
         )
@@ -1916,7 +2829,7 @@ def transcribe_audio_to_srt(
             from faster_whisper.vad import VadOptions, get_speech_timestamps  # type: ignore
 
             sampling_rate = int(getattr(model.feature_extractor, "sampling_rate", 16000) or 16000)
-            audio = decode_audio(str(audio_path), sampling_rate=sampling_rate)
+            audio = decode_audio(str(context_audio_path), sampling_rate=sampling_rate)
             if cancelled():
                 raise OperationCancelled()
             speech_chunks = get_speech_timestamps(
@@ -1947,10 +2860,18 @@ def transcribe_audio_to_srt(
                     clip,
                     language=language,
                     task="transcribe",
-                    beam_size=5,
+                    beam_size=beam_size,
+                    patience=patience,
+                    temperature=0.0,
                     word_timestamps=True,
                     vad_filter=False,
+                    # Rescue windows are independent clips, so carrying text
+                    # from an unrelated gap would be harmful here.
                     condition_on_previous_text=False,
+                    repetition_penalty=repetition_penalty,
+                    no_repeat_ngram_size=no_repeat_ngram_size,
+                    max_new_tokens=128,
+                    hotwords=hotwords,
                     hallucination_silence_threshold=1.5,
                     no_speech_threshold=0.45,
                 )
@@ -1975,8 +2896,10 @@ def transcribe_audio_to_srt(
                 logger=logger,
                 stage="gap-rescue",
             )
+            rescued = _filter_repetition_loops(rescued, logger=logger, stage="gap-rescue")
             merged = _merge_cues(primary, rescued)
             merged = _filter_hallucinated_cues(merged, logger=logger, stage="merged")
+            merged = _filter_repetition_loops(merged, logger=logger, stage="merged")
             added = max(0, len(merged) - len(primary))
             logger(f"G-TMCE ASR: gap rescue added {added} subtitle cue(s) after cleanup.")
             return merged
@@ -1988,70 +2911,77 @@ def transcribe_audio_to_srt(
             logger(f"G-TMCE ASR: gap rescue skipped ({rescue_exc})")
             return primary
 
-    device, compute_type, used_saved_runtime = _runtime_device(logger)
     try:
-        cues = run(device, compute_type, remember_runtime=not used_saved_runtime)
-    except OperationCancelled:
-        raise
-    except Exception as exc:
-        if device != "cuda":
-            raise UserVisibleError(ui_text("error_asr_failed", error=exc)) from exc
-        if used_saved_runtime:
-            logger(
-                "G-TMCE ASR: saved CUDA runtime failed; rediscovering runtime "
-                f"({exc})"
-            )
-            # Remove only the stale runtime choice; keep known model snapshots.
-            state = _read_asr_runtime_state()
-            state.pop("runtime", None)
-            _write_asr_runtime_state(state)
-            rediscovered_device, rediscovered_compute, _ = _runtime_device(logger)
-            if (rediscovered_device, rediscovered_compute) != (device, compute_type):
-                try:
-                    cues = run(
-                        rediscovered_device,
-                        rediscovered_compute,
-                        remember_runtime=True,
-                    )
-                except OperationCancelled:
-                    raise
-                except Exception as rediscovery_exc:
-                    if rediscovered_device != "cuda":
-                        raise UserVisibleError(
-                            ui_text("error_asr_failed", error=rediscovery_exc)
-                        ) from rediscovery_exc
-                    logger(
-                        "G-TMCE ASR: rediscovered CUDA runtime failed, "
-                        f"retrying on CPU/int8 ({rediscovery_exc})"
-                    )
+        device, compute_type, used_saved_runtime = _runtime_device(logger)
+        try:
+            cues = run(device, compute_type, remember_runtime=not used_saved_runtime)
+        except OperationCancelled:
+            raise
+        except Exception as exc:
+            if device != "cuda":
+                raise UserVisibleError(ui_text("error_asr_failed", error=exc)) from exc
+            if used_saved_runtime:
+                logger(
+                    "G-TMCE ASR: saved CUDA runtime failed; rediscovering runtime "
+                    f"({exc})"
+                )
+                # Remove only the stale runtime choice; keep known model snapshots.
+                state = _read_asr_runtime_state()
+                state.pop("runtime", None)
+                _write_asr_runtime_state(state)
+                rediscovered_device, rediscovered_compute, _ = _runtime_device(logger)
+                if (rediscovered_device, rediscovered_compute) != (device, compute_type):
+                    try:
+                        cues = run(
+                            rediscovered_device,
+                            rediscovered_compute,
+                            remember_runtime=True,
+                        )
+                    except OperationCancelled:
+                        raise
+                    except Exception as rediscovery_exc:
+                        if rediscovered_device != "cuda":
+                            raise UserVisibleError(
+                                ui_text("error_asr_failed", error=rediscovery_exc)
+                            ) from rediscovery_exc
+                        logger(
+                            "G-TMCE ASR: rediscovered CUDA runtime failed, "
+                            f"retrying on CPU/int8 ({rediscovery_exc})"
+                        )
+                        cues = run("cpu", "int8", remember_runtime=False)
+                else:
+                    logger(f"G-TMCE ASR: CUDA failed, retrying on CPU/int8 ({exc})")
                     cues = run("cpu", "int8", remember_runtime=False)
             else:
                 logger(f"G-TMCE ASR: CUDA failed, retrying on CPU/int8 ({exc})")
-                cues = run("cpu", "int8", remember_runtime=False)
-        else:
-            logger(f"G-TMCE ASR: CUDA failed, retrying on CPU/int8 ({exc})")
-            try:
-                cues = run("cpu", "int8", remember_runtime=False)
-            except OperationCancelled:
-                raise
-            except Exception as cpu_exc:
-                raise UserVisibleError(ui_text("error_asr_failed", error=cpu_exc)) from cpu_exc
+                try:
+                    cues = run("cpu", "int8", remember_runtime=False)
+                except OperationCancelled:
+                    raise
+                except Exception as cpu_exc:
+                    raise UserVisibleError(ui_text("error_asr_failed", error=cpu_exc)) from cpu_exc
 
-    if cancelled():
-        raise OperationCancelled()
-    cues = _filter_hallucinated_cues(cues, logger=logger, stage="final")
-    if not cues:
-        raise UserVisibleError(ui_text("error_asr_no_speech"))
-    if translation_target is not None:
-        cues = translate_cues_with_ai(
-            cues,
-            language,
-            translation_target,
-            cancel_event=cancel_event,
-            log=logger,
-        )
+        if cancelled():
+            raise OperationCancelled()
+        cues = _filter_hallucinated_cues(cues, logger=logger, stage="final")
         if not cues:
-            raise UserVisibleError(ui_text("error_translation_no_output"))
-    write_srt(output_path, cues)
-    logger("Progress: 100%")
-    return output_path
+            raise UserVisibleError(ui_text("error_asr_no_speech"))
+        if translation_target is not None:
+            cues = translate_cues_with_ai(
+                cues,
+                language,
+                translation_target,
+                cancel_event=cancel_event,
+                log=logger,
+            )
+            if not cues:
+                raise UserVisibleError(ui_text("error_translation_no_output"))
+        write_srt(output_path, cues)
+        logger("Progress: 100%")
+        return output_path
+
+    finally:
+        if temporary_context_audio is not None:
+            temporary_context_audio.unlink(missing_ok=True)
+        if temporary_asr_audio is not None:
+            temporary_asr_audio.unlink(missing_ok=True)
