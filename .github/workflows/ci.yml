@@ -33,6 +33,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-build.txt
+            requirements-test.txt
 
       - name: Install Qt runtime libraries
         run: |
@@ -42,13 +43,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-build.txt
+          python -m pip install -r requirements-test.txt
 
       - name: Compile Python sources
         run: python -m compileall -q -f mkv_creator_ui.py src scripts/build_windows_exe.py tests
 
-      - name: Run security regression tests
-        run: python -m unittest discover -s tests -v
+      - name: Run full regression test suite
+        run: python -m pytest -v tests
 
       - name: Audit Python dependencies
         run: pip-audit -r requirements.txt

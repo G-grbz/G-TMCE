@@ -233,6 +233,20 @@ chmod +x build_appimage.sh
 
 Output: `dist/G-TMCE-x86_64.AppImage`
 
+### Running Tests
+
+Install the test environment and run the complete regression suite, including
+both pytest functions and unittest-based security tests:
+
+```bash
+python -m pip install -r requirements-test.txt
+QT_QPA_PLATFORM=offscreen python -m pytest -v tests
+```
+
+On Windows, set `QT_QPA_PLATFORM=offscreen` in the environment before running
+the same pytest command. CI and release verification use this test environment;
+application installation and binary builds do not require pytest.
+
 ---
 
 ## Launch
