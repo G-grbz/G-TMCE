@@ -49,6 +49,39 @@ ASR_QUALITY_PROFILES: dict[str, dict[str, Any]] = {
     "slower": {"model": "large-v3", "beam_size": 8, "patience": 1.5, "repetition_penalty": 1.08, "no_repeat_ngram_size": 3},
 }
 
+# Shared AI subtitle translation profiles.  Both the standalone subtitle
+# workflow and Audio Adjust use these same stable keys and the same engine.
+AI_TRANSLATION_QUALITY_PROFILES: dict[str, dict[str, Any]] = {
+    # Throughput first: large first-pass batches, greedy decoding and only one
+    # conservative retry when QA rejects a span.
+    "fast": {
+        "batch_size": 32, "beam_size": 1, "repetition_penalty": 1.12,
+        "no_repeat_ngram_size": 3, "length_factor": 1.70, "length_extra": 6,
+        "retry_attempts": 1, "context_mode": "fail",
+    },
+    # Default: keeps the fast batch-first architecture but gives suspicious
+    # spans a broader retry search.
+    "balanced": {
+        "batch_size": 24, "beam_size": 2, "repetition_penalty": 1.10,
+        "no_repeat_ngram_size": 3, "length_factor": 1.75, "length_extra": 6,
+        "retry_attempts": 2, "context_mode": "fail",
+    },
+    # Accuracy first: smaller batches, wider beam and neighbour-context
+    # candidate generation for short dialogue even when the first pass looks
+    # structurally valid.  This is intentionally slower.
+    "maximum": {
+        "batch_size": 12, "beam_size": 4, "repetition_penalty": 1.10,
+        "no_repeat_ngram_size": 3, "length_factor": 2.00, "length_extra": 8,
+        "retry_attempts": 3, "context_mode": "short_or_fail",
+    },
+}
+
+def _normalise_translation_quality_profile(value: str | None) -> str:
+    key = str(value or "balanced").strip().lower()
+    aliases = {"medium": "balanced", "max": "maximum", "quality": "maximum"}
+    key = aliases.get(key, key)
+    return key if key in AI_TRANSLATION_QUALITY_PROFILES else "balanced"
+
 def _asr_hotwords(_language: str) -> str | None:
     """Return only explicitly user-supplied ASR hotwords.
 
@@ -733,6 +766,45 @@ def srt_timestamp(seconds: float) -> str:
 
 def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _translation_text_wrapper(text: str) -> tuple[str, str, str]:
+    """Detach common subtitle presentation wrappers before machine translation.
+
+    Translators are not reliable custodians of markup.  For the common cases
+    produced by extracted subtitles -- SDH cues such as ``[door closes]`` and
+    fully italic dialogue such as ``<i>Hello</i>`` -- translate only the visible
+    payload and restore the wrapper afterwards.  Nested combinations are handled
+    iteratively, e.g. ``<i>[whispers]</i>``.
+    """
+    payload = _clean_text(text)
+    prefix = ""
+    suffix = ""
+    while payload:
+        italic = re.fullmatch(r"(?is)<i>(.*?)</i>", payload)
+        if italic is not None:
+            prefix += "<i>"
+            suffix = "</i>" + suffix
+            payload = _clean_text(italic.group(1))
+            continue
+        sdh = re.fullmatch(r"(?s)\[(.*?)\]", payload)
+        if sdh is not None:
+            prefix += "["
+            suffix = "]" + suffix
+            payload = _clean_text(sdh.group(1))
+            continue
+        break
+    return payload, prefix, suffix
+
+
+def _restore_translation_wrapper(text: str, prefix: str, suffix: str) -> str:
+    clean = _clean_text(text)
+    return f"{prefix}{clean}{suffix}" if clean else ""
+
+
+def _has_translation_wrapper(text: str) -> bool:
+    payload, prefix, suffix = _translation_text_wrapper(text)
+    return bool(payload and (prefix or suffix))
 
 
 def _normalise_hallucination_text(text: str) -> str:
@@ -1761,7 +1833,9 @@ def _translation_units(cues: Iterable[SubtitleCue]) -> list[_TranslationUnit]:
         gap = max(0.0, cue.start - end)
         combined_length = len(" ".join(parts)) + 1 + len(text)
         should_merge = (
-            not _cue_finishes_sentence(parts[-1])
+            not _has_translation_wrapper(parts[-1])
+            and not _has_translation_wrapper(text)
+            and not _cue_finishes_sentence(parts[-1])
             and gap <= 1.25
             and len(parts) < 4
             and combined_length <= 320
@@ -1781,15 +1855,23 @@ def _translation_units(cues: Iterable[SubtitleCue]) -> list[_TranslationUnit]:
 
 
 def _split_long_translation_cue(cue: SubtitleCue, max_chars: int = 84) -> list[SubtitleCue]:
-    """Keep translated subtitle blocks to roughly two 42-character lines."""
+    """Keep translated subtitle blocks to roughly two 42-character lines.
+
+    Whole-cue SDH/italic wrappers are detached before wrapping and restored on
+    *each* generated cue.  This prevents long ``<i>...</i>`` or ``[...]``
+    subtitles from producing unbalanced formatting when split.
+    """
     text = _clean_text(cue.text)
     if not text:
         return []
-    if len(text) <= max_chars:
-        return [SubtitleCue(cue.start, cue.end, _wrap_subtitle_text(text))]
+    payload, wrapper_prefix, wrapper_suffix = _translation_text_wrapper(text)
+    split_text = payload if (wrapper_prefix or wrapper_suffix) else text
+    if len(split_text) <= max_chars:
+        restored = _restore_translation_wrapper(split_text, wrapper_prefix, wrapper_suffix)
+        return [SubtitleCue(cue.start, cue.end, _wrap_subtitle_text(restored))]
 
     chunks = textwrap.wrap(
-        text,
+        split_text,
         width=max_chars,
         break_long_words=False,
         break_on_hyphens=False,
@@ -1806,7 +1888,8 @@ def _split_long_translation_cue(cue: SubtitleCue, max_chars: int = 84) -> list[S
         start = cue.start + duration * elapsed_weight / total_weight
         elapsed_weight += weight
         end = cue.end if index == len(chunks) - 1 else cue.start + duration * elapsed_weight / total_weight
-        result.append(SubtitleCue(start, end, _wrap_subtitle_text(chunk)))
+        restored = _restore_translation_wrapper(chunk, wrapper_prefix, wrapper_suffix)
+        result.append(SubtitleCue(start, end, _wrap_subtitle_text(restored)))
     return result
 
 
@@ -2038,23 +2121,25 @@ def _translation_degeneration_reason(source: str, output: str) -> str | None:
 
     source_count = max(1, len(source_tokens))
     output_count = len(output_tokens)
+    comparable_words = not (_uses_unspaced_translation_script(source) or _uses_unspaced_translation_script(output))
     source_run = _longest_same_token_run(source_tokens)
     output_run = _longest_same_token_run(output_tokens)
 
     # Short inputs sometimes become duplicated answers (for example
     # ``I don't know.`` -> ``Bilmiyorum, bilmiyorum.``). A two-token run is
     # suspicious only when the source itself did not repeat that token.
-    if output_run >= 2 and source_run < 2 and output_count <= 8:
+    repeated_source_clauses = _has_adjacent_translation_duplicate(source)
+    if output_run >= 2 and source_run < 2 and output_count <= 8 and not repeated_source_clauses:
         return f"short-token-repeat:{output_run}"
 
     # Tiny ASR fragments are especially prone to semantic hallucinations that
     # are not token loops (for example ``The`` becoming a whole unrelated
     # sentence). Reject implausible expansion before it reaches the subtitle.
-    if source_count == 1 and output_count >= 5:
+    if comparable_words and source_count == 1 and output_count >= 5:
         return f"tiny-input-expansion:{source_count}->{output_count}"
-    if source_count == 2 and output_count > 8:
+    if comparable_words and source_count == 2 and output_count > 8:
         return f"tiny-input-expansion:{source_count}->{output_count}"
-    if source_count <= 4 and output_count > source_count * 4 + 4:
+    if comparable_words and source_count <= 4 and output_count > source_count * 4 + 4:
         return f"short-input-expansion:{source_count}->{output_count}"
 
     # Beam decoding can occasionally emit two alternative translations one
@@ -2066,26 +2151,26 @@ def _translation_degeneration_reason(source: str, output: str) -> str | None:
     if (
         source_sentences <= 1
         and output_sentences >= 2
-        and output_count >= source_count + 3
+        and comparable_words and output_count >= source_count + 3
     ):
         return f"sentence-expansion:{source_sentences}->{output_sentences}"
 
     # The supplied sample exposed runs such as one source token becoming 7-36
     # copies in the translation. Keep genuine source repetition by allowing a
     # little headroom over the longest run already present in the source.
-    if output_run >= 4 and output_run > source_run + 2:
+    if output_run >= 4 and output_run > source_run + 2 and not repeated_source_clauses:
         return f"token-loop:{output_run}"
 
     # A subtitle translation should not explode to many times the source size.
     # Use a generous limit because some language pairs naturally expand.
-    if output_count > max(24, source_count * 4 + 10):
+    if comparable_words and output_count > max(24, source_count * 4 + 10):
         return f"length-explosion:{source_count}->{output_count}"
 
     # Low lexical diversity is another signature of a loop even when
     # punctuation or a short preamble interrupts the repeated token run.
     if output_count >= 12:
         unique_ratio = len(set(output_tokens)) / output_count
-        if unique_ratio < 0.22 and output_count > source_count * 2:
+        if comparable_words and unique_ratio < 0.22 and output_count > source_count * 2:
             return f"low-diversity:{unique_ratio:.2f}"
 
     return None
@@ -2116,7 +2201,7 @@ def _decode_single_translation(
         f"<2{target_language}> {_clean_text(text)}",
         out_type=str,
     )
-    max_length = min(112, max(12, int(len(tokens) * length_factor) + length_extra))
+    max_length = min(512, max(12, int(len(tokens) * length_factor) + length_extra))
     result = translator.translate_batch(
         [tokens],
         beam_size=beam_size,
@@ -2125,6 +2210,42 @@ def _decode_single_translation(
         max_decoding_length=max_length,
     )[0]
     return _decode_translation_result(result, tokenizer, target_language)
+
+
+def _decode_translation_batch(
+    translator: Any,
+    tokenizer: Any,
+    texts: list[str],
+    target_language: str,
+    *,
+    beam_size: int = 2,
+    repetition_penalty: float = 1.10,
+    no_repeat_ngram_size: int = 3,
+    length_factor: float = 1.75,
+    length_extra: int = 6,
+) -> list[str]:
+    """Decode many independent subtitle spans in one CTranslate2 call.
+
+    A single max decoding length is required by CTranslate2, so size batches
+    conservatively and derive the limit from the longest member.  Structural
+    subtitle markup never reaches this helper.
+    """
+    if not texts:
+        return []
+    encoded = [
+        tokenizer.encode(f"<2{target_language}> {_clean_text(text)}", out_type=str)
+        for text in texts
+    ]
+    longest = max((len(tokens) for tokens in encoded), default=1)
+    max_length = min(512, max(12, int(longest * length_factor) + length_extra))
+    results = translator.translate_batch(
+        encoded,
+        beam_size=beam_size,
+        repetition_penalty=repetition_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
+        max_decoding_length=max_length,
+    )
+    return [_decode_translation_result(result, tokenizer, target_language) for result in results]
 
 
 def _safe_retry_translation(
@@ -2357,6 +2478,8 @@ def translate_cues_with_ai(
     *,
     model_name: str | None = None,
     cancel_event: Any | None = None,
+    pause_event: Any | None = None,
+    progress: Callable[[int, int], None] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> list[SubtitleCue]:
     """Translate subtitle text locally with one multilingual CT2 AI model."""
@@ -2372,6 +2495,14 @@ def translate_cues_with_ai(
         )
 
     logger = log or (lambda _message: None)
+
+    def wait_if_paused() -> None:
+        while pause_event is not None and pause_event.is_set():
+            if cancel_event is not None and cancel_event.is_set():
+                raise OperationCancelled()
+            time.sleep(0.12)
+
+    wait_if_paused()
     model_name = (
         model_name
         or os.environ.get("GTMCE_TRANSLATION_MODEL", DEFAULT_TRANSLATION_MODEL)
@@ -2411,15 +2542,17 @@ def translate_cues_with_ai(
 
     try:
         for offset in range(0, total, batch_size):
+            wait_if_paused()
             if cancel_event is not None and cancel_event.is_set():
                 raise OperationCancelled()
             batch = cue_list[offset: offset + batch_size]
+            prepared_batch = [_translation_text_wrapper(unit.text) for unit in batch]
             source_tokens = [
                 tokenizer.encode(
-                    f"<2{target_language}> {_clean_text(unit.text)}",
+                    f"<2{target_language}> {payload}",
                     out_type=str,
                 )
-                for unit in batch
+                for payload, _prefix, _suffix in prepared_batch
             ]
             longest_input = max((len(tokens) for tokens in source_tokens), default=1)
             # MADLAD can otherwise spend hundreds of decoding steps repeating
@@ -2434,8 +2567,9 @@ def translate_cues_with_ai(
             )
             for batch_index, (unit, result) in enumerate(zip(batch, results)):
                 unit_index = offset + batch_index
+                source_payload, wrapper_prefix, wrapper_suffix = prepared_batch[batch_index]
                 text = _decode_translation_result(result, tokenizer, target_language)
-                reason = _translation_invalid_reason(unit.text, text)
+                reason = _translation_invalid_reason(source_payload, text)
                 if reason is not None:
                     logger(
                         "G-TMCE AI Translation: suspicious decoder output at "
@@ -2444,17 +2578,17 @@ def translate_cues_with_ai(
                     retry = _safe_retry_translation(
                         translator,
                         tokenizer,
-                        SubtitleCue(unit.start, unit.end, unit.text),
+                        SubtitleCue(unit.start, unit.end, source_payload),
                         target_language,
                     )
-                    retry_reason = _translation_invalid_reason(unit.text, retry)
+                    retry_reason = _translation_invalid_reason(source_payload, retry)
                     if retry and retry_reason is None:
                         text = retry
                     else:
                         rescue = _rescue_source_echo_translation(
-                            translator, tokenizer, unit.text, target_language
+                            translator, tokenizer, source_payload, target_language
                         )
-                        rescue_reason = _translation_invalid_reason(unit.text, rescue)
+                        rescue_reason = _translation_invalid_reason(source_payload, rescue)
                         if rescue and rescue_reason is None:
                             logger(
                                 "G-TMCE AI Translation: recovered stubborn output with "
@@ -2462,11 +2596,15 @@ def translate_cues_with_ai(
                             )
                             text = rescue
                         else:
-                            context_rescue = _rescue_translation_with_neighbor(
-                                translator, tokenizer, cue_list, unit_index, target_language
+                            context_rescue = (
+                                ""
+                                if wrapper_prefix or wrapper_suffix
+                                else _rescue_translation_with_neighbor(
+                                    translator, tokenizer, cue_list, unit_index, target_language
+                                )
                             )
                             context_reason = _translation_invalid_reason(
-                                unit.text, context_rescue
+                                source_payload, context_rescue
                             )
                             if context_rescue and context_reason is None:
                                 logger(
@@ -2485,13 +2623,14 @@ def translate_cues_with_ai(
                                     f"({context_reason or rescue_reason or retry_reason or 'empty'}); "
                                     "preserving source as last-resort safety fallback"
                                 )
-                                text = _clean_text(unit.text)
+                                text = source_payload
                 if not text:
                     logger(
                         "G-TMCE AI Translation: empty model output after rescue; preserving source unit at "
                         f"{srt_timestamp(unit.start)}"
                     )
-                    text = _clean_text(unit.text)
+                    text = source_payload
+                text = _restore_translation_wrapper(text, wrapper_prefix, wrapper_suffix)
                 pieces = _split_translation_across_source_cues(unit.cues, text)
                 if len(unit.cues) > 1 and len(pieces) < len(unit.cues):
                     logger(
@@ -2523,9 +2662,12 @@ def translate_cues_with_ai(
                             )
                         )
                 translated.extend(pieces)
+            completed = min(offset + len(batch), total)
+            if progress is not None:
+                progress(completed, total)
             logger(
                 "G-TMCE AI Translation: "
-                f"{min(offset + len(batch), total)}/{total} unit(s) complete"
+                f"{completed}/{total} unit(s) complete"
             )
     except OperationCancelled:
         raise
@@ -2563,10 +2705,1211 @@ def read_srt(path: Path) -> list[SubtitleCue]:
             end = _parse_srt_timestamp(right.split()[0])
         except (ValueError, IndexError):
             continue
-        cue_text = _clean_text(" ".join(lines[timing_index + 1:]))
+        cue_text = "\n".join(line.strip() for line in lines[timing_index + 1:] if line.strip()).strip()
         if cue_text and end > start:
             cues.append(SubtitleCue(start, end, cue_text))
     return cues
+
+
+def _parse_vtt_timestamp(value: str) -> float:
+    value = value.strip().replace(",", ".")
+    parts = value.split(":")
+    if len(parts) == 2:
+        hours = 0
+        minutes, seconds = parts
+    elif len(parts) == 3:
+        hours, minutes, seconds = parts
+    else:
+        raise ValueError(value)
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def read_vtt(path: Path) -> list[SubtitleCue]:
+    """Read WebVTT cues while keeping inline HTML-like subtitle markup."""
+    text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+    lines = text.splitlines()
+    cues: list[SubtitleCue] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line or line.upper() == "WEBVTT":
+            index += 1
+            continue
+        if line.startswith(("NOTE", "STYLE", "REGION")):
+            index += 1
+            while index < len(lines) and lines[index].strip():
+                index += 1
+            continue
+        timing = line
+        if "-->" not in timing and index + 1 < len(lines) and "-->" in lines[index + 1]:
+            index += 1
+            timing = lines[index].strip()
+        if "-->" not in timing:
+            index += 1
+            continue
+        left, right = (part.strip() for part in timing.split("-->", 1))
+        try:
+            start = _parse_vtt_timestamp(left.split()[0])
+            end = _parse_vtt_timestamp(right.split()[0])
+        except (ValueError, IndexError):
+            index += 1
+            continue
+        index += 1
+        payload: list[str] = []
+        while index < len(lines) and lines[index].strip():
+            payload.append(lines[index].strip())
+            index += 1
+        cue_text = "\n".join(line.strip() for line in payload if line.strip()).strip()
+        if cue_text and end > start:
+            cues.append(SubtitleCue(start, end, cue_text))
+    return cues
+
+
+def _ass_timestamp(value: str) -> float:
+    match = re.fullmatch(r"(\d+):(\d{2}):(\d{2})[.](\d{1,2})", value.strip())
+    if not match:
+        raise ValueError(value)
+    hours, minutes, seconds, centis = (int(part) for part in match.groups())
+    return hours * 3600 + minutes * 60 + seconds + centis / (10 if centis < 10 else 100)
+
+
+def _ass_text_to_srt_markup(text: str) -> str:
+    value = str(text or "").replace(r"\N", "\n").replace(r"\n", "\n").replace(r"\h", " ")
+    value = re.sub(r"\{[^}]*\\i1[^}]*\}", "<i>", value, flags=re.IGNORECASE)
+    value = re.sub(r"\{[^}]*\\i0[^}]*\}", "</i>", value, flags=re.IGNORECASE)
+    value = re.sub(r"\{[^}]*\}", "", value)
+    # Keep tags balanced for the common whole/partial italic cases.
+    if value.count("<i>") > value.count("</i>"):
+        value += "</i>" * (value.count("<i>") - value.count("</i>"))
+    return "\n".join(_clean_text(line) for line in value.splitlines() if _clean_text(line))
+
+
+def read_ass_ssa(path: Path) -> list[SubtitleCue]:
+    """Read ASS/SSA Events dialogue and convert portable styling to SRT markup."""
+    text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+    in_events = False
+    fields: list[str] = []
+    cues: list[SubtitleCue] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_events = line.casefold() == "[events]"
+            continue
+        if not in_events:
+            continue
+        if line.casefold().startswith("format:"):
+            fields = [item.strip().casefold() for item in line.split(":", 1)[1].split(",")]
+            continue
+        if not line.casefold().startswith("dialogue:"):
+            continue
+        payload = line.split(":", 1)[1].lstrip()
+        if not fields:
+            # Standard ASS field order fallback.
+            fields = ["layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text"]
+        parts = payload.split(",", len(fields) - 1)
+        if len(parts) < len(fields):
+            continue
+        row = dict(zip(fields, parts))
+        try:
+            start = _ass_timestamp(row.get("start", ""))
+            end = _ass_timestamp(row.get("end", ""))
+        except ValueError:
+            continue
+        cue_text = _ass_text_to_srt_markup(row.get("text", ""))
+        if cue_text and end > start:
+            cues.append(SubtitleCue(start, end, cue_text))
+    return cues
+
+
+def read_subtitle_for_translation(path: Path) -> list[SubtitleCue]:
+    path = Path(path)
+    suffix = path.suffix.casefold()
+    if suffix == ".srt":
+        return read_srt(path)
+    if suffix == ".vtt":
+        return read_vtt(path)
+    if suffix in {".ass", ".ssa"}:
+        return read_ass_ssa(path)
+    raise UserVisibleError(f"Unsupported subtitle format: {path.suffix or path.name}")
+
+
+
+
+def _strict_translation_parts(text: str) -> list[tuple[str, str]]:
+    """Split subtitle text into translatable and literal formatting parts.
+
+    Existing subtitle files are authored/timed assets, not ASR output.  Their
+    cue structure and presentation markup therefore must never be rewritten by
+    the MT model.  HTML-like tags and ASS override blocks are emitted verbatim;
+    SDH brackets are structural delimiters while their visible payload remains
+    translatable.
+    """
+    value = str(text or "")
+    token_re = re.compile(r"(<[^>]+>|\{[^{}]*\\[^{}]*\}|\[[^\[\]]*\])")
+    parts: list[tuple[str, str]] = []
+    cursor = 0
+    for match in token_re.finditer(value):
+        if match.start() > cursor:
+            parts.append(("text", value[cursor:match.start()]))
+        token = match.group(0)
+        if token.startswith("[") and token.endswith("]"):
+            parts.append(("literal", "["))
+            if token[1:-1]:
+                parts.append(("text", token[1:-1]))
+            parts.append(("literal", "]"))
+        else:
+            parts.append(("literal", token))
+        cursor = match.end()
+    if cursor < len(value):
+        parts.append(("text", value[cursor:]))
+    return parts
+
+
+
+def _translation_clauses(value: str) -> list[str]:
+    # Ignore trailing punctuation and display wrapping: neither is a clause.
+    return [part.strip() for part in re.split(r"[.!?;…。,，；！？]+", value) if part.strip()]
+
+
+def _near_duplicate_translation_clauses(left: str, right: str) -> bool:
+    """Compare alternative renderings without language-specific dictionaries."""
+    lt = _translation_word_tokens(left)
+    rt = _translation_word_tokens(right)
+    if not lt or not rt:
+        return False
+    normal_left = " ".join(lt)
+    normal_right = " ".join(rt)
+    if SequenceMatcher(None, normal_left, normal_right).ratio() >= 0.78:
+        return True
+    remaining = list(rt)
+    matches = 0
+    for token in lt:
+        for index, other in enumerate(remaining):
+            if token == other or (
+                min(len(token), len(other)) >= 3
+                and token[:3] == other[:3]
+                and SequenceMatcher(None, token, other).ratio() >= 0.58
+            ):
+                matches += 1
+                remaining.pop(index)
+                break
+    return matches >= 2 and matches / min(len(lt), len(rt)) >= 0.72
+
+
+def _has_adjacent_translation_duplicate(value: str) -> bool:
+    clauses = _translation_clauses(value)
+    return any(_near_duplicate_translation_clauses(a, b) for a, b in zip(clauses, clauses[1:]))
+
+
+def _remove_translation_clause_duplicates(source: str, output: str) -> str:
+    """Last-resort repair of demonstrable doubled alternatives, not dialogue.
+
+    Only remove adjacent near-duplicates when the source has fewer clauses and
+    does not repeat itself. No movie phrases, target words or translations are
+    substituted here. Normal QA still runs on the repaired candidate.
+    """
+    if _has_adjacent_translation_duplicate(source):
+        return output
+    source_count = len(_translation_clauses(source))
+    spans = list(re.finditer(r"[^.!?;…。,，；！？]+[.!?;…。,，；！？]*", output))
+    if len(spans) <= source_count:
+        return output
+    kept: list[str] = []
+    removed = 0
+    for span in spans:
+        current = span.group().strip()
+        if kept and len(spans) - removed > source_count and _near_duplicate_translation_clauses(kept[-1], current):
+            # The last duplicate often carries the sentence-ending punctuation.
+            # Preserve that ending on the original rendering.
+            ending = re.search(r"[.!?…。！？]+$", current)
+            if ending:
+                kept[-1] = re.sub(r"[.!?…。,;，；！？]+$", "", kept[-1]) + ending.group()
+            removed += 1
+        else:
+            kept.append(current)
+    return " ".join(kept) if removed else output
+
+
+def _uses_unspaced_translation_script(value: str) -> bool:
+    return bool(re.search(r"[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff\u3400-\u9fff]", value))
+
+
+def _strict_translation_quality_reason(source: str, output: str) -> str | None:
+    """Conservative language-agnostic QA for authored subtitle translation.
+
+    The check deliberately relies on structure and relative size instead of a
+    source/target-language word list.  That keeps the same safety policy for
+    every supported language pair.
+    """
+    base = _translation_invalid_reason(source, output)
+    if base is not None:
+        return base
+
+    src = _clean_text(source)
+    dst = _clean_text(output)
+    if not src or not dst:
+        return "empty"
+
+    src_words = _translation_word_tokens(src)
+    dst_words = _translation_word_tokens(dst)
+    sw = len(src_words)
+    dw = len(dst_words)
+    comparable_words = not (_uses_unspaced_translation_script(src) or _uses_unspaced_translation_script(dst))
+    src_chars = len(re.sub(r"[\W_]", "", src, flags=re.UNICODE))
+    dst_chars = len(re.sub(r"[\W_]", "", dst, flags=re.UNICODE))
+
+    # Exact source echoes are suspicious for real dialogue of useful length,
+    # regardless of which language is the source.  Very short names/labels are
+    # exempt because they often should survive translation unchanged.
+    if _normalised_translation_text(src) == _normalised_translation_text(dst):
+        if sw >= 3 or len(src) >= 18 or re.search(r"[.!?…]$", src):
+            return "source-echo-generic"
+
+    # Catch dropped clauses / hallucinated elaborations.  Limits are generous
+    # enough for naturally expanding language pairs but strict enough to catch
+    # the failures seen in authored subtitle translation.
+    # Agglutinative languages can express several source words in one target
+    # word. A low word count alone is not evidence of missing dialogue.
+    if comparable_words and sw >= 4 and dw <= max(1, int(sw * 0.55)) and dst_chars < src_chars * 0.55:
+        return f"probable-omission:{sw}->{dw}"
+    if comparable_words and sw >= 5 and dw > max(sw + 4, int(sw * 1.60)):
+        return f"probable-expansion:{sw}->{dw}"
+    # Tiny labels/names are where MT models most often emit both the source and
+    # a transliterated/translated duplicate (for example "V-Max. V-Maks.").
+    # Allow one extra word, but reject a doubled short span.
+    if comparable_words and 1 <= sw <= 3 and dw >= max(sw + 2, sw * 2):
+        return f"probable-short-duplication:{sw}->{dw}"
+
+    # Catch duplicated/paraphrased output fragments inside a single translated
+    # span. MT decoders sometimes emit two near-equivalent Turkish renderings
+    # for one source clause (for example "... düşünüyordum. Aynı şeyi düşündüm"
+    # or "... zorundadır, ... yapmalıdır"). Compare adjacent output clauses
+    # conservatively and only reject them when the source does not contain a
+    # matching amount of clause structure. This stays language-pair agnostic.
+    src_clause_count = len(_translation_clauses(src))
+    dst_clause_count = len(_translation_clauses(dst))
+    if (
+        dst_clause_count > src_clause_count
+        and _has_adjacent_translation_duplicate(dst)
+        and not _has_adjacent_translation_duplicate(src)
+    ):
+        return f"probable-output-duplication:{src_clause_count}->{dst_clause_count}"
+    if comparable_words and sw >= 4 and dst_clause_count > src_clause_count and dw >= sw + 3:
+        return f"probable-clause-expansion:{src_clause_count}->{dst_clause_count}"
+    if comparable_words and sw >= 4 and dst_clause_count >= src_clause_count + 2 and dst_chars > src_chars * 1.5:
+        return f"probable-clause-expansion:{src_clause_count}->{dst_clause_count}"
+
+    # Named entities should normally survive translation, but the model must
+    # not invent extra repetitions of them.  This catches outputs such as
+    # "... Peter Parker ... Peter Parker" when the source mentions the name
+    # once, without assuming any specific source or target language.
+    proper_tokens = re.findall(r"(?<![.!?]\s)\b[A-ZÀ-ÖØ-Þ][\w’'-]{2,}\b", src, flags=re.UNICODE)
+    for token in set(proper_tokens):
+        src_count = len(re.findall(rf"\b{re.escape(token)}\b", src, flags=re.IGNORECASE | re.UNICODE))
+        dst_count = len(re.findall(rf"\b{re.escape(token)}\b", dst, flags=re.IGNORECASE | re.UNICODE))
+        if src_count >= 1 and dst_count > src_count:
+            return f"proper-name-duplication:{token}:{src_count}->{dst_count}"
+
+    # Losing a whole clause is a common subtitle-MT failure even when the raw
+    # word ratio still looks plausible (for example "Hey ... Whoa ..." ->
+    # only "Hey ...").  Clause punctuation is language-agnostic enough to
+    # use as a conservative coverage signal.
+    src_clauses = len(re.findall(r"[,;:!?…]+", src))
+    dst_clauses = len(re.findall(r"[,;:!?…]+", dst))
+    if sw >= 5 and src_clauses >= 2 and dst_clauses == 0:
+        return f"probable-clause-loss:{src_clauses}->{dst_clauses}"
+
+    # Character ratios help for languages where whitespace token counts are not
+    # meaningful (CJK is the important case).  Ignore punctuation and spaces.
+    src_chars = len(re.sub(r"[\W_]", "", src, flags=re.UNICODE))
+    dst_chars = len(re.sub(r"[\W_]", "", dst, flags=re.UNICODE))
+    if src_chars >= 16:
+        cross_script = _uses_unspaced_translation_script(src) != _uses_unspaced_translation_script(dst)
+        # A Han character can carry the information of several Latin letters.
+        # Raw character ratios are not interchangeable between writing systems.
+        minimum_ratio = 0.10 if cross_script else 0.24
+        maximum_ratio = 6.0 if cross_script else 3.4
+        if dst_chars < max(3, int(src_chars * minimum_ratio)):
+            return f"probable-char-omission:{src_chars}->{dst_chars}"
+        if dst_chars > max(src_chars + 28, int(src_chars * maximum_ratio)):
+            return f"probable-char-expansion:{src_chars}->{dst_chars}"
+
+    # A translation must not silently delete one side of a two-speaker cue.
+    # Lines are translated independently, but this guards direct helper use too.
+    src_speakers = len(re.findall(r"(?m)^\s*[-–—]\s*\S", str(source or "")))
+    dst_speakers = len(re.findall(r"(?m)^\s*[-–—]\s*\S", str(output or "")))
+    if src_speakers and src_speakers != dst_speakers:
+        return f"speaker-count:{src_speakers}->{dst_speakers}"
+
+    return None
+
+
+def _strict_candidate_penalty(source: str, output: str) -> float:
+    """Rank suspicious candidates when no decode passes the hard QA gate."""
+    if not output:
+        return 1_000_000.0
+    reason = _strict_translation_quality_reason(source, output)
+    src_words = max(1, len(_translation_word_tokens(source)))
+    dst_words = max(1, len(_translation_word_tokens(output)))
+    src_chars = max(1, len(re.sub(r"[\W_]", "", source, flags=re.UNICODE)))
+    dst_chars = max(1, len(re.sub(r"[\W_]", "", output, flags=re.UNICODE)))
+    word_weight = 0.0 if _uses_unspaced_translation_script(source) or _uses_unspaced_translation_script(output) else 12.0
+    penalty = abs(dst_words / src_words - 1.0) * word_weight + abs(dst_chars / src_chars - 1.0) * 4.0
+    if reason:
+        penalty += 25.0
+        if reason.startswith("source-echo"):
+            penalty += 18.0
+        elif "omission" in reason or "clause-loss" in reason:
+            penalty += 14.0
+        elif "expansion" in reason:
+            penalty += 12.0
+    return penalty
+
+
+def _strip_authored_markup_for_context(text: str) -> str:
+    """Return only visible text for neighbouring-cue translation context."""
+    visible = "".join(value for kind, value in _strict_translation_parts(text) if kind == "text")
+    visible = re.sub(r"(?m)^\s*[-–—]\s*", "", visible)
+    return _clean_text(visible)
+
+
+def _strict_context_translation(
+    translator: Any,
+    tokenizer: Any,
+    source: str,
+    target_language: str,
+    previous_context: str = "",
+    next_context: str = "",
+) -> str:
+    """Translate the current span together with neighbours, returning only it.
+
+    MADLAD is a translation model rather than an instruction-following chat
+    model.  Stable separators are therefore more reliable than natural-language
+    prompts for supplying context without letting context leak into the result.
+    """
+    current = _clean_text(source)
+    previous = _clean_text(previous_context)
+    following = _clean_text(next_context)
+    if not current or not (previous or following):
+        return ""
+
+    sep = " ||| "
+    segments: list[str] = []
+    current_index = 0
+    if previous:
+        segments.append(previous)
+        current_index += 1
+    segments.append(current)
+    if following:
+        segments.append(following)
+    combined = sep.join(segments)
+    translated = _decode_single_translation(
+        translator,
+        tokenizer,
+        combined,
+        target_language,
+        beam_size=3,
+        repetition_penalty=1.12,
+        no_repeat_ngram_size=3,
+        length_factor=2.15,
+        length_extra=10,
+    )
+    parts = [part.strip() for part in re.split(r"\s*\|\s*\|\s*\|\s*", translated)]
+    if len(parts) != len(segments):
+        return ""
+    candidate = _clean_text(parts[current_index])
+    return candidate if candidate else ""
+
+
+def _strict_retry_translation(
+    translator: Any,
+    tokenizer: Any,
+    source: str,
+    target_language: str,
+    *,
+    retry_attempts: int = 2,
+) -> str:
+    """Retry authored text with conservative decodes and return best candidate."""
+    source = _clean_text(source)
+    attempts = (
+        dict(beam_size=1, repetition_penalty=1.20, no_repeat_ngram_size=2, length_factor=1.55, length_extra=6),
+        dict(beam_size=2, repetition_penalty=1.14, no_repeat_ngram_size=3, length_factor=1.80, length_extra=7),
+        dict(beam_size=4, repetition_penalty=1.10, no_repeat_ngram_size=3, length_factor=2.05, length_extra=8),
+    )
+    best = ""
+    best_penalty = 10**9
+    for settings in attempts[:max(1, min(len(attempts), int(retry_attempts)))]:
+        candidate = _decode_single_translation(
+            translator, tokenizer, source, target_language, **settings
+        )
+        if not candidate:
+            continue
+        reason = _strict_translation_quality_reason(source, candidate)
+        if reason is None:
+            return candidate
+        # Keep the least size-distorted fallback in case every decoder profile
+        # is suspicious.  It is only used after all retries are exhausted.
+        penalty = _strict_candidate_penalty(source, candidate)
+        if penalty < best_penalty:
+            best = candidate
+            best_penalty = penalty
+    return best
+
+
+def _strict_sentence_retry_translation(
+    translator: Any, tokenizer: Any, source: str, target_language: str,
+) -> str:
+    """Rescue omitted complete sentences without any language/phrase rewrites."""
+    parts = [p.strip() for p in re.split(r"(?<=[!?…。！？])\s+|(?<=\.)\s+(?=[\w\"'“‘])", source) if p.strip()]
+    if not 2 <= len(parts) <= 4:
+        return ""
+    translated: list[str] = []
+    for part in parts:
+        candidate = _strict_retry_translation(
+            translator, tokenizer, part, target_language, retry_attempts=2,
+        )
+        if not candidate or _strict_translation_quality_reason(part, candidate) is not None:
+            return ""
+        translated.append(candidate)
+    result = " ".join(translated)
+    return result if _strict_translation_quality_reason(source, result) is None else ""
+
+
+def _translate_payload_strict(
+    translator: Any,
+    tokenizer: Any,
+    source: str,
+    target_language: str,
+    *,
+    previous_context: str = "",
+    next_context: str = "",
+    qa_events: set[str] | None = None,
+    initial_candidate: str | None = None,
+    quality_profile: str = "balanced",
+) -> str:
+    """Translate one visible subtitle span with QA, context and retry."""
+    raw = str(source or "")
+    leading = raw[: len(raw) - len(raw.lstrip())]
+    trailing = raw[len(raw.rstrip()):] if raw.rstrip() != raw else ""
+    body = raw.strip()
+
+    speaker_prefix = ""
+    speaker_match = re.match(r"^([-–—]\s*)", body)
+    if speaker_match:
+        speaker_prefix = speaker_match.group(1)
+        body = body[speaker_match.end():].lstrip()
+
+    payload = _clean_text(body)
+    if not payload:
+        return raw
+    if not re.search(r"[^\W\d_]", payload, flags=re.UNICODE):
+        return raw
+
+    profile_key = _normalise_translation_quality_profile(quality_profile)
+    profile = AI_TRANSLATION_QUALITY_PROFILES[profile_key]
+    candidates: list[str] = []
+    initial = _clean_text(initial_candidate or "")
+    if not initial:
+        initial = _decode_single_translation(
+            translator, tokenizer, payload, target_language,
+            beam_size=int(profile["beam_size"]),
+            repetition_penalty=float(profile["repetition_penalty"]),
+            no_repeat_ngram_size=int(profile["no_repeat_ngram_size"]),
+            length_factor=float(profile["length_factor"]),
+            length_extra=int(profile["length_extra"]),
+        )
+    if initial:
+        candidates.append(initial)
+
+    initial_reason = _strict_translation_quality_reason(payload, initial)
+    short_dialogue = len(_translation_word_tokens(payload)) <= 9
+    # Fast path: a valid first-pass translation is accepted immediately.
+    # Neighbour context is an expensive rescue tool, not a mandatory second
+    # decode for every short subtitle line.
+    use_context = initial_reason is not None or (
+        profile.get("context_mode") == "short_or_fail" and short_dialogue
+    )
+    if use_context and (previous_context or next_context):
+        contextual = _strict_context_translation(
+            translator, tokenizer, payload, target_language,
+            previous_context=previous_context, next_context=next_context,
+        )
+        if contextual and contextual not in candidates:
+            candidates.append(contextual)
+            if qa_events is not None:
+                qa_events.add("context")
+
+    valid = [c for c in candidates if _strict_translation_quality_reason(payload, c) is None]
+    if len(candidates) > 1 and _strict_translation_quality_reason(payload, candidates[-1]) is None:
+        candidate = candidates[-1]
+    elif valid:
+        candidate = min(valid, key=lambda c: _strict_candidate_penalty(payload, c))
+    else:
+        candidate = ""
+
+    if not candidate:
+        if qa_events is not None:
+            qa_events.add("retry")
+        retry = _strict_retry_translation(
+            translator, tokenizer, payload, target_language,
+            retry_attempts=int(profile.get("retry_attempts", 2)),
+        )
+        if retry:
+            candidates.append(retry)
+            if _strict_translation_quality_reason(payload, retry) is None:
+                candidate = retry
+
+    if not candidate:
+        rescue = _strict_sentence_retry_translation(translator, tokenizer, payload, target_language)
+        if rescue:
+            candidates.append(rescue)
+            if _strict_translation_quality_reason(payload, rescue) is None:
+                candidate = rescue
+
+    if not candidate and (previous_context or next_context):
+        rescue_context = _strict_context_translation(
+            translator, tokenizer, payload, target_language,
+            previous_context=previous_context, next_context=next_context,
+        )
+        if rescue_context:
+            candidates.append(rescue_context)
+            if _strict_translation_quality_reason(payload, rescue_context) is None:
+                candidate = rescue_context
+                if qa_events is not None:
+                    qa_events.add("context")
+
+    if not candidate:
+        # Retry first; only if decoding cannot resolve an obvious duplicated
+        # alternative do we consider a conservative structural repair.
+        repaired = [_remove_translation_clause_duplicates(payload, c) for c in candidates]
+        repaired = [c for c in repaired if _strict_translation_quality_reason(payload, c) is None]
+        if repaired:
+            candidate = min(repaired, key=lambda c: _strict_candidate_penalty(payload, c))
+            if qa_events is not None:
+                qa_events.add("deduplicated")
+
+    if not candidate:
+        # Do not silently replace a suspicious translation with the source.  Keep
+        # the least-risk candidate and explicitly mark this cue for review.
+        usable = [c for c in candidates if c]
+        candidate = min(usable, key=lambda c: _strict_candidate_penalty(payload, c)) if usable else payload
+        if qa_events is not None:
+            qa_events.add("review")
+
+    return f"{leading}{speaker_prefix}{_clean_text(candidate)}{trailing}"
+
+
+def _authored_translation_lines(value: str) -> list[str]:
+    """Join visual wrapping, retaining only explicit speaker boundaries.
+
+    A newline in an authored subtitle is usually typesetting, not the end of a
+    sentence. Sending each half to MT independently invents endings and loses
+    meaning. An explicit dialogue dash still starts a separate speaker span.
+    """
+    groups: list[str] = []
+    for line in str(value).splitlines():
+        content = line.strip()
+        if not content:
+            continue
+        if groups and not re.match(r"^[-–—]\s*\S", content):
+            groups[-1] += " " + content
+        else:
+            groups.append(content)
+    if groups:
+        # Spaces around inline style/SDH boundaries still separate words.
+        if value[:1].isspace():
+            groups[0] = " " + groups[0]
+        if value[-1:].isspace():
+            groups[-1] += " "
+    return groups or [value]
+
+
+def _translate_existing_cue_text_strict_with_qa(
+    translator: Any,
+    tokenizer: Any,
+    text: str,
+    target_language: str,
+    *,
+    previous_context: str = "",
+    next_context: str = "",
+    initial_candidates: list[str] | None = None,
+    quality_profile: str = "balanced",
+) -> tuple[str, set[str]]:
+    """Translate one authored cue and return its QA events."""
+    parts = _strict_translation_parts(text)
+    initial_iter = iter(initial_candidates or [])
+    translated: list[str] = []
+    qa_events: set[str] = set()
+    has_literal_markup = any(kind == "literal" for kind, _value in parts)
+    for kind, value in parts:
+        if kind == "literal":
+            translated.append(value)
+        else:
+            line_parts = _authored_translation_lines(value)
+            for line_index, content in enumerate(line_parts):
+                if line_index:
+                    translated.append("\n")
+                try:
+                    translated_piece = _translate_payload_strict(
+                        translator, tokenizer, content, target_language,
+                        previous_context=previous_context,
+                        next_context=next_context,
+                        qa_events=qa_events,
+                        initial_candidate=next(initial_iter, None),
+                        quality_profile=quality_profile,
+                    )
+                except TypeError as exc:
+                    # Preserve compatibility with integrations/tests that replace
+                    # the legacy four-argument helper with a simple callable.
+                    if "unexpected keyword argument" not in str(exc):
+                        raise
+                    translated_piece = _translate_payload_strict(
+                        translator, tokenizer, content, target_language
+                    )
+                translated.append(translated_piece)
+    result = "".join(translated).strip()
+    if result and not has_literal_markup:
+        if "\n" in result:
+            result = "\n".join(_wrap_subtitle_text(line) for line in result.splitlines())
+        else:
+            result = _wrap_subtitle_text(result)
+    return result, qa_events
+
+
+def _translate_existing_cue_text_strict(
+    translator: Any,
+    tokenizer: Any,
+    text: str,
+    target_language: str,
+) -> str:
+    result, _events = _translate_existing_cue_text_strict_with_qa(
+        translator, tokenizer, text, target_language
+    )
+    return result
+
+
+def _strict_cue_payloads(text: str) -> list[str]:
+    """Return payloads in the exact order consumed by strict cue translation."""
+    payloads: list[str] = []
+    for kind, value in _strict_translation_parts(text):
+        if kind != "text":
+            continue
+        for content in _authored_translation_lines(value):
+            body = content.strip()
+            speaker_match = re.match(r"^([-–—]\s*)", body)
+            if speaker_match:
+                body = body[speaker_match.end():].lstrip()
+            payload = _clean_text(body)
+            if payload and re.search(r"[^\W\d_]", payload, flags=re.UNICODE):
+                payloads.append(payload)
+            else:
+                payloads.append("")
+    return payloads
+
+
+def _authored_sentence_payload(text: str) -> tuple[str, str, str] | None:
+    """Detach whole-cue styles for safe sentence context across timed cues.
+
+    Inline styling, SDH descriptions and multi-speaker cues stay on the
+    span-preserving path. Never merge different presentation/positioning.
+    """
+    parts = _strict_translation_parts(text)
+    indices = [i for i, (kind, value) in enumerate(parts) if kind == "text" and value.strip()]
+    if len(indices) != 1 or any(value in {"[", "]"} for kind, value in parts if kind == "literal"):
+        return None
+    index = indices[0]
+    value = parts[index][1]
+    if len(_authored_translation_lines(value)) != 1 or re.match(r"^\s*[-–—]", value):
+        return None
+    prefix = "".join(v for _kind, v in parts[:index])
+    suffix = "".join(v for _kind, v in parts[index + 1:])
+    return _clean_text(value), prefix, suffix
+
+
+def _authored_sentence_groups(items: list[SubtitleCue]) -> list[list[int]]:
+    """Group only nearby continuations of an unfinished source sentence."""
+    groups: list[list[int]] = []
+    index = 0
+    while index < len(items):
+        current = _authored_sentence_payload(items[index].text)
+        group = [index]
+        length = len(current[0]) if current else 0
+        while current and index + 1 < len(items) and len(group) < 4:
+            following = _authored_sentence_payload(items[index + 1].text)
+            gap = items[index + 1].start - items[index].end
+            if (not following or _cue_finishes_sentence(current[0])
+                    or current[1:] != following[1:] or not 0 <= gap <= 1.25
+                    or length + 1 + len(following[0]) > 320):
+                break
+            index += 1
+            group.append(index)
+            length += 1 + len(following[0])
+            current = following
+        if len(group) > 1:
+            groups.append(group)
+        index += 1
+    return groups
+
+
+def _distribute_authored_sentence(text: str, sources: list[str]) -> list[str]:
+    """Allocate contextual MT text to original windows without word duplication."""
+    text = _clean_text(text)
+    # Whitespace boundaries for spaced scripts; character boundaries for
+    # scripts where words are not separated. Never assume target word counts.
+    if _uses_unspaced_translation_script(text):
+        boundaries = list(range(1, len(text)))
+    else:
+        boundaries = [match.start() for match in re.finditer(r"\s+", text)]
+    if len(boundaries) < len(sources) - 1:
+        return []
+    weights = [max(1, len(_clean_text(source))) for source in sources]
+    total = sum(weights)
+    offset = 0
+    cumulative = 0
+    pieces: list[str] = []
+    for index, weight in enumerate(weights[:-1]):
+        cumulative += weight
+        ideal = len(text) * cumulative / total
+        available = [boundary for boundary in boundaries if boundary > offset]
+        remaining = len(sources) - index - 2
+        if remaining:
+            available = available[:-remaining]
+        if not available:
+            return []
+        boundary = min(available, key=lambda b: abs(b - ideal) - (1.5 if text[b - 1] in ",;.!?…。，；！？" else 0))
+        pieces.append(text[offset:boundary].strip())
+        offset = boundary
+    pieces.append(text[offset:].strip())
+    return pieces if all(pieces) else []
+
+
+def translate_existing_subtitle_cues_with_ai(
+    cues: Iterable[SubtitleCue],
+    source_language: str,
+    target_language: str,
+    *,
+    model_name: str | None = None,
+    cancel_event: Any | None = None,
+    pause_event: Any | None = None,
+    progress: Callable[[int, int], None] | None = None,
+    log: Callable[[str], None] | None = None,
+    qa_report: dict[str, Any] | None = None,
+    quality_profile: str = "balanced",
+) -> list[SubtitleCue]:
+    """Translate an authored subtitle with cue count/timestamps hard-locked.
+
+    This path is language-pair agnostic. Unfinished sentences can share MT
+    context, but their text is distributed back to the original cue windows.
+    The model cannot rewrite subtitle formatting. Readability splitting is a
+    separate deterministic pass after source-structure validation.
+    """
+    source_language = normalise_asr_language(source_language)
+    target_language = normalise_asr_language(target_language)
+    if target_language not in TRANSLATION_TARGET_CODES:
+        raise UserVisibleError(
+            ui_text("error_translation_target_unsupported", language=target_language)
+        )
+    if target_language == source_language:
+        raise UserVisibleError(
+            ui_text("error_translation_same_language", language=target_language)
+        )
+    items = [cue for cue in cues if cue.text.strip() and cue.end > cue.start]
+    if not items:
+        return []
+
+    logger = log or (lambda _message: None)
+    profile_key = _normalise_translation_quality_profile(quality_profile)
+    profile = AI_TRANSLATION_QUALITY_PROFILES[profile_key]
+
+    def wait_if_paused() -> None:
+        while pause_event is not None and pause_event.is_set():
+            if cancel_event is not None and cancel_event.is_set():
+                raise OperationCancelled()
+            time.sleep(0.12)
+
+    model_name = (
+        model_name or os.environ.get("GTMCE_TRANSLATION_MODEL", DEFAULT_TRANSLATION_MODEL)
+    ).strip() or DEFAULT_TRANSLATION_MODEL
+    model_path = _prepare_translation_model(model_name, logger, cancel_event)
+    translator, tokenizer = _load_translation_runtime(model_path, logger)
+    total = len(items)
+    logger(
+        "G-TMCE AI Translation: strict authored-subtitle mode; "
+        f"{total} cue(s), {source_language}->{target_language}; timings/markup locked; "
+        f"quality={profile_key}"
+    )
+    output: list[SubtitleCue] = []
+    retried_cues = 0
+    context_cues = 0
+    review_items: list[dict[str, Any]] = []
+    contextual_by_cue: dict[int, tuple[str, set[str]]] = {}
+    sentence_groups = _authored_sentence_groups(items)
+    group_payloads = [
+        " ".join(_authored_sentence_payload(items[i].text)[0] for i in group)
+        for group in sentence_groups
+    ]
+    env_batch = os.environ.get("GTMCE_TRANSLATION_BATCH_SIZE", "").strip()
+    batch_size = max(4, min(64, int(env_batch or profile["batch_size"])))
+    can_batch = callable(getattr(tokenizer, "encode", None)) and callable(getattr(translator, "translate_batch", None))
+    initial_groups = ["" for _ in sentence_groups]
+    group_by_first_cue = {group[0]: i for i, group in enumerate(sentence_groups)}
+    grouped_indices = {i for group in sentence_groups for i in group}
+    if can_batch:
+        for offset in range(0, len(group_payloads), batch_size):
+            wait_if_paused()
+            if cancel_event is not None and cancel_event.is_set():
+                raise OperationCancelled()
+            decoded = _decode_translation_batch(
+                translator, tokenizer, group_payloads[offset:offset + batch_size], target_language,
+                beam_size=int(profile["beam_size"]),
+                repetition_penalty=float(profile["repetition_penalty"]),
+                no_repeat_ngram_size=int(profile["no_repeat_ngram_size"]),
+                length_factor=float(profile["length_factor"]),
+                length_extra=int(profile["length_extra"]),
+            )
+            initial_groups[offset:offset + len(decoded)] = decoded
+    if sentence_groups:
+        logger(f"G-TMCE AI Translation: {len(sentence_groups)} unfinished sentence group(s) share translation context; original cue windows retained")
+
+    # Fast first pass: batch independent visible spans.  Most cues finish here;
+    # only QA failures fall back to the more expensive context/retry path.
+    per_cue_payloads = [_strict_cue_payloads(cue.text) for cue in items]
+    flat_refs: list[tuple[int, int, str]] = []
+    for cue_idx, payloads in enumerate(per_cue_payloads):
+        if cue_idx in grouped_indices:
+            continue
+        for payload_idx, payload in enumerate(payloads):
+            if payload:
+                flat_refs.append((cue_idx, payload_idx, payload))
+    initial_by_cue: list[list[str]] = [["" for _ in payloads] for payloads in per_cue_payloads]
+    if can_batch and flat_refs:
+        logger(f"G-TMCE AI Translation: fast batch first pass ({batch_size} spans/batch)")
+        for offset in range(0, len(flat_refs), batch_size):
+            wait_if_paused()
+            if cancel_event is not None and cancel_event.is_set():
+                raise OperationCancelled()
+            chunk = flat_refs[offset:offset + batch_size]
+            decoded = _decode_translation_batch(
+                translator, tokenizer, [entry[2] for entry in chunk], target_language,
+                beam_size=int(profile["beam_size"]),
+                repetition_penalty=float(profile["repetition_penalty"]),
+                no_repeat_ngram_size=int(profile["no_repeat_ngram_size"]),
+                length_factor=float(profile["length_factor"]),
+                length_extra=int(profile["length_extra"]),
+            )
+            for (cue_idx, payload_idx, _payload), candidate in zip(chunk, decoded):
+                initial_by_cue[cue_idx][payload_idx] = candidate
+    elif flat_refs:
+        logger("G-TMCE AI Translation: batch first pass unavailable; using compatibility path")
+
+    for index, cue in enumerate(items, start=1):
+        wait_if_paused()
+        if cancel_event is not None and cancel_event.is_set():
+            raise OperationCancelled()
+        previous_context = _strip_authored_markup_for_context(items[index - 2].text) if index > 1 and 0 <= cue.start - items[index - 2].end <= 2.0 else ""
+        next_context = _strip_authored_markup_for_context(items[index].text) if index < total and 0 <= items[index].start - cue.end <= 2.0 else ""
+        if index - 1 in group_by_first_cue:
+            group_index = group_by_first_cue[index - 1]
+            group = sentence_groups[group_index]
+            events: set[str] = {"sentence_context"}
+            translated_sentence = _translate_payload_strict(
+                translator, tokenizer, group_payloads[group_index], target_language,
+                qa_events=events, quality_profile=profile_key,
+                initial_candidate=initial_groups[group_index],
+            )
+            payloads = [_authored_sentence_payload(items[i].text) for i in group]
+            pieces = _distribute_authored_sentence(translated_sentence, [p[0] for p in payloads])
+            if pieces:
+                for i, piece, (_source, prefix, suffix) in zip(group, pieces, payloads):
+                    contextual_by_cue[i] = (prefix + piece + suffix, set(events))
+        if index - 1 in contextual_by_cue:
+            translated_text, events = contextual_by_cue[index - 1]
+        else:
+            try:
+                translated_text, events = _translate_existing_cue_text_strict_with_qa(
+                    translator, tokenizer, cue.text, target_language,
+                    previous_context=previous_context, next_context=next_context,
+                    initial_candidates=initial_by_cue[index - 1],
+                    quality_profile=profile_key,
+                )
+            except TypeError as exc:
+                if "unexpected keyword argument" not in str(exc):
+                    raise
+                translated_text, events = _translate_existing_cue_text_strict_with_qa(
+                    translator, tokenizer, cue.text, target_language,
+                    previous_context=previous_context, next_context=next_context,
+                )
+        if not translated_text:
+            translated_text = cue.text
+            events.add("review")
+        if "retry" in events:
+            retried_cues += 1
+        if "context" in events or "sentence_context" in events:
+            context_cues += 1
+        if "review" in events:
+            review_items.append({
+                "cue": index,
+                "start": cue.start,
+                "end": cue.end,
+                "source": cue.text,
+                "output": translated_text,
+            })
+        output.append(SubtitleCue(cue.start, cue.end, translated_text))
+        if progress is not None:
+            progress(index, total)
+
+    summary = {
+        "total": total,
+        "successful": total - len(review_items),
+        "retried": retried_cues,
+        "context_used": context_cues,
+        "review": len(review_items),
+        "review_items": review_items,
+        "quality_profile": profile_key,
+        "sentence_groups": len(sentence_groups),
+    }
+    if qa_report is not None:
+        qa_report.clear()
+        qa_report.update(summary)
+    logger(
+        "G-TMCE AI Translation QA: "
+        f"{total} cue / {summary['successful']} passed / {retried_cues} retried / "
+        f"{len(review_items)} review required / {context_cues} context-assisted"
+    )
+    for item in review_items[:20]:
+        logger(f"QA review cue {item['cue']}: {item['source']!r} -> {item['output']!r}")
+    return output
+
+
+def _validate_strict_subtitle_translation(
+    source: list[SubtitleCue], translated: list[SubtitleCue]
+) -> None:
+    """Refuse to finalise a translated file if source structure changed."""
+    if len(source) != len(translated):
+        raise UserVisibleError(
+            f"AI subtitle validation failed: cue count changed ({len(source)} -> {len(translated)})."
+        )
+    for index, (before, after) in enumerate(zip(source, translated), start=1):
+        if before.start != after.start or before.end != after.end:
+            raise UserVisibleError(
+                f"AI subtitle validation failed: timestamp changed at cue {index}."
+            )
+        source_literals = [v for k, v in _strict_translation_parts(before.text) if k == "literal"]
+        target_literals = [v for k, v in _strict_translation_parts(after.text) if k == "literal"]
+        if source_literals != target_literals:
+            raise UserVisibleError(
+                f"AI subtitle validation failed: formatting changed at cue {index}."
+            )
+
+
+def _subtitle_layout_units(text: str) -> list[tuple[str, tuple[str, ...], str]]:
+    """Visible characters with their original presentation state.
+
+    Reopening active styles on a split cue keeps inline/nested HTML, SDH and
+    positioning separate from MT. Wrapping uses visible display width rather
+    than counting markup as dialogue.
+    """
+    units: list[tuple[str, tuple[str, ...], str]] = []
+    stack: list[str] = []
+    overrides = ""
+    for kind, value in _strict_translation_parts(text):
+        if kind == "text":
+            units.extend((char, tuple(stack), overrides) for char in value)
+        elif value.startswith("{"):
+            overrides += value
+        elif value == "[":
+            stack.append(value)
+        elif value == "]":
+            if not stack or stack[-1] != "[":
+                raise ValueError("Unbalanced SDH wrapper")
+            stack.pop()
+        elif re.fullmatch(r"</\w+\s*>", value):
+            name = re.match(r"</(\w+)", value).group(1).casefold()
+            if not stack or not re.match(rf"<{re.escape(name)}(?:\s|>)", stack[-1], re.I):
+                raise ValueError("Unbalanced subtitle style")
+            stack.pop()
+        elif re.fullmatch(r"<\w+(?:\s[^>]*)?>", value) and not value.endswith("/>"):
+            if value.casefold() == "<br>":
+                units.append(("\n", tuple(stack), overrides))
+            else:
+                stack.append(value)
+        else:
+            raise ValueError("Unsupported subtitle layout token")
+    if stack:
+        raise ValueError("Unclosed subtitle style")
+
+    normalised: list[tuple[str, tuple[str, ...], str]] = []
+    cursor = 0
+    while cursor < len(units):
+        char, styles, positioning = units[cursor]
+        if not char.isspace():
+            normalised.append(units[cursor])
+            cursor += 1
+            continue
+        end = cursor + 1
+        while end < len(units) and units[end][0].isspace():
+            end += 1
+        if normalised and end < len(units):
+            # Explicit speaker lines are semantic. All other line breaks are
+            # typesetting and will be recomputed for the target language.
+            speaker = any(u[0] == "\n" for u in units[cursor:end]) and units[end][0] in "-–—"
+            normalised.append(("\n" if speaker else " ", styles, positioning))
+        cursor = end
+    return normalised
+
+
+def _subtitle_character_width(char: str) -> int:
+    if unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+
+
+def _render_subtitle_layout_units(units: list[tuple[str, tuple[str, ...], str]]) -> str:
+    output: list[str] = []
+    active: tuple[str, ...] = ()
+    positioning = ""
+
+    def close_style(style: str) -> str:
+        return "]" if style == "[" else "</" + re.match(r"<(\w+)", style).group(1) + ">"
+
+    for char, styles, overrides in units:
+        common = 0
+        while common < min(len(active), len(styles)) and active[common] == styles[common]:
+            common += 1
+        output.extend(close_style(style) for style in reversed(active[common:]))
+        if overrides != positioning:
+            output.append(overrides)
+            positioning = overrides
+        output.extend(styles[common:])
+        output.append(char)
+        active = styles
+    output.extend(close_style(style) for style in reversed(active))
+    return "".join(output)
+
+
+def _layout_authored_translation_cue(cue: SubtitleCue, width: int = 42) -> list[SubtitleCue]:
+    """Reflow/split into at most two lines, only inside the authored interval.
+
+    Translation is validated against source markup/timestamps *before* this
+    deterministic presentation pass. It never borrows a neighbouring cue's
+    time, removes dialogue or relies on a particular writing system.
+    """
+    try:
+        units = _subtitle_layout_units(cue.text)
+    except ValueError:
+        # Unsupported/malformed authored styling is safer left intact than
+        # silently discarded. The caller reports remaining readability issues.
+        return [cue]
+    if not units or cue.end <= cue.start:
+        return [cue]
+    lines: list[list[tuple[str, tuple[str, ...], str]]] = []
+    cursor = 0
+    while cursor < len(units):
+        while cursor < len(units) and units[cursor][0].isspace():
+            cursor += 1
+        if cursor == len(units):
+            break
+        end = cursor
+        columns = 0
+        break_at = 0
+        while end < len(units) and units[end][0] != "\n":
+            char = units[end][0]
+            char_width = _subtitle_character_width(char)
+            if columns + char_width > width:
+                break
+            columns += char_width
+            end += 1
+            if char.isspace() or char in ",;.!?…。，；！？":
+                break_at = end
+        if end < len(units) and units[end][0] != "\n" and break_at > cursor:
+            end = break_at
+        end = max(cursor + 1, end)
+        line = units[cursor:end]
+        while line and line[-1][0].isspace():
+            line.pop()
+        lines.append(line)
+        cursor = end
+
+    groups = [lines[i:i + 2] for i in range(0, len(lines), 2)]
+    weights = [sum(_subtitle_character_width(u[0]) for line in group for u in line) for group in groups]
+    total = max(1, sum(weights))
+    result: list[SubtitleCue] = []
+    elapsed = 0
+    for index, (group, weight) in enumerate(zip(groups, weights)):
+        start = cue.start + (cue.end - cue.start) * elapsed / total
+        elapsed += weight
+        end = cue.end if index == len(groups) - 1 else cue.start + (cue.end - cue.start) * elapsed / total
+        combined = list(group[0])
+        for line in group[1:]:
+            combined.append(("\n", combined[-1][1], combined[-1][2]))
+            combined.extend(line)
+        result.append(SubtitleCue(start, end, _render_subtitle_layout_units(combined)))
+    return result or [cue]
+
+
+def translate_subtitle_with_ai(
+    source_path: Path,
+    source_language: str,
+    target_language: str,
+    *,
+    output_path: Path,
+    model_name: str | None = None,
+    cancel_event: Any | None = None,
+    pause_event: Any | None = None,
+    progress: Callable[[int, int], None] | None = None,
+    log: Callable[[str], None] | None = None,
+    qa_report: dict[str, Any] | None = None,
+    quality_profile: str = "balanced",
+) -> Path:
+    cues = read_subtitle_for_translation(source_path)
+    if not cues:
+        raise UserVisibleError(ui_text("error_translation_no_output"))
+    translated = translate_existing_subtitle_cues_with_ai(
+        cues,
+        source_language,
+        target_language,
+        model_name=model_name,
+        cancel_event=cancel_event,
+        pause_event=pause_event,
+        progress=progress,
+        log=log,
+        qa_report=qa_report,
+        quality_profile=quality_profile,
+    )
+    if not translated:
+        raise UserVisibleError(ui_text("error_translation_no_output"))
+    _validate_strict_subtitle_translation(cues, translated)
+    formatted: list[SubtitleCue] = []
+    split_count = 0
+    readability_review = 0
+    readability_items: list[dict[str, Any]] = []
+    for cue in translated:
+        if cancel_event is not None and cancel_event.is_set():
+            raise OperationCancelled()
+        pieces = _layout_authored_translation_cue(cue)
+        split_count += int(len(pieces) > 1)
+        formatted.extend(pieces)
+        for piece in pieces:
+            visible = _strip_authored_markup_for_context(piece.text)
+            cps = len(visible) / max(0.001, piece.end - piece.start)
+            lines = "".join(v for k, v in _strict_translation_parts(piece.text) if k == "text").splitlines()
+            overflow = len(lines) > 2 or any(sum(_subtitle_character_width(c) for c in line) > 42 for line in lines)
+            if cps > 25 or overflow:
+                readability_review += 1
+                readability_items.append({"start": piece.start, "end": piece.end,
+                                          "characters_per_second": round(cps, 1),
+                                          "layout_overflow": overflow})
+    if qa_report is not None:
+        qa_report.update(output_cues=len(formatted), split_cues=split_count,
+                         readability_review=readability_review,
+                         readability_items=readability_items)
+    if log is not None:
+        log(f"G-TMCE AI Translation layout: {split_count} source cue(s) split within their timestamps; "
+            f"{readability_review} cue(s) still need readability/timing review (25 characters/second, two 42-column lines).")
+        for item in readability_items[:20]:
+            log(f"QA readability: {srt_timestamp(item['start'])} --> {srt_timestamp(item['end'])}; "
+                f"{item['characters_per_second']} characters/second; layout overflow={item['layout_overflow']}")
+    return write_srt(output_path, formatted)
 
 
 def translate_srt_with_ai(
@@ -2577,22 +3920,16 @@ def translate_srt_with_ai(
     output_path: Path,
     model_name: str | None = None,
     cancel_event: Any | None = None,
+    pause_event: Any | None = None,
+    progress: Callable[[int, int], None] | None = None,
     log: Callable[[str], None] | None = None,
+    quality_profile: str = "balanced",
 ) -> Path:
-    cues = read_srt(source_path)
-    if not cues:
-        raise UserVisibleError(ui_text("error_translation_no_output"))
-    translated = translate_cues_with_ai(
-        cues,
-        source_language,
-        target_language,
-        model_name=model_name,
-        cancel_event=cancel_event,
-        log=log,
+    return translate_subtitle_with_ai(
+        source_path, source_language, target_language, output_path=output_path,
+        model_name=model_name, cancel_event=cancel_event, pause_event=pause_event,
+        progress=progress, log=log, quality_profile=quality_profile,
     )
-    if not translated:
-        raise UserVisibleError(ui_text("error_translation_no_output"))
-    return write_srt(output_path, translated)
 
 
 

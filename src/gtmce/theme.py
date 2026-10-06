@@ -240,11 +240,16 @@ def build_stylesheet(mode: str) -> str:
     }}
     QProgressBar::chunk {{ background: {p.accent}; border-radius: 4px; }}
 
-    QTableWidget, QTreeWidget, QTreeView {{
+    QTableWidget, QTreeWidget, QTreeView, QListView {{
         background: {p.surface}; alternate-background-color: {p.surface_alt};
         border: 1px solid {p.border}; border-radius: 8px; gridline-color: {p.border};
         selection-background-color: {p.selection}; selection-color: {p.text};
     }}
+    QFileDialog QListView, QFileDialog QTreeView {{
+        background: {p.surface}; color: {p.text}; border: 1px solid {p.border};
+        selection-background-color: {p.selection}; selection-color: {p.text};
+    }}
+    QFileDialog QListView::item:hover, QFileDialog QTreeView::item:hover {{ background: {p.surface_hover}; }}
     QHeaderView {{ background: {p.surface}; }}
     QHeaderView::section {{
         background: {p.surface}; color: {p.muted}; border: none;

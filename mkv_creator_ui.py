@@ -48,12 +48,14 @@ from src.gtmce import core as _core
 from src.gtmce.core import *  # noqa: F401,F403
 from src.gtmce.controller import GTMCEControllerMixin
 from src.gtmce.transcription import (
+    AI_TRANSLATION_QUALITY_PROFILES,
     TRANSLATION_TARGET_LANGUAGES,
     generated_subtitle_path,
     generated_translation_path,
     normalise_asr_language,
     transcribe_audio_to_srt,
     translate_srt_with_ai,
+    translate_subtitle_with_ai,
     translation_language_name,
 )
 
@@ -355,6 +357,22 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.subtitle_session_key: tuple[str, ...] = ()
         self.subtitle_sessions: dict[tuple[str, ...], tuple[str, str, dict[str, SubtitleResult], dict[str, Path]]] = {}
         self.subtitle_batch_mode = False
+
+        # Standalone subtitle translation dialog state.  These values deliberately
+        # outlive the dialog so closing/reopening it does not lose a running job.
+        self.subtitle_create_window: QDialog | None = None
+        self.subtitle_create_source_var = ValueVar("")
+        self.subtitle_create_source_language_var = ValueVar("en")
+        self.subtitle_create_target_language_var = ValueVar("tr")
+        self.subtitle_create_quality_var = ValueVar("balanced")
+        self.subtitle_create_status_var = ValueVar("")
+        self.subtitle_create_progress_value = 0
+        self.subtitle_create_pause_event = threading.Event()
+        self.subtitle_create_progress_bar: QProgressBar | None = None
+        self.subtitle_create_start_button: QPushButton | None = None
+        self.subtitle_create_pause_button: QPushButton | None = None
+        self.subtitle_create_cancel_button: QPushButton | None = None
+        self.subtitle_create_output_path: Path | None = None
         self.mux_tracks_window: QDialog | None = None
         self.mux_tracks_tree: QTableWidget | None = None
         self.mux_tracks_tabs: QTabWidget | None = None
@@ -981,6 +999,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         action_row.addWidget(self.download_button, 1)
         self.subtitle_button = self._button("button_download_subtitles", self.open_subtitle_download_window)
         action_row.addWidget(self.subtitle_button, 1)
+        self.subtitle_create_button = self._button("button_create_subtitle_main", self.open_subtitle_create_window)
+        action_row.addWidget(self.subtitle_create_button, 1)
         self.config_button = self._button("button_write_config", self.start_write_config)
         action_row.addWidget(self.config_button, 1)
         self.mux_button = self._button("button_create_mkv", self._mux_button_clicked, primary=True)
@@ -1887,6 +1907,269 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     # ------------------------------------------------------------------
     # Subtitle dialog
     # ------------------------------------------------------------------
+    def open_subtitle_create_window(self) -> None:
+        """Open the standalone existing-subtitle -> AI translation workflow."""
+        if self.subtitle_create_window is not None:
+            try:
+                self.subtitle_create_window.raise_()
+                self.subtitle_create_window.activateWindow()
+                return
+            except RuntimeError:
+                self.subtitle_create_window = None
+
+        dialog = QDialog(self)
+        dialog.setObjectName("DialogRoot")
+        dialog.setWindowTitle(f"{APP_NAME} - {self.tr('window_subtitle_create_title')}")
+        dialog.setMinimumWidth(680)
+        self.subtitle_create_window = dialog
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 16, 16, 16)
+        card, card_layout = self._card("DialogCard")
+        layout.addWidget(card)
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(8)
+        form.setVerticalSpacing(9)
+        form.setColumnStretch(1, 1)
+        card_layout.addLayout(form)
+
+        form.addWidget(self._field_label("label_subtitle_create_source"), 0, 0)
+        source_edit = self._bind_line(self.subtitle_create_source_var, QLineEdit())
+        source_edit.setReadOnly(True)
+        form.addWidget(source_edit, 0, 1)
+        form.addWidget(self._button("button_browse_file", self.browse_subtitle_create_source), 0, 2)
+
+        form.addWidget(self._field_label("label_subtitle_create_source_language"), 1, 0)
+        source_language = QComboBox()
+        source_language.setEditable(True)
+        for code, name in TRANSLATION_TARGET_LANGUAGES:
+            source_language.addItem(f"{name} ({code})", code)
+        self._bind_combo_data(self.subtitle_create_source_language_var, source_language)
+        form.addWidget(source_language, 1, 1, 1, 2)
+
+        form.addWidget(self._field_label("label_subtitle_create_target_language"), 2, 0)
+        target_language = QComboBox()
+        target_language.setEditable(True)
+        for code, name in TRANSLATION_TARGET_LANGUAGES:
+            target_language.addItem(f"{name} ({code})", code)
+        self._bind_combo_data(self.subtitle_create_target_language_var, target_language)
+        form.addWidget(target_language, 2, 1, 1, 2)
+
+        form.addWidget(self._field_label("label_ai_translation_quality"), 3, 0)
+        quality_combo = QComboBox()
+        for key, label_key in (("fast", "ai_translation_quality_fast"), ("balanced", "ai_translation_quality_balanced"), ("maximum", "ai_translation_quality_maximum")):
+            quality_combo.addItem(self.tr(label_key), key)
+        self._bind_combo_data(self.subtitle_create_quality_var, quality_combo)
+        quality_combo.setToolTip(self.tr("ai_translation_quality_hint"))
+        form.addWidget(quality_combo, 3, 1, 1, 2)
+
+        output_hint = QLabel(self.tr("subtitle_create_output_hint"))
+        output_hint.setObjectName("Muted")
+        output_hint.setWordWrap(True)
+        card_layout.addWidget(output_hint)
+
+        self.subtitle_create_progress_bar = QProgressBar()
+        self.subtitle_create_progress_bar.setRange(0, 100)
+        self.subtitle_create_progress_bar.setValue(self.subtitle_create_progress_value)
+        card_layout.addWidget(self.subtitle_create_progress_bar)
+        status = QLabel()
+        status.setObjectName("StatusText")
+        status.setWordWrap(True)
+        self.subtitle_create_status_var.bind(lambda value: status.setText(str(value)))
+        card_layout.addWidget(status)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.subtitle_create_start_button = self._button("button_subtitle_create_start", self.start_standalone_subtitle_translation, primary=True)
+        self.subtitle_create_pause_button = self._button("button_subtitle_create_pause", self.toggle_standalone_subtitle_pause)
+        self.subtitle_create_cancel_button = self._button("button_cancel_job", self.cancel_standalone_subtitle_translation)
+        actions.addWidget(self.subtitle_create_start_button)
+        actions.addWidget(self.subtitle_create_pause_button)
+        actions.addWidget(self.subtitle_create_cancel_button)
+        actions.addWidget(self._button("button_close", dialog.close))
+        card_layout.addLayout(actions)
+        self.update_standalone_subtitle_controls()
+        dialog.finished.connect(lambda _r: self._clear_subtitle_create_refs())
+        dialog.show()
+
+    def _bind_combo_data(self, variable: ValueVar, combo: QComboBox) -> None:
+        """Bind a language combo whose display label differs from its data code."""
+        target = str(variable.get() or "").strip().lower()
+        index = combo.findData(target)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        elif target:
+            combo.setEditText(target)
+
+        def changed(_index: int) -> None:
+            data = combo.currentData()
+            variable.set(str(data if data is not None else combo.currentText()).strip().lower())
+
+        combo.currentIndexChanged.connect(changed)
+        combo.editTextChanged.connect(lambda text: variable.set(str(combo.currentData() or text).strip().lower()))
+
+    def browse_subtitle_create_source(self) -> None:
+        raw = self.subtitle_create_source_var.get().strip()
+        initial = self.existing_initial_dir(raw, self.folder_var.get().strip(), self.last_mkv_dir, APP_DIR)
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr("dialog_subtitle_create_source_title"),
+            initial,
+            "Subtitle files (*.srt *.ass *.ssa *.vtt);;SubRip (*.srt);;ASS/SSA (*.ass *.ssa);;WebVTT (*.vtt);;All files (*)",
+        )
+        if path:
+            self.subtitle_create_source_var.set(path)
+
+    def _standalone_subtitle_running(self) -> bool:
+        return bool(
+            self.current_operation == "subtitle_translation"
+            and self.worker is not None
+            and self.worker.is_alive()
+        )
+
+    def _standalone_subtitle_output_path(self, target_language: str) -> Path:
+        target_language = normalise_asr_language(target_language)
+        code = SUBTITLE_FILENAME_LANGUAGE_CODES.get(target_language, target_language)
+        output_root_raw = self.folder_var.get().strip()
+        if not output_root_raw:
+            raise UserVisibleError(self.tr("error_subtitle_create_output_dir"))
+        output_root = Path(output_root_raw).expanduser()
+        if not output_root.is_dir():
+            raise UserVisibleError(self.tr("error_subtitle_create_output_dir"))
+        # AI output is never the plain language file: preserve original subtitles.
+        first = output_root / f"{code}(ai).srt"
+        if not first.exists():
+            return first
+        number = 2
+        while True:
+            candidate = output_root / f"{code}(ai-{number}).srt"
+            if not candidate.exists():
+                return candidate
+            number += 1
+
+    def start_standalone_subtitle_translation(self) -> None:
+        if self._standalone_subtitle_running():
+            return
+        if self.worker is not None and self.worker.is_alive():
+            self.show_info(self.tr("dialog_in_progress_title"), self.tr("dialog_in_progress_message"))
+            return
+        source = Path(self.subtitle_create_source_var.get().strip()).expanduser()
+        if not source.is_file() or source.suffix.casefold() not in {".srt", ".ass", ".ssa", ".vtt"}:
+            self.show_error(self.tr("dialog_missing_info"), self.tr("error_subtitle_create_source"))
+            return
+        try:
+            source_language = normalise_asr_language(self.subtitle_create_source_language_var.get())
+            target_language = normalise_asr_language(self.subtitle_create_target_language_var.get())
+            if source_language == target_language:
+                raise UserVisibleError(self.tr("error_translation_same_language", language=target_language))
+            translation_quality = str(self.subtitle_create_quality_var.get() or "balanced").strip().lower()
+            if translation_quality not in AI_TRANSLATION_QUALITY_PROFILES:
+                translation_quality = "balanced"
+            destination = self._standalone_subtitle_output_path(target_language)
+        except UserVisibleError as exc:
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
+            return
+        self.subtitle_create_pause_event.clear()
+        self.subtitle_create_progress_value = 0
+        self.subtitle_create_output_path = destination
+        self.subtitle_create_status_var.set(
+            self.tr("status_standalone_subtitle_translating", name=source.name, language=translation_language_name(target_language))
+        )
+        if self.subtitle_create_progress_bar is not None:
+            self.subtitle_create_progress_bar.setValue(0)
+
+        def progress(done: int, total: int) -> None:
+            percent = 100 if total <= 0 else max(0, min(100, round(done * 100 / total)))
+            self.log_queue.put(("subtitle_create_progress", percent))
+
+        def work() -> None:
+            qa_report: dict[str, Any] = {}
+            output = translate_subtitle_with_ai(
+                source,
+                source_language,
+                target_language,
+                output_path=destination,
+                cancel_event=self.cancel_event,
+                pause_event=self.subtitle_create_pause_event,
+                progress=progress,
+                log=self.queue_log,
+                qa_report=qa_report,
+                quality_profile=translation_quality,
+            )
+            self.log_queue.put(("subtitle_create_done", (str(output), qa_report)))
+
+        if self.run_background(
+            work,
+            self.tr("status_standalone_subtitle_translating_short"),
+            operation="subtitle_translation",
+        ):
+            self.update_standalone_subtitle_controls()
+
+    def toggle_standalone_subtitle_pause(self) -> None:
+        if not self._standalone_subtitle_running():
+            return
+        if self.subtitle_create_pause_event.is_set():
+            self.subtitle_create_pause_event.clear()
+            self.subtitle_create_status_var.set(self.tr("status_subtitle_create_running"))
+        else:
+            self.subtitle_create_pause_event.set()
+            self.subtitle_create_status_var.set(self.tr("status_subtitle_create_paused"))
+        self.update_standalone_subtitle_controls()
+
+    def cancel_standalone_subtitle_translation(self) -> None:
+        if not self._standalone_subtitle_running():
+            return
+        self.subtitle_create_pause_event.clear()
+        self.subtitle_create_status_var.set(self.tr("status_cancelling"))
+        self.cancel_current_operation()
+        self.update_standalone_subtitle_controls()
+
+    def update_standalone_subtitle_controls(self) -> None:
+        running = self._standalone_subtitle_running()
+        paused = bool(running and self.subtitle_create_pause_event.is_set())
+        if self.subtitle_create_start_button is not None:
+            self.subtitle_create_start_button.setEnabled(not running)
+        if self.subtitle_create_pause_button is not None:
+            self.subtitle_create_pause_button.setEnabled(running)
+            self.subtitle_create_pause_button.setText(
+                self.tr("button_subtitle_create_resume" if paused else "button_subtitle_create_pause")
+            )
+        if self.subtitle_create_cancel_button is not None:
+            self.subtitle_create_cancel_button.setEnabled(running)
+        if self.subtitle_create_progress_bar is not None:
+            self.subtitle_create_progress_bar.setValue(self.subtitle_create_progress_value)
+
+    def mark_standalone_subtitle_done(self, output: Path, qa_report: dict[str, Any] | None = None) -> None:
+        self.subtitle_create_progress_value = 100
+        self.subtitle_create_output_path = output
+        status = self.tr("status_subtitle_create_done", path=output)
+        if qa_report:
+            total = int(qa_report.get("total", 0) or 0)
+            passed = int(qa_report.get("successful", 0) or 0)
+            retried = int(qa_report.get("retried", 0) or 0)
+            review = int(qa_report.get("review", 0) or 0)
+            context_used = int(qa_report.get("context_used", 0) or 0)
+            status += " · " + self.tr(
+                "status_subtitle_translation_qa", total=total, passed=passed,
+                retried=retried, review=review, context=context_used,
+            )
+            if "output_cues" in qa_report:
+                status += " · " + self.tr(
+                    "status_subtitle_translation_layout",
+                    output=int(qa_report.get("output_cues", total)),
+                    split=int(qa_report.get("split_cues", 0)),
+                    readability=int(qa_report.get("readability_review", 0)),
+                )
+        self.subtitle_create_status_var.set(status)
+        self.update_standalone_subtitle_controls()
+
+    def _clear_subtitle_create_refs(self) -> None:
+        self.subtitle_create_window = None
+        self.subtitle_create_progress_bar = None
+        self.subtitle_create_start_button = None
+        self.subtitle_create_pause_button = None
+        self.subtitle_create_cancel_button = None
+
     def open_subtitle_download_window(self) -> None:
         try:
             batch_settings = self.collect_batch_subtitle_download_settings()
@@ -2240,16 +2523,28 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             row_data = {"path":item.path,"language":language,"selected":selected,"delta":delta,"codec":codec,"bitrate":bitrate,"sample_rate":rate,"layout":layout_var,"volume":volume,"volume_slider":slider,"volume_label":value_label,"speed":speed,"speed_values":speed_values,"defaults":defaults,"name_label":name}
             subtitle_host = QWidget(); subtitle_layout = QHBoxLayout(subtitle_host); subtitle_layout.setContentsMargins(0,0,0,0); subtitle_layout.setSpacing(6)
             subtitle_button = self._button("button_create_subtitle_from_audio", lambda _checked=False, row=row_data: self.prompt_audio_transcription(row))
-            translation_button = self._button("button_ai_translate", lambda _checked=False, row=row_data: self.start_audio_ai_translation(row))
             subtitle_button.setEnabled(language != "und")
-            translation_button.setEnabled(language != "und")
             if language == "und":
                 subtitle_button.setToolTip(self.tr("tooltip_subtitle_language_required"))
-                translation_button.setToolTip(self.tr("tooltip_subtitle_language_required"))
-            else:
-                translation_button.setToolTip(self.tr("tooltip_ai_translation"))
             subtitle_layout.addWidget(subtitle_button)
+
+            # Keep audio-track AI translation available from the Ses Ayarla
+            # panel.  It uses the exact same translation engine and quality
+            # profiles (fast / balanced / maximum) as the main Subtitle Create
+            # workflow; the target/profile picker is opened by
+            # start_audio_ai_translation().
+            translation_button = self._button(
+                "button_ai_translate",
+                lambda _checked=False, row=row_data: self.start_audio_ai_translation(row),
+            )
+            translation_button.setEnabled(language != "und")
+            translation_button.setToolTip(
+                self.tr("tooltip_ai_translation")
+                if language != "und"
+                else self.tr("tooltip_subtitle_language_required")
+            )
             subtitle_layout.addWidget(translation_button)
+
             grid.addWidget(subtitle_host, r, 9)
             row_data["subtitle_button"] = subtitle_button
             row_data["translation_button"] = translation_button
@@ -2575,7 +2870,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         if started:
             self.update_audio_adjust_apply_button_text()
 
-    def choose_ai_translation_target(self, source_language: str) -> str | None:
+    def choose_ai_translation_target(self, source_language: str) -> tuple[str, str] | None:
         """Choose an AI translation target while still showing the source language.
 
         Hiding the source language made a valid target such as Turkish appear to
@@ -2625,6 +2920,15 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             combo.setCurrentIndex(first_enabled)
         layout.addWidget(combo)
 
+        quality_label = QLabel(self.tr("label_ai_translation_quality"))
+        layout.addWidget(quality_label)
+        quality_combo = QComboBox()
+        for key, label_key in (("fast", "ai_translation_quality_fast"), ("balanced", "ai_translation_quality_balanced"), ("maximum", "ai_translation_quality_maximum")):
+            quality_combo.addItem(self.tr(label_key), key)
+        quality_combo.setCurrentIndex(max(0, quality_combo.findData("balanced")))
+        quality_combo.setToolTip(self.tr("ai_translation_quality_hint"))
+        layout.addWidget(quality_combo)
+
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         cancel = QPushButton(self.tr("button_cancel"))
@@ -2642,7 +2946,10 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         target = str(combo.currentData() or "").strip().lower()
         if not target or target == source_code:
             return None
-        return target
+        quality = str(quality_combo.currentData() or "balanced").strip().lower()
+        if quality not in AI_TRANSLATION_QUALITY_PROFILES:
+            quality = "balanced"
+        return target, quality
 
     def choose_audio_transcription_quality(self) -> str | None:
         """Ask for a per-job ASR speed/accuracy profile.
@@ -2708,6 +3015,78 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             return
         self.start_audio_transcription(row, quality_profile=quality_profile)
 
+    def choose_existing_subtitle_for_ai(self, row: dict[str, Any]) -> Path | None:
+        """Choose an already extracted SRT next to the selected audio track.
+
+        Returning ``None`` means "use the normal Whisper/generated-source path".
+        The chooser intentionally stays in the media directory first because
+        extracted tracks are normally written there by G-TMCE.
+        """
+        source = Path(row["path"])
+        folder = source.parent
+        generated = generated_subtitle_path(source, str(row.get("language") or "und"))
+        candidates = sorted(
+            (path for path in folder.glob("*.srt") if path.is_file()),
+            key=lambda path: path.name.casefold(),
+        )
+
+        dialog = QDialog(self.audio_adjust_window or self)
+        dialog.setWindowTitle(self.tr("dialog_ai_translation_source_title"))
+        dialog.setModal(True)
+        dialog.setMinimumWidth(520)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+        layout.addWidget(QLabel(self.tr("dialog_ai_translation_source_label")))
+
+        combo = QComboBox()
+        combo.addItem(self.tr("ai_translation_source_whisper"), None)
+        for path in candidates:
+            label = path.name
+            if path == generated:
+                label += self.tr("ai_translation_source_generated_suffix")
+            combo.addItem(label, str(path))
+        combo.addItem(self.tr("ai_translation_source_browse"), "__browse__")
+        layout.addWidget(combo)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton(self.tr("button_cancel")); cancel.setObjectName("GhostButton")
+        accept = QPushButton(self.tr("button_continue")); accept.setDefault(True)
+        cancel.clicked.connect(dialog.reject); accept.clicked.connect(dialog.accept)
+        buttons.addWidget(cancel); buttons.addWidget(accept); layout.addLayout(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return Path("__cancel__")
+
+        selected = combo.currentData()
+        if selected == "__browse__":
+            path, _ = QFileDialog.getOpenFileName(
+                self.audio_adjust_window or self,
+                self.tr("dialog_ai_translation_source_title"),
+                str(folder),
+                "SubRip subtitles (*.srt);;All files (*)",
+            )
+            if not path:
+                return Path("__cancel__")
+            return Path(path)
+        if selected:
+            return Path(str(selected))
+        return None
+
+    def _subtitle_source_language(self, path: Path | None, fallback: str) -> str:
+        """Infer a conventional filename language token, otherwise use track language."""
+        fallback_code = normalise_asr_language(fallback)
+        if path is None:
+            return fallback_code
+        tokens = [token for token in re.split(r"[._\-\s()]+", path.stem.lower()) if token]
+        known = {code for code, _name in TRANSLATION_TARGET_LANGUAGES}
+        aliases = globals().get("LANG_ALIASES", {})
+        for token in reversed(tokens[-4:]):
+            code = aliases.get(token, token) if isinstance(aliases, dict) else token
+            if code in known:
+                return code
+        return fallback_code
+
     def start_audio_ai_translation(self, row: dict[str, Any]) -> None:
         # The AI-translation button doubles as the cancel button while an
         # audio transcription/translation job is active.  Handle that state
@@ -2731,30 +3110,36 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 self.tr("error_asr_language_unknown"),
             )
             return
-        target_language = self.choose_ai_translation_target(language)
-        if target_language is None:
+        translation_settings = self.choose_ai_translation_target(language)
+        if translation_settings is None:
             return
+        target_language, translation_quality_profile = translation_settings
 
-        # AI translation reuses an existing generated source-language SRT when
-        # available. If Whisper still has to create that intermediate subtitle,
-        # ask for the same per-job ASR profile used by the normal Subtitle
-        # Create action instead of silently falling back to the default model.
-        source = Path(row["path"])
         try:
-            source_generated_subtitle = generated_subtitle_path(source, language)
+            existing_subtitle = self.choose_existing_subtitle_for_ai(row)
         except UserVisibleError as exc:
             self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
+        if existing_subtitle is not None and existing_subtitle.name == "__cancel__":
+            return
+
+        source = Path(row["path"])
+        source_language = self._subtitle_source_language(existing_subtitle, language)
         quality_profile: str | None = None
-        if not source_generated_subtitle.exists():
-            quality_profile = self.choose_audio_transcription_quality()
-            if quality_profile is None:
-                return
+        if existing_subtitle is None:
+            source_generated_subtitle = generated_subtitle_path(source, source_language)
+            if not source_generated_subtitle.exists():
+                quality_profile = self.choose_audio_transcription_quality()
+                if quality_profile is None:
+                    return
 
         self.start_audio_transcription(
             row,
             translate_to=target_language,
             quality_profile=quality_profile,
+            source_subtitle_path=existing_subtitle,
+            source_language_override=source_language,
+            translation_quality_profile=translation_quality_profile,
         )
 
     def start_audio_transcription(
@@ -2762,6 +3147,9 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         row: dict[str, Any],
         translate_to: str | None = None,
         quality_profile: str | None = None,
+        source_subtitle_path: Path | None = None,
+        source_language_override: str | None = None,
+        translation_quality_profile: str = "balanced",
     ) -> None:
         if self.worker is not None and self.worker.is_alive():
             if self.current_operation == "audio_transcription":
@@ -2771,10 +3159,15 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 self.show_info(self.tr("dialog_in_progress_title"), self.tr("dialog_in_progress_message"))
             return
         source = Path(row["path"])
-        language = str(row.get("language") or "und")
+        language = str(source_language_override or row.get("language") or "und")
         target_language = str(translate_to or "").strip().lower() or None
+        external_subtitle = Path(source_subtitle_path) if source_subtitle_path is not None else None
         try:
-            if target_language is not None:
+            if target_language is not None and external_subtitle is not None:
+                destination = external_subtitle.with_name(
+                    f"{external_subtitle.stem}.{target_language}.ai.srt"
+                )
+            elif target_language is not None:
                 destination = generated_translation_path(source, target_language)
             else:
                 destination = generated_subtitle_path(source, language)
@@ -2793,7 +3186,11 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             if answer != QMessageBox.Yes:
                 return
 
-        source_generated_subtitle = generated_subtitle_path(source, language)
+        source_generated_subtitle = (
+            external_subtitle
+            if external_subtitle is not None
+            else generated_subtitle_path(source, language)
+        )
         defaults = row.get("defaults") if isinstance(row.get("defaults"), dict) else {}
         source_channel_layout = str(defaults.get("channel_layout") or "").strip()
         if not source_channel_layout:
@@ -2848,6 +3245,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                     output_path=destination,
                     cancel_event=self.cancel_event,
                     log=self.queue_log,
+                    quality_profile=translation_quality_profile,
                 )
             else:
                 output = transcribe_audio_to_srt(
@@ -3552,6 +3950,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             elif kind=="busy":
                 self.set_busy(bool(value));
                 self.update_audio_transcription_buttons()
+                self.update_standalone_subtitle_controls()
                 if not bool(value):
                     self.update_audio_adjust_apply_button_text()
                     self.audio_transcription_source = None
@@ -3592,6 +3991,16 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 try:result_key,destination=value
                 except (TypeError,ValueError):continue
                 self.mark_subtitle_result_downloaded(str(result_key),Path(str(destination)))
+            elif kind=="subtitle_create_progress":
+                self.subtitle_create_progress_value = int(value)
+                if self.subtitle_create_progress_bar is not None:
+                    self.subtitle_create_progress_bar.setValue(self.subtitle_create_progress_value)
+            elif kind=="subtitle_create_done":
+                if isinstance(value, tuple) and len(value) == 2:
+                    output_value, qa_report = value
+                    self.mark_standalone_subtitle_done(Path(str(output_value)), qa_report if isinstance(qa_report, dict) else None)
+                else:
+                    self.mark_standalone_subtitle_done(Path(str(value)))
 
     # ------------------------------------------------------------------
     # App update / platform integration

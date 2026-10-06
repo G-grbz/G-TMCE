@@ -382,7 +382,7 @@ def test_read_srt_and_translate_existing_text(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         transcription,
-        "translate_cues_with_ai",
+        "translate_existing_subtitle_cues_with_ai",
         lambda cues, source_language, target_language, **_kwargs: [
             SubtitleCue(cue.start, cue.end, "Hallo.") for cue in cues
         ],
@@ -819,3 +819,20 @@ def test_boundary_duplicate_cleanup_catches_shifted_whisper_sentence():
     assert len(cleaned) == 2
     assert any("öldürsün" in cue.text for cue in cleaned)
     assert any(cue.text == "Başka bir cümle." for cue in cleaned)
+
+
+def test_standalone_ai_subtitle_track_names_and_language():
+    for name, language, title in (
+        ("tur(ai).srt", "tr", "AI ile Çevrildi"),
+        ("tur(ai-2).srt", "tr", "AI ile Çevrildi"),
+        ("fre(ai-3).srt", "fr", "AI Translated"),
+    ):
+        path = Path(name)
+        flags = infer_subtitle_track_flags(path)
+        assert flags["language"] == language
+        assert flags["name"] == title
+        entry, _ = make_minimal_track_entry(path, 1)
+        args = []
+        append_source_options(args, TrackItem(entry, path, None))
+        assert f"0:{language}" in args
+        assert f"0:{title}" in args

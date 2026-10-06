@@ -621,3 +621,17 @@ Normal dialogue transcription runs sensitive VAD rescue on subtitle gaps of 8 se
 
 ### AI Translation + Whisper profile handoff
 When **AI Translation / AI Çeviri** needs to create the source-language SRT first, G-TMCE now opens the same per-job Whisper profile picker (`turbo`, `medium`, `large-v3`, `large-v3+`) before starting ASR. If the generated source SRT already exists, translation begins directly without asking for an irrelevant Whisper choice. The target-language picker shows every supported language, including Turkish; the current source language stays visible but disabled to prevent same-language translation and output-path collisions.
+
+### AI subtitle translation quality profiles
+
+Both **Create Subtitle** and **Audio Adjust → AI Translation** use the same local MADLAD translation engine and the same three quality profiles:
+
+- **Fast** — larger batches, greedy first pass, minimal retry.
+- **Balanced** — batch-first translation with QA/retry; default.
+- **Maximum quality** — wider beam, more retries, and neighbour-context candidates for short dialogue; slower.
+
+The translation engine preserves authored cue windows and presentation markup in every profile. Display line breaks are joined before translation; explicit speaker boundaries remain separate. Nearby unfinished sentences with matching styling share translation context, then their text is distributed back into the original cue windows. This policy is shared by all supported language pairs and does not use movie-specific corrections.
+
+After translation and source-structure validation, long output is reflowed into at most two 42-column lines and, when needed, split into consecutive subtitle blocks **inside the original cue's time interval**. Inline/nested styles, SDH brackets and positioning are retained on each piece. Wide CJK characters count as two display columns. Source files are never rewritten. If the authored interval is too short for comfortable reading, the QA log reports the remaining timing issue rather than extending into another subtitle or discarding dialogue.
+
+Structural QA detects omitted text, added clauses and duplicate alternatives, retries suspicious spans, and conservatively repairs demonstrable doubled clauses when decoding cannot resolve them. Word counts are not treated as sufficient evidence of omissions in morphologically compact or unspaced languages. These checks cannot guarantee semantic accuracy: **AI translation remains beta and should be reviewed before final use.**

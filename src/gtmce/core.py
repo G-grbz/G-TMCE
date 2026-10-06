@@ -385,7 +385,17 @@ UI_TEXT = {
         "tooltip_ai_translation": "Translate the generated subtitle locally with AI. Choose the target language after clicking; if no source subtitle exists, G-TMCE transcribes the audio first.",
         "dialog_ai_translation_language_title": "AI Translation",
         "dialog_ai_translation_language_label": "Translate to:",
+        "label_ai_translation_quality": "AI translation quality",
+        "ai_translation_quality_fast": "Fast",
+        "ai_translation_quality_balanced": "Balanced",
+        "ai_translation_quality_maximum": "Maximum quality",
+        "ai_translation_quality_hint": "Fast prioritizes speed; Balanced keeps QA/retry with good throughput; Maximum quality uses wider decoding and more neighbour context and is slower.",
         "ai_translation_source_language_suffix": " — source language",
+        "dialog_ai_translation_source_title": "AI Translation Source",
+        "dialog_ai_translation_source_label": "Choose the subtitle to translate. Existing SRT files in this folder are listed automatically:",
+        "ai_translation_source_whisper": "Use generated subtitle / transcribe with Whisper",
+        "ai_translation_source_generated_suffix": " — generated",
+        "ai_translation_source_browse": "Browse for another SRT...",
         "dialog_overwrite_subtitle_title": "Replace Generated Subtitle",
         "dialog_overwrite_subtitle_message": "{path} already exists. Recreate and replace it?",
         "status_creating_subtitle": "Creating subtitle from audio...",
@@ -427,6 +437,25 @@ UI_TEXT = {
         "status_adjusting_audio": "Adjusting audio...",
         "button_download_assets": "Download Artwork/Tags",
         "button_download_subtitles": "Download Subtitles",
+        "button_create_subtitle_main": "Create Subtitle",
+        "window_subtitle_create_title": "Create Subtitle",
+        "label_subtitle_create_source": "Source subtitle",
+        "label_subtitle_create_source_language": "Source language",
+        "label_subtitle_create_target_language": "Translate to",
+        "dialog_subtitle_create_source_title": "Choose source subtitle",
+        "subtitle_create_output_hint": "SRT/ASS/SSA/VTT sources are supported. The translated subtitle is written to the selected mux/media folder using its 3-letter language code (for example fr → fre.srt).",
+        "button_subtitle_create_start": "Start",
+        "button_subtitle_create_pause": "Pause",
+        "button_subtitle_create_resume": "Resume",
+        "status_standalone_subtitle_translating": "Translating {name} to {language} with local AI...",
+        "status_standalone_subtitle_translating_short": "AI subtitle translation is running...",
+        "status_subtitle_create_running": "AI subtitle translation is running...",
+        "status_subtitle_create_paused": "AI subtitle translation is paused. You can close this window and resume later.",
+        "status_subtitle_create_done": "Translated subtitle is ready: {path}",
+        "status_subtitle_translation_qa": "QA: {total} cues / {passed} passed checks / {retried} retried / {review} need review / {context} context-assisted",
+        "status_subtitle_translation_layout": "{output} output cues / {split} source cues split / {readability} need readability/timing review",
+        "error_subtitle_create_source": "Choose a valid SRT, ASS, SSA or VTT subtitle file.",
+        "error_subtitle_create_output_dir": "Select a valid mux/media folder on the main screen first.",
         "button_write_config": "Write Config",
         "button_create_mkv": "Create MKV",
         "button_cancel": "Cancel",
@@ -777,7 +806,17 @@ UI_TEXT = {
         "tooltip_ai_translation": "Oluşturulan altyazı metnini yerel AI ile çevirir. Tıklayınca hedef dil seçilir; kaynak altyazı yoksa önce ses yazıya dökülür.",
         "dialog_ai_translation_language_title": "AI Çeviri",
         "dialog_ai_translation_language_label": "Çevrilecek dil:",
+        "label_ai_translation_quality": "AI çeviri kalitesi",
+        "ai_translation_quality_fast": "Hızlı",
+        "ai_translation_quality_balanced": "Dengeli",
+        "ai_translation_quality_maximum": "Maksimum Kalite",
+        "ai_translation_quality_hint": "Hızlı modu hıza öncelik verir; Dengeli QA/retry ile hız-kalite dengesini korur; Maksimum Kalite daha geniş çözümleme ve daha fazla komşu bağlam kullanır, daha yavaştır.",
         "ai_translation_source_language_suffix": " — kaynak dil",
+        "dialog_ai_translation_source_title": "AI Çeviri Kaynağı",
+        "dialog_ai_translation_source_label": "Çevrilecek altyazıyı seç. Bu klasördeki mevcut SRT dosyaları otomatik listelenir:",
+        "ai_translation_source_whisper": "Oluşturulan altyazıyı kullan / Whisper ile sesten çıkar",
+        "ai_translation_source_generated_suffix": " — oluşturulan",
+        "ai_translation_source_browse": "Başka bir SRT seç...",
         "dialog_overwrite_subtitle_title": "Oluşturulan Altyazıyı Değiştir",
         "dialog_overwrite_subtitle_message": "{path} zaten var. Yeniden oluşturup üzerine yazılsın mı?",
         "status_creating_subtitle": "Sesten altyazı oluşturuluyor...",
@@ -819,6 +858,25 @@ UI_TEXT = {
         "status_adjusting_audio": "Ses ayarlanıyor...",
         "button_download_assets": "Görsel/Tag İndir",
         "button_download_subtitles": "Altyazı İndir",
+        "button_create_subtitle_main": "Altyazı Oluştur",
+        "window_subtitle_create_title": "Altyazı Oluştur",
+        "label_subtitle_create_source": "Kaynak altyazı",
+        "label_subtitle_create_source_language": "Kaynak dil",
+        "label_subtitle_create_target_language": "Çevrilecek dil",
+        "dialog_subtitle_create_source_title": "Kaynak altyazı seç",
+        "subtitle_create_output_hint": "SRT/ASS/SSA/VTT kaynakları desteklenir. AI çevirileri mevcut altyazıların üzerine yazmadan seçili çoklanacak/medya dizinine kaydedilir (ör. tur(ai).srt, tur(ai-2).srt).",
+        "button_subtitle_create_start": "Başlat",
+        "button_subtitle_create_pause": "Durdur",
+        "button_subtitle_create_resume": "Devam",
+        "status_standalone_subtitle_translating": "{name}, yerel AI ile {language} diline çevriliyor...",
+        "status_standalone_subtitle_translating_short": "AI altyazı çevirisi çalışıyor...",
+        "status_subtitle_create_running": "AI altyazı çevirisi çalışıyor...",
+        "status_subtitle_create_paused": "AI altyazı çevirisi durduruldu. Bu pencereyi kapatıp daha sonra devam edebilirsin.",
+        "status_subtitle_create_done": "Çevrilen altyazı hazır: {path}",
+        "status_subtitle_translation_qa": "QA: {total} blok / {passed} kontrolden geçti / {retried} yeniden denendi / {review} inceleme gerekli / {context} bağlam destekli",
+        "status_subtitle_translation_layout": "{output} çıktı bloğu / {split} kaynak blok bölündü / {readability} okunabilirlik/zamanlama incelemesi gerekli",
+        "error_subtitle_create_source": "Geçerli bir SRT, ASS, SSA veya VTT altyazı dosyası seç.",
+        "error_subtitle_create_output_dir": "Önce ana ekrandan geçerli bir çoklanacak/medya dizini seç.",
         "button_write_config": "Config Yaz",
         "button_create_mkv": "MKV Oluştur",
         "button_cancel": "İptal",
@@ -4724,6 +4782,18 @@ def generated_subtitle_info_from_filename(path: Path) -> tuple[str, bool] | None
     token is therefore the output language; scanning from the start would mark
     ``eng.tr.generated.srt`` as English instead of Turkish.
     """
+    ai_match = re.fullmatch(r"([a-z]{2,3})\(ai(?:-\d+)?\)", path.stem.lower())
+    if ai_match:
+        code = ai_match.group(1)
+        lang = LANG_ALIASES.get(code)
+        if lang is None:
+            lang = next((key for key, value in SUBTITLE_FILENAME_LANGUAGE_CODES.items() if len(key) == 2 and value == code), None)
+        if lang is not None:
+            return lang, True
+    ai_name = re.fullmatch(r"([a-z]{2,3})\(ai(?:-\d+)?\)", path.stem, re.IGNORECASE)
+    if ai_name:
+        code = ai_name.group(1).lower()
+        return LANG_ALIASES.get(code, code), True
     tokens = [token for token in re.split(r"[._\-\s()]+", path.stem.lower()) if token]
     if not tokens or tokens[-1] != "generated":
         return None
@@ -4746,6 +4816,11 @@ def generated_subtitle_info_from_filename(path: Path) -> tuple[str, bool] | None
 
 def generated_subtitle_track_name(path: Path) -> str:
     """Give locally produced subtitles a useful Matroska track title."""
+    # Independent subtitle creator: fre(ai).srt, tur(ai-2).srt, etc.
+    if re.fullmatch(r"[a-z]{2,3}\(ai(?:-\d+)?\)", path.stem, re.IGNORECASE):
+        language_code = path.stem.split("(", 1)[0].lower()
+        language = LANG_ALIASES.get(language_code, language_code)
+        return "AI ile Çevrildi" if language == "tr" else "AI Translated"
     info = generated_subtitle_info_from_filename(path)
     if info is None:
         return ""
