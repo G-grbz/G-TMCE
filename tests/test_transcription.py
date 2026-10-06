@@ -262,7 +262,7 @@ def test_multilingual_ai_translation_preserves_timestamps(monkeypatch, tmp_path)
 
     class FakeTranslator:
         def translate_batch(self, source_tokens, **_kwargs):
-            assert source_tokens == [["<2tr>", "We", "must", "go."]]
+            assert source_tokens == [["<2tr>", "We", "must", "go.", "</s>"]]
             return [SimpleNamespace(hypotheses=[["Gitmeliyiz.", "</s>"]])]
 
     monkeypatch.setattr(
@@ -298,7 +298,7 @@ def test_ai_translation_merges_split_sentence_fragments(monkeypatch, tmp_path):
     class FakeTranslator:
         def translate_batch(self, source_tokens, **_kwargs):
             assert source_tokens == [[
-                "<2tr>", "Caring", "for", "a", "child", "no", "one", "tells", "you", "jack", "shit."
+                "<2tr>", "Caring", "for", "a", "child", "no", "one", "tells", "you", "jack", "shit.", "</s>"
             ]]
             return [SimpleNamespace(hypotheses=[["Bir", "çocuğa", "bakmayı", "kimse", "sana", "öğretmiyor."]])]
 

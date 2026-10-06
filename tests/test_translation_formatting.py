@@ -203,8 +203,8 @@ def test_strict_translation_uses_batched_first_pass(monkeypatch):
     cues = [tr.SubtitleCue(float(i), float(i + 1), f"Source line {i}.") for i in range(10)]
     out = tr.translate_existing_subtitle_cues_with_ai(cues, "en", "tr")
     assert len(out) == len(cues)
-    assert translator.calls == 1
-    assert translator.batch_sizes == [10]
+    assert translator.calls == 2
+    assert translator.batch_sizes == [4, 6]
 
 
 def test_ai_translation_quality_profiles_have_expected_tradeoffs():

@@ -2080,7 +2080,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
 
         def progress(done: int, total: int) -> None:
             percent = 100 if total <= 0 else max(0, min(100, round(done * 100 / total)))
-            self.log_queue.put(("subtitle_create_progress", percent))
+            self.log_queue.put(("subtitle_create_progress", (percent, done, total)))
 
         def work() -> None:
             qa_report: dict[str, Any] = {}
@@ -3992,7 +3992,15 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 except (TypeError,ValueError):continue
                 self.mark_subtitle_result_downloaded(str(result_key),Path(str(destination)))
             elif kind=="subtitle_create_progress":
-                self.subtitle_create_progress_value = int(value)
+                if isinstance(value, tuple) and len(value) == 3:
+                    percent, done, total = value
+                    self.subtitle_create_progress_value = int(percent)
+                    if not self.subtitle_create_pause_event.is_set():
+                        self.subtitle_create_status_var.set(
+                            self.tr("status_subtitle_create_progress", done=done, total=total)
+                        )
+                else:
+                    self.subtitle_create_progress_value = int(value)
                 if self.subtitle_create_progress_bar is not None:
                     self.subtitle_create_progress_bar.setValue(self.subtitle_create_progress_value)
             elif kind=="subtitle_create_done":

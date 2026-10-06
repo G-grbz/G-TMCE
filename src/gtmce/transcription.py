@@ -52,17 +52,17 @@ ASR_QUALITY_PROFILES: dict[str, dict[str, Any]] = {
 # Shared AI subtitle translation profiles.  Both the standalone subtitle
 # workflow and Audio Adjust use these same stable keys and the same engine.
 AI_TRANSLATION_QUALITY_PROFILES: dict[str, dict[str, Any]] = {
-    # Throughput first: large first-pass batches, greedy decoding and only one
+    # Throughput first: large first-pass batches, a small beam and only one
     # conservative retry when QA rejects a span.
     "fast": {
-        "batch_size": 32, "beam_size": 1, "repetition_penalty": 1.12,
+        "batch_size": 32, "beam_size": 2, "repetition_penalty": 1.12,
         "no_repeat_ngram_size": 3, "length_factor": 1.70, "length_extra": 6,
         "retry_attempts": 1, "context_mode": "fail",
     },
     # Default: keeps the fast batch-first architecture but gives suspicious
     # spans a broader retry search.
     "balanced": {
-        "batch_size": 24, "beam_size": 2, "repetition_penalty": 1.10,
+        "batch_size": 24, "beam_size": 3, "repetition_penalty": 1.10,
         "no_repeat_ngram_size": 3, "length_factor": 1.75, "length_extra": 6,
         "retry_attempts": 2, "context_mode": "fail",
     },
@@ -2176,13 +2176,174 @@ def _translation_degeneration_reason(source: str, output: str) -> str | None:
     return None
 
 
-def _decode_translation_result(result: Any, tokenizer: Any, target_language: str) -> str:
+def _decode_translation_result(
+    result: Any, tokenizer: Any, target_language: str, *, max_length: int | None = None,
+) -> str:
     hypothesis = list(result.hypotheses[0]) if result.hypotheses else []
+    # A length-limited hypothesis can end in the middle of a SentencePiece
+    # word. It is not a finished translation, even if its text passes QA.
+    # Ask CT2 to retain EOS, and never send these fragments to layout/fallback.
+    if max_length is not None and len(hypothesis) >= max_length and "</s>" not in hypothesis:
+        return ""
     hypothesis = [
         token for token in hypothesis
         if token not in {"</s>", "<pad>", f"<2{target_language}>"}
     ]
     return _clean_text(tokenizer.decode(hypothesis)) if hypothesis else ""
+
+
+def _encode_translation_source(tokenizer: Any, text: str, target_language: str) -> list[str]:
+    """Build a complete MADLAD/T5 input, not an unfinished text prefix.
+
+    Plain SentencePiece does not add the T5 EOS that Hugging Face tokenizers
+    normally append. The converted CT2 model also has add_source_eos=false.
+    Missing EOS makes the translator invent continuations of the source.
+    """
+    tokens = list(tokenizer.encode(f"<2{target_language}> {_clean_text(text)}", out_type=str))
+    if not tokens or tokens[-1] != "</s>":
+        tokens.append("</s>")
+    return tokens
+
+
+@dataclass
+class _RankedTranslationResult:
+    hypotheses: list[list[str]]
+
+
+class _FaithfulSubtitleTranslator:
+    """Re-rank a bounded set of translations by source reconstruction score.
+
+    Uses teacher-forced scoring with the same loaded multilingual model, not
+    another model or language-specific negation/idiom dictionaries. Scores
+    compare the identical source tokens for every candidate. They are a
+    preference signal, not a guarantee of semantic equivalence.
+    """
+    def __init__(self, translator: Any, tokenizer: Any, source_language: str, cancel_event: Any = None, pause_event: Any = None):
+        self.translator = translator
+        self.tokenizer = tokenizer
+        self.source_language = source_language
+        self.cancel_event = cancel_event
+        self.pause_event = pause_event
+        self.reconstruction_scores: dict[tuple[str, str], float] = {}
+        self.translation_scores: dict[tuple[str, str], float] = {}
+
+    def _checkpoint(self) -> None:
+        while self.pause_event is not None and self.pause_event.is_set():
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                raise OperationCancelled()
+            time.sleep(0.12)
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise OperationCancelled()
+
+    def reconstruction_score(self, source: str, candidate: str) -> float:
+        key = (_clean_text(source), _clean_text(candidate))
+        if key not in self.reconstruction_scores:
+            self._checkpoint()
+            target = list(self.tokenizer.encode(key[0], out_type=str))
+            if not target or target[-1] != "</s>":
+                target.append("</s>")
+            result = self.translator.score_batch(
+                [_encode_translation_source(self.tokenizer, key[1], self.source_language)], [target],
+            )[0]
+            self._checkpoint()
+            self.reconstruction_scores[key] = sum(result.log_probs) / max(1, len(result.log_probs))
+        return self.reconstruction_scores[key]
+
+    def candidate_score(self, source: str, candidate: str, target_language: str) -> float:
+        """Compare source fidelity AND target fluency on the same full input."""
+        key = (_clean_text(source), _clean_text(candidate))
+        if key not in self.translation_scores:
+            self._checkpoint()
+            target = list(self.tokenizer.encode(key[1], out_type=str))
+            if not target or target[-1] != "</s>":
+                target.append("</s>")
+            result = self.translator.score_batch(
+                [_encode_translation_source(self.tokenizer, key[0], target_language)], [target],
+            )[0]
+            self._checkpoint()
+            self.translation_scores[key] = sum(result.log_probs) / max(1, len(result.log_probs))
+        return self.translation_scores[key] + self.reconstruction_score(source, candidate)
+
+    def translate_batch(self, source_tokens: list[list[str]], **kwargs: Any) -> list[Any]:
+        self._checkpoint()
+        # At least two candidates are needed to resolve a close wrong/correct
+        # choice. Bound search/scoring even for Maximum to avoid VRAM spikes.
+        kwargs["beam_size"] = max(2, int(kwargs.get("beam_size", 2)))
+        kwargs["num_hypotheses"] = min(4, kwargs["beam_size"])
+        kwargs["return_scores"] = True
+        kwargs["return_end_token"] = True
+        results = self.translator.translate_batch(source_tokens, **kwargs)
+        expanded: set[int] = set()
+        # Very similar endings can carry opposite meanings or different
+        # modalities. A small beam can prune the faithful form entirely.
+        # Widen only these ambiguous items, individually, keeping memory
+        # bounded instead of running a large beam for the whole subtitle.
+        if kwargs["beam_size"] < 8:
+            for index, result in enumerate(results):
+                alternatives = [_translation_word_tokens(self.tokenizer.decode(h)) for h in result.hypotheses]
+                if len(alternatives) < 2 or min(map(len, alternatives)) < 4:
+                    continue
+                prefix = 0
+                for words in zip(*alternatives):
+                    if len(set(words)) != 1:
+                        break
+                    prefix += 1
+                endings = {tuple(words[prefix:]) for words in alternatives}
+                if prefix >= min(map(len, alternatives)) - 2 and len(endings) > 1:
+                    self._checkpoint()
+                    wider = dict(kwargs, beam_size=8, num_hypotheses=4)
+                    results[index] = self.translator.translate_batch([source_tokens[index]], **wider)[0]
+                    expanded.add(index)
+        reverse_sources: list[list[str]] = []
+        reverse_targets: list[list[str]] = []
+        refs: list[tuple[int, int, float]] = []
+        limit = kwargs.get("max_decoding_length")
+        for index, (tokens, result) in enumerate(zip(source_tokens, results)):
+            original = [token for token in tokens if not re.fullmatch(r"<2[^>]+>", token)]
+            source = self.tokenizer.decode([t for t in original if t != "</s>"])
+            for alternative, hypothesis in enumerate(result.hypotheses):
+                candidate = _decode_translation_result(_RankedTranslationResult([hypothesis]), self.tokenizer, "", max_length=limit)
+                if not candidate or _strict_translation_quality_reason(source, candidate) is not None:
+                    continue
+                reverse_sources.append(_encode_translation_source(self.tokenizer, candidate, self.source_language))
+                target = list(self.tokenizer.encode(source, out_type=str))
+                if not target or target[-1] != "</s>":
+                    target.append("</s>")
+                reverse_targets.append(target)
+                refs.append((index, alternative, float(result.scores[alternative])))
+        if not refs:
+            return results
+        self._checkpoint()
+        scores = self.translator.score_batch(reverse_sources, reverse_targets, max_batch_size=8)
+        choices: dict[int, tuple[float, int]] = {}
+        for position, ((index, alternative, forward), reverse) in enumerate(zip(refs, scores)):
+            if not reverse.log_probs:
+                continue
+            reverse_score = sum(reverse.log_probs) / len(reverse.log_probs)
+            source = self.tokenizer.decode([t for t in reverse_targets[position] if t != "</s>"])
+            candidate = _decode_translation_result(
+                _RankedTranslationResult([results[index].hypotheses[alternative]]), self.tokenizer, "",
+            )
+            self.reconstruction_scores[(_clean_text(source), _clean_text(candidate))] = reverse_score
+            self.translation_scores[(_clean_text(source), _clean_text(candidate))] = forward
+            score = forward + reverse_score
+            if index not in choices or score > choices[index][0]:
+                choices[index] = (score, alternative)
+        self._checkpoint()
+        ranked = [_RankedTranslationResult([result.hypotheses[choices[index][1]]]) if index in choices else result
+                  for index, result in enumerate(results)]
+        # A short low-confidence fragment may require a wider search even if
+        # its alternatives do not share a prefix. Retry one item at a time,
+        # never recurse from an already-wide decode or widen long paragraphs.
+        if kwargs["beam_size"] < 8:
+            for index, result in enumerate(ranked):
+                original = [t for t in source_tokens[index] if t != "</s>" and not re.fullmatch(r"<2[^>]+>", t)]
+                source = self.tokenizer.decode(original)
+                candidate = _decode_translation_result(result, self.tokenizer, "", max_length=limit)
+                if (index not in expanded and index in choices and candidate and len(source_tokens[index]) <= 48
+                        and self.reconstruction_scores.get((_clean_text(source), _clean_text(candidate)), 0) < -2.5):
+                    ranked[index] = self.translate_batch([source_tokens[index]], **dict(kwargs, beam_size=8, num_hypotheses=4))[0]
+        return ranked
 
 
 def _decode_single_translation(
@@ -2197,10 +2358,7 @@ def _decode_single_translation(
     length_factor: float = 3.0,
     length_extra: int = 8,
 ) -> str:
-    tokens = tokenizer.encode(
-        f"<2{target_language}> {_clean_text(text)}",
-        out_type=str,
-    )
+    tokens = _encode_translation_source(tokenizer, text, target_language)
     max_length = min(512, max(12, int(len(tokens) * length_factor) + length_extra))
     result = translator.translate_batch(
         [tokens],
@@ -2208,8 +2366,9 @@ def _decode_single_translation(
         repetition_penalty=repetition_penalty,
         no_repeat_ngram_size=no_repeat_ngram_size,
         max_decoding_length=max_length,
+        return_end_token=True,
     )[0]
-    return _decode_translation_result(result, tokenizer, target_language)
+    return _decode_translation_result(result, tokenizer, target_language, max_length=max_length)
 
 
 def _decode_translation_batch(
@@ -2233,7 +2392,7 @@ def _decode_translation_batch(
     if not texts:
         return []
     encoded = [
-        tokenizer.encode(f"<2{target_language}> {_clean_text(text)}", out_type=str)
+        _encode_translation_source(tokenizer, text, target_language)
         for text in texts
     ]
     longest = max((len(tokens) for tokens in encoded), default=1)
@@ -2244,8 +2403,9 @@ def _decode_translation_batch(
         repetition_penalty=repetition_penalty,
         no_repeat_ngram_size=no_repeat_ngram_size,
         max_decoding_length=max_length,
+        return_end_token=True,
     )
-    return [_decode_translation_result(result, tokenizer, target_language) for result in results]
+    return [_decode_translation_result(result, tokenizer, target_language, max_length=max_length) for result in results]
 
 
 def _safe_retry_translation(
@@ -2548,10 +2708,7 @@ def translate_cues_with_ai(
             batch = cue_list[offset: offset + batch_size]
             prepared_batch = [_translation_text_wrapper(unit.text) for unit in batch]
             source_tokens = [
-                tokenizer.encode(
-                    f"<2{target_language}> {payload}",
-                    out_type=str,
-                )
+                _encode_translation_source(tokenizer, payload, target_language)
                 for payload, _prefix, _suffix in prepared_batch
             ]
             longest_input = max((len(tokens) for tokens in source_tokens), default=1)
@@ -2564,11 +2721,12 @@ def translate_cues_with_ai(
                 repetition_penalty=1.08,
                 no_repeat_ngram_size=3,
                 max_decoding_length=batch_max_length,
+                return_end_token=True,
             )
             for batch_index, (unit, result) in enumerate(zip(batch, results)):
                 unit_index = offset + batch_index
                 source_payload, wrapper_prefix, wrapper_suffix = prepared_batch[batch_index]
-                text = _decode_translation_result(result, tokenizer, target_language)
+                text = _decode_translation_result(result, tokenizer, target_language, max_length=batch_max_length)
                 reason = _translation_invalid_reason(source_payload, text)
                 if reason is not None:
                     logger(
@@ -2893,7 +3051,7 @@ def _near_duplicate_translation_clauses(left: str, right: str) -> bool:
                 matches += 1
                 remaining.pop(index)
                 break
-    return matches >= 2 and matches / min(len(lt), len(rt)) >= 0.72
+    return matches >= 2 and matches / min(len(lt), len(rt)) >= 0.66
 
 
 def _has_adjacent_translation_duplicate(value: str) -> bool:
@@ -2910,6 +3068,13 @@ def _remove_translation_clause_duplicates(source: str, output: str) -> str:
     """
     if _has_adjacent_translation_duplicate(source):
         return output
+    # Check complete sentences first. Commas inside a second alternative
+    # must not disguise the repeated sentence as several unrelated clauses.
+    sentence_spans = _translation_sentence_spans(output)
+    if len(_translation_sentence_spans(source)) == 1 and len(sentence_spans) > 1:
+        first = sentence_spans[0]
+        if all(_near_duplicate_translation_clauses(first, other) for other in sentence_spans[1:]):
+            output = first
     source_count = len(_translation_clauses(source))
     spans = list(re.finditer(r"[^.!?;…。,，；！？]+[.!?;…。,，；！？]*", output))
     if len(spans) <= source_count:
@@ -2927,7 +3092,33 @@ def _remove_translation_clause_duplicates(source: str, output: str) -> str:
             removed += 1
         else:
             kept.append(current)
-    return " ".join(kept) if removed else output
+    prefix = output[:spans[0].start()] if spans else ""
+    return prefix + " ".join(kept) if removed else output
+
+
+def _translation_sentence_spans(value: str) -> list[str]:
+    # MT sometimes omits the space after a full stop. Ignore decimals and
+    # single-letter initials rather than treating every dot as a sentence.
+    boundaries = []
+    for match in re.finditer(r"[.!?…。！？]+[\"'’”»)]*", value):
+        end = match.end()
+        if end == len(value):
+            continue
+        if not re.search(r"[^\W\d_]", value[:match.start()], flags=re.UNICODE):
+            continue
+        if value[end].isdigit():
+            continue
+        if match.group() == "." and re.search(r"(?:^|[^\w])\w$", value[:match.start()]):
+            continue
+        boundaries.append(end)
+    pieces = []
+    start = 0
+    for end in boundaries + [len(value)]:
+        piece = value[start:end].strip()
+        if piece:
+            pieces.append(piece)
+        start = end
+    return pieces
 
 
 def _uses_unspaced_translation_script(value: str) -> bool:
@@ -3132,9 +3323,12 @@ def _strict_retry_translation(
     """Retry authored text with conservative decodes and return best candidate."""
     source = _clean_text(source)
     attempts = (
-        dict(beam_size=1, repetition_penalty=1.20, no_repeat_ngram_size=2, length_factor=1.55, length_extra=6),
-        dict(beam_size=2, repetition_penalty=1.14, no_repeat_ngram_size=3, length_factor=1.80, length_extra=7),
-        dict(beam_size=4, repetition_penalty=1.10, no_repeat_ngram_size=3, length_factor=2.05, length_extra=8),
+        # Do not prohibit recurring subword ngrams on rescue decodes: normal
+        # inflection and legitimate repeated words also share SentencePieces.
+        # Give cross-script translations room to finish, then check coverage.
+        dict(beam_size=1, repetition_penalty=1.20, no_repeat_ngram_size=0, length_factor=3.0, length_extra=12),
+        dict(beam_size=2, repetition_penalty=1.14, no_repeat_ngram_size=0, length_factor=3.0, length_extra=12),
+        dict(beam_size=4, repetition_penalty=1.10, no_repeat_ngram_size=0, length_factor=3.5, length_extra=12),
     )
     best = ""
     best_penalty = 10**9
@@ -3223,10 +3417,12 @@ def _translate_payload_strict(
 
     initial_reason = _strict_translation_quality_reason(payload, initial)
     short_dialogue = len(_translation_word_tokens(payload)) <= 9
-    # Fast path: a valid first-pass translation is accepted immediately.
-    # Neighbour context is an expensive rescue tool, not a mandatory second
-    # decode for every short subtitle line.
-    use_context = initial_reason is not None or (
+    fidelity = getattr(translator, "reconstruction_score", None)
+    uncertain = callable(fidelity) and initial and fidelity(payload, initial) < -2.5
+    # Structural QA alone cannot detect changed polarity or a wrong sense.
+    # Short dialogue can use neighbours, but candidates must compete against
+    # the original source instead of automatically accepting the last decode.
+    use_context = initial_reason is not None or uncertain or (
         profile.get("context_mode") == "short_or_fail" and short_dialogue
     )
     if use_context and (previous_context or next_context):
@@ -3240,7 +3436,23 @@ def _translate_payload_strict(
                 qa_events.add("context")
 
     valid = [c for c in candidates if _strict_translation_quality_reason(payload, c) is None]
-    if len(candidates) > 1 and _strict_translation_quality_reason(payload, candidates[-1]) is None:
+    if uncertain and not _cue_finishes_sentence(payload):
+        # An authored fragment can be mistaken for a different sense. A
+        # punctuation-only decode variant gives it a complete-input boundary;
+        # it never supplies a replacement phrase or a target-language word.
+        variant = _decode_single_translation(
+            translator, tokenizer, payload.rstrip(",;:") + ".", target_language,
+            beam_size=4, repetition_penalty=1.0, no_repeat_ngram_size=0,
+            length_factor=3.0, length_extra=12,
+        )
+        if variant and _strict_translation_quality_reason(payload, variant) is None:
+            valid.append(variant)
+            if qa_events is not None:
+                qa_events.add("retry")
+    if valid and callable(fidelity):
+        rank = getattr(translator, "candidate_score", None)
+        candidate = max(valid, key=lambda c: rank(payload, c, target_language) if callable(rank) else fidelity(payload, c))
+    elif len(candidates) > 1 and _strict_translation_quality_reason(payload, candidates[-1]) is None:
         candidate = candidates[-1]
     elif valid:
         candidate = min(valid, key=lambda c: _strict_candidate_penalty(payload, c))
@@ -3296,7 +3508,20 @@ def _translate_payload_strict(
         if qa_events is not None:
             qa_events.add("review")
 
-    return f"{leading}{speaker_prefix}{_clean_text(candidate)}{trailing}"
+    candidate = _clean_text(candidate)
+    if callable(fidelity) and len(_translation_word_tokens(payload)) >= 3 and fidelity(payload, candidate) < -2.5:
+        if qa_events is not None:
+            qa_events.add("review")
+            qa_events.add("low_fidelity")
+    # The model sometimes adds a dialogue dash even when translating only
+    # the text after the authored dash. Speaker markers belong to the source
+    # layout; restoring its single prefix must not produce "- - Yes".
+    candidate = re.sub(r"^[-–—]\s+", "", candidate)
+    if not _uses_unspaced_translation_script(candidate):
+        # Repair missing spaces at genuine sentence boundaries, but leave
+        # initials, decimals and unspaced writing systems untouched.
+        candidate = " ".join(_translation_sentence_spans(candidate))
+    return f"{leading}{speaker_prefix}{candidate}{trailing}"
 
 
 def _authored_translation_lines(value: str) -> list[str]:
@@ -3318,10 +3543,49 @@ def _authored_translation_lines(value: str) -> list[str]:
     if groups:
         # Spaces around inline style/SDH boundaries still separate words.
         if value[:1].isspace():
-            groups[0] = " " + groups[0]
+            leading = value[:len(value) - len(value.lstrip())]
+            groups[0] = ("\n" if "\n" in leading else " ") + groups[0]
         if value[-1:].isspace():
-            groups[-1] += " "
+            trailing = value[len(value.rstrip()):]
+            groups[-1] += "\n" if "\n" in trailing else " "
     return groups or [value]
+
+
+def _authored_translation_segments(value: str) -> list[str]:
+    """Keep each completed sentence, including short repeated commands.
+
+    Translating several sentences at once can omit the final short ones even
+    when the overall output looks plausible. This also preserves intentional
+    repetitions without asking a repetition-penalized decoder to recreate them.
+    """
+    segments: list[str] = []
+    for line in _authored_translation_lines(value):
+        leading = line[:len(line) - len(line.lstrip())]
+        trailing = line[len(line.rstrip()):]
+        pieces: list[str] = []
+        for piece in _translation_sentence_spans(line.strip()):
+            if pieces and re.search(r"(?:\.{2,}|…)[\"'’”»)]*$", pieces[-1]):
+                pieces[-1] += " " + piece
+            else:
+                pieces.append(piece)
+        # A comma-separated repeated command is authored repetition too.
+        # Sending the whole run to MT often contracts five repetitions into
+        # two or three. Only split an exact repeated utterance, never ordinary
+        # lists or clauses which merely share a few words.
+        repeated: list[str] = []
+        for piece in pieces:
+            clauses = [m.group().strip() for m in re.finditer(r"[^,，،、]+[,，،、]?", piece) if m.group().strip()]
+            keys = [_normalised_translation_text(c) for c in clauses]
+            if len(keys) >= 2 and keys[0] and len(set(keys)) == 1:
+                repeated.extend(clauses)
+            else:
+                repeated.append(piece)
+        pieces = repeated
+        if pieces:
+            pieces[0] = leading + pieces[0]
+            pieces[-1] += trailing
+            segments.extend(pieces)
+    return segments or [value]
 
 
 def _translate_existing_cue_text_strict_with_qa(
@@ -3345,17 +3609,39 @@ def _translate_existing_cue_text_strict_with_qa(
         if kind == "literal":
             translated.append(value)
         else:
-            line_parts = _authored_translation_lines(value)
+            line_parts = _authored_translation_segments(value)
+            single_speaker = len(_authored_translation_lines(value)) == 1
+            previous_utterance = ""
+            previous_translation = ""
             for line_index, content in enumerate(line_parts):
                 if line_index:
                     translated.append("\n")
+                initial_candidate = next(initial_iter, None)
+                # Adjacent identical utterances from one speaker should not
+                # become unrelated synonyms solely because their punctuation
+                # or neighbour context differs. Reuse words, not punctuation
+                # or the previous utterance's speaker dash. Never cross styles
+                # or explicit speaker boundaries.
+                body = re.sub(r"^[-–—]\s*", "", content.strip())
+                utterance = re.sub(r"[,，،、.!?。！？]+$", "", body).strip().casefold()
+                if (single_speaker and utterance and utterance == previous_utterance
+                        and re.search(r"[,，،、.!?。！？]+$", previous_translation.strip())):
+                    words = re.sub(r"^[-–—]\s*", "", previous_translation.strip())
+                    words = re.sub(r"[,，،、.!?。！？]+$", "", words).rstrip()
+                    ending = re.search(r"[,，،、.!?。！？]+$", body)
+                    prefix = re.match(r"^([-–—]\s*)", content.strip())
+                    leading = content[:len(content) - len(content.lstrip())]
+                    trailing = content[len(content.rstrip()):]
+                    translated.append(leading + (prefix.group(1) if prefix else "") + words
+                                      + (ending.group() if ending else "") + trailing)
+                    continue
                 try:
                     translated_piece = _translate_payload_strict(
                         translator, tokenizer, content, target_language,
-                        previous_context=previous_context,
-                        next_context=next_context,
+                        previous_context=line_parts[line_index - 1] if single_speaker and line_index > 0 else previous_context,
+                        next_context=line_parts[line_index + 1] if single_speaker and line_index + 1 < len(line_parts) else next_context,
                         qa_events=qa_events,
-                        initial_candidate=next(initial_iter, None),
+                        initial_candidate=initial_candidate,
                         quality_profile=quality_profile,
                     )
                 except TypeError as exc:
@@ -3367,6 +3653,8 @@ def _translate_existing_cue_text_strict_with_qa(
                         translator, tokenizer, content, target_language
                     )
                 translated.append(translated_piece)
+                previous_utterance = utterance
+                previous_translation = translated_piece
     result = "".join(translated).strip()
     if result and not has_literal_markup:
         if "\n" in result:
@@ -3394,7 +3682,7 @@ def _strict_cue_payloads(text: str) -> list[str]:
     for kind, value in _strict_translation_parts(text):
         if kind != "text":
             continue
-        for content in _authored_translation_lines(value):
+        for content in _authored_translation_segments(value):
             body = content.strip()
             speaker_match = re.match(r"^([-–—]\s*)", body)
             if speaker_match:
@@ -3419,7 +3707,7 @@ def _authored_sentence_payload(text: str) -> tuple[str, str, str] | None:
         return None
     index = indices[0]
     value = parts[index][1]
-    if len(_authored_translation_lines(value)) != 1 or re.match(r"^\s*[-–—]", value):
+    if len(_authored_translation_segments(value)) != 1 or re.match(r"^\s*[-–—]", value):
         return None
     prefix = "".join(v for _kind, v in parts[:index])
     suffix = "".join(v for _kind, v in parts[index + 1:])
@@ -3532,6 +3820,9 @@ def translate_existing_subtitle_cues_with_ai(
     ).strip() or DEFAULT_TRANSLATION_MODEL
     model_path = _prepare_translation_model(model_name, logger, cancel_event)
     translator, tokenizer = _load_translation_runtime(model_path, logger)
+    if source_language in TRANSLATION_TARGET_CODES and callable(getattr(translator, "score_batch", None)):
+        translator = _FaithfulSubtitleTranslator(translator, tokenizer, source_language, cancel_event, pause_event)
+        logger("G-TMCE AI Translation: source-reconstruction ranking enabled (same local model, bounded alternatives)")
     total = len(items)
     logger(
         "G-TMCE AI Translation: strict authored-subtitle mode; "
@@ -3554,58 +3845,64 @@ def translate_existing_subtitle_cues_with_ai(
     initial_groups = ["" for _ in sentence_groups]
     group_by_first_cue = {group[0]: i for i, group in enumerate(sentence_groups)}
     grouped_indices = {i for group in sentence_groups for i in group}
-    if can_batch:
-        for offset in range(0, len(group_payloads), batch_size):
-            wait_if_paused()
-            if cancel_event is not None and cancel_event.is_set():
-                raise OperationCancelled()
-            decoded = _decode_translation_batch(
-                translator, tokenizer, group_payloads[offset:offset + batch_size], target_language,
-                beam_size=int(profile["beam_size"]),
-                repetition_penalty=float(profile["repetition_penalty"]),
-                no_repeat_ngram_size=int(profile["no_repeat_ngram_size"]),
-                length_factor=float(profile["length_factor"]),
-                length_extra=int(profile["length_extra"]),
-            )
-            initial_groups[offset:offset + len(decoded)] = decoded
+    group_end_by_cue = {i: group[-1] + 1 for group in sentence_groups for i in group}
     if sentence_groups:
         logger(f"G-TMCE AI Translation: {len(sentence_groups)} unfinished sentence group(s) share translation context; original cue windows retained")
 
-    # Fast first pass: batch independent visible spans.  Most cues finish here;
-    # only QA failures fall back to the more expensive context/retry path.
+    # Prepare metadata only. Decode and finish QA for a small chronological
+    # window before advancing, rather than translating the entire file while
+    # progress remains at zero. Sentence groups must never cross a window.
     per_cue_payloads = [_strict_cue_payloads(cue.text) for cue in items]
-    flat_refs: list[tuple[int, int, str]] = []
-    for cue_idx, payloads in enumerate(per_cue_payloads):
-        if cue_idx in grouped_indices:
-            continue
-        for payload_idx, payload in enumerate(payloads):
-            if payload:
-                flat_refs.append((cue_idx, payload_idx, payload))
     initial_by_cue: list[list[str]] = [["" for _ in payloads] for payloads in per_cue_payloads]
-    if can_batch and flat_refs:
-        logger(f"G-TMCE AI Translation: fast batch first pass ({batch_size} spans/batch)")
-        for offset in range(0, len(flat_refs), batch_size):
-            wait_if_paused()
-            if cancel_event is not None and cancel_event.is_set():
-                raise OperationCancelled()
-            chunk = flat_refs[offset:offset + batch_size]
-            decoded = _decode_translation_batch(
-                translator, tokenizer, [entry[2] for entry in chunk], target_language,
-                beam_size=int(profile["beam_size"]),
-                repetition_penalty=float(profile["repetition_penalty"]),
-                no_repeat_ngram_size=int(profile["no_repeat_ngram_size"]),
-                length_factor=float(profile["length_factor"]),
-                length_extra=int(profile["length_extra"]),
-            )
-            for (cue_idx, payload_idx, _payload), candidate in zip(chunk, decoded):
-                initial_by_cue[cue_idx][payload_idx] = candidate
-    elif flat_refs:
+    prepared_until = 0
+    if can_batch:
+        logger(f"G-TMCE AI Translation: incremental translation + QA (up to {batch_size} spans/batch)")
+    else:
         logger("G-TMCE AI Translation: batch first pass unavailable; using compatibility path")
 
     for index, cue in enumerate(items, start=1):
         wait_if_paused()
         if cancel_event is not None and cancel_event.is_set():
             raise OperationCancelled()
+        if index - 1 >= prepared_until:
+            window_start = index - 1
+            # A small warm-up window gets real completed-cue progress out
+            # quickly; later windows retain useful batching throughput.
+            window_size = min(batch_size, 4 if window_start == 0 else 8)
+            window_end = min(total, window_start + window_size)
+            window_end = max(window_end, group_end_by_cue.get(window_end - 1, window_end))
+            logger(f"G-TMCE AI Translation: translating/checking cues {index}-{window_end}/{total}")
+            if can_batch:
+                refs: list[tuple[str, int, int, str]] = []
+                for cue_idx in range(window_start, window_end):
+                    if cue_idx in group_by_first_cue:
+                        group_index = group_by_first_cue[cue_idx]
+                        refs.append(("group", group_index, 0, group_payloads[group_index]))
+                    elif cue_idx not in grouped_indices:
+                        refs.extend(("cue", cue_idx, payload_idx, payload)
+                                    for payload_idx, payload in enumerate(per_cue_payloads[cue_idx]) if payload)
+                for offset in range(0, len(refs), batch_size):
+                    wait_if_paused()
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise OperationCancelled()
+                    chunk = refs[offset:offset + batch_size]
+                    decoded = _decode_translation_batch(
+                        translator, tokenizer, [entry[3] for entry in chunk], target_language,
+                        beam_size=int(profile["beam_size"]),
+                        repetition_penalty=float(profile["repetition_penalty"]),
+                        no_repeat_ngram_size=int(profile["no_repeat_ngram_size"]),
+                        length_factor=float(profile["length_factor"]),
+                        length_extra=int(profile["length_extra"]),
+                    )
+                    wait_if_paused()
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise OperationCancelled()
+                    for (kind, ref_index, payload_idx, _payload), candidate in zip(chunk, decoded):
+                        if kind == "group":
+                            initial_groups[ref_index] = candidate
+                        else:
+                            initial_by_cue[ref_index][payload_idx] = candidate
+            prepared_until = window_end
         previous_context = _strip_authored_markup_for_context(items[index - 2].text) if index > 1 and 0 <= cue.start - items[index - 2].end <= 2.0 else ""
         next_context = _strip_authored_markup_for_context(items[index].text) if index < total and 0 <= items[index].start - cue.end <= 2.0 else ""
         if index - 1 in group_by_first_cue:
@@ -3653,6 +3950,7 @@ def translate_existing_subtitle_cues_with_ai(
                 "end": cue.end,
                 "source": cue.text,
                 "output": translated_text,
+                "reasons": sorted(events),
             })
         output.append(SubtitleCue(cue.start, cue.end, translated_text))
         if progress is not None:
@@ -3677,7 +3975,7 @@ def translate_existing_subtitle_cues_with_ai(
         f"{len(review_items)} review required / {context_cues} context-assisted"
     )
     for item in review_items[:20]:
-        logger(f"QA review cue {item['cue']}: {item['source']!r} -> {item['output']!r}")
+        logger(f"QA review cue {item['cue']} ({', '.join(item['reasons'])}): {item['source']!r} -> {item['output']!r}")
     return output
 
 
@@ -3787,6 +4085,87 @@ def _render_subtitle_layout_units(units: list[tuple[str, tuple[str, ...], str]])
     return "".join(output)
 
 
+def _subtitle_layout_boundaries(units: list[tuple[str, tuple[str, ...], str]]) -> list[int]:
+    """Prefer whole words; allow glyph boundaries for unspaced scripts only."""
+    return [i for i in range(1, len(units)) if (
+        units[i][0].isspace()
+        or (not unicodedata.combining(units[i][0])
+            and not unicodedata.category(units[i][0]).startswith("P")
+            and (_uses_unspaced_translation_script(units[i - 1][0])
+                 or _uses_unspaced_translation_script(units[i][0])))
+    )] + [len(units)]
+
+
+def _wrap_subtitle_layout_units(
+    units: list[tuple[str, tuple[str, ...], str]], width: int,
+) -> list[list[tuple[str, tuple[str, ...], str]]]:
+    boundaries = set(_subtitle_layout_boundaries(units))
+    lines: list[list[tuple[str, tuple[str, ...], str]]] = []
+    cursor = 0
+    while cursor < len(units):
+        while cursor < len(units) and units[cursor][0].isspace():
+            cursor += 1
+        if cursor == len(units):
+            break
+        end = cursor
+        columns = 0
+        break_at = 0
+        while end < len(units) and units[end][0] != "\n":
+            char_width = _subtitle_character_width(units[end][0])
+            if columns + char_width > width:
+                break
+            columns += char_width
+            end += 1
+            if end in boundaries:
+                break_at = end
+        if end < len(units) and units[end][0] != "\n" and break_at > cursor:
+            end = break_at
+        end = max(cursor + 1, end)
+        line = units[cursor:end]
+        while line and line[-1][0].isspace():
+            line.pop()
+        lines.append(line)
+        cursor = end
+    return lines
+
+
+def _balanced_subtitle_layout_groups(
+    units: list[tuple[str, tuple[str, ...], str]], width: int,
+) -> list[list[list[tuple[str, tuple[str, ...], str]]]]:
+    """Balance screens before allocating time; do not strand one-word tails."""
+    lines = _wrap_subtitle_layout_units(units, width)
+    count = (len(lines) + 1) // 2
+    if count <= 1:
+        return [lines] if lines else []
+    boundaries = [0] + _subtitle_layout_boundaries(units)
+    columns = [0]
+    for char, _styles, _positioning in units:
+        columns.append(columns[-1] + _subtitle_character_width(char))
+    ideal = columns[-1] / count
+    # A short subtitle normally has only a few dozen word boundaries. Dynamic
+    # programming finds the least uneven partition subject to two-line/width
+    # limits, without moving anything outside its authored timing window.
+    states: dict[int, tuple[float, list[Any]]] = {0: (0.0, [])}
+    for screen in range(count):
+        following: dict[int, tuple[float, list[Any]]] = {}
+        for start, (cost, groups) in states.items():
+            for end in boundaries:
+                if end <= start or (screen == count - 1 and end != len(units)):
+                    continue
+                if columns[end] - columns[start] > width * 2 + 2:
+                    break
+                wrapped = _wrap_subtitle_layout_units(units[start:end], width)
+                if not wrapped or len(wrapped) > 2:
+                    continue
+                weight = sum(_subtitle_character_width(u[0]) for line in wrapped for u in line)
+                new_cost = cost + (weight - ideal) ** 2
+                if end not in following or new_cost < following[end][0]:
+                    following[end] = (new_cost, groups + [wrapped])
+        states = following
+    best = states.get(len(units))
+    return best[1] if best else [lines[i:i + 2] for i in range(0, len(lines), 2)]
+
+
 def _layout_authored_translation_cue(cue: SubtitleCue, width: int = 42) -> list[SubtitleCue]:
     """Reflow/split into at most two lines, only inside the authored interval.
 
@@ -3802,35 +4181,7 @@ def _layout_authored_translation_cue(cue: SubtitleCue, width: int = 42) -> list[
         return [cue]
     if not units or cue.end <= cue.start:
         return [cue]
-    lines: list[list[tuple[str, tuple[str, ...], str]]] = []
-    cursor = 0
-    while cursor < len(units):
-        while cursor < len(units) and units[cursor][0].isspace():
-            cursor += 1
-        if cursor == len(units):
-            break
-        end = cursor
-        columns = 0
-        break_at = 0
-        while end < len(units) and units[end][0] != "\n":
-            char = units[end][0]
-            char_width = _subtitle_character_width(char)
-            if columns + char_width > width:
-                break
-            columns += char_width
-            end += 1
-            if char.isspace() or char in ",;.!?…。，；！？":
-                break_at = end
-        if end < len(units) and units[end][0] != "\n" and break_at > cursor:
-            end = break_at
-        end = max(cursor + 1, end)
-        line = units[cursor:end]
-        while line and line[-1][0].isspace():
-            line.pop()
-        lines.append(line)
-        cursor = end
-
-    groups = [lines[i:i + 2] for i in range(0, len(lines), 2)]
+    groups = _balanced_subtitle_layout_groups(units, width)
     weights = [sum(_subtitle_character_width(u[0]) for line in group for u in line) for group in groups]
     total = max(1, sum(weights))
     result: list[SubtitleCue] = []
