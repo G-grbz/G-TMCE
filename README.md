@@ -115,11 +115,11 @@ Use the sun/moon button beside the interface-language selector to switch themes 
 **Runtime:**
 - Linux or Windows
 - Python 3.10+
-- PySide6 / Qt 6 (`>=6.11.2,<7`)
-- Pillow (`>=12.3.0,<13`)
-- certifi (`>=2026.7.22,<2027`) for the bundled trusted CA certificate store
+- PySide6 / Qt 6 (`>=6.12.0,<7`)
+- Pillow (`>=13.0.0,<14`)
+- certifi (`>=2026.10.19,<2027`) for the bundled trusted CA certificate store
 - faster-whisper (`>=1.2.1,<2`) for local speech-to-subtitle generation
-- CTranslate2 (`>=4.0,<5`) for Whisper inference and GPU capability detection
+- CTranslate2 (`>=4.8.3,<5`) for Whisper inference and GPU capability detection
 
 Install the runtime dependencies for a source checkout with:
 
