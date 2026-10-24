@@ -24,6 +24,7 @@ from .core import (
     UserVisibleError,
     app_config_dir,
     ffmpeg_path,
+    generated_subtitle_directory,
     subprocess_common_kwargs,
     third_party_subprocess_env,
     third_party_subprocess_executable,
@@ -747,8 +748,8 @@ def generated_subtitle_path(audio_path: Path, language: str) -> Path:
     tokens = [token for token in re.split(r"[._\-\s()]+", stem.lower()) if token]
     token_languages = {LANG_ALIASES.get(token, token) for token in tokens}
     if language in token_languages:
-        return audio_path.with_name(f"{stem}.generated.srt")
-    return audio_path.with_name(f"{stem}.{language}.generated.srt")
+        return generated_subtitle_directory(audio_path) / f"{stem}.generated.srt"
+    return generated_subtitle_directory(audio_path) / f"{stem}.{language}.generated.srt"
 
 
 def generated_translation_path(audio_path: Path, target_language: str = "tr") -> Path:

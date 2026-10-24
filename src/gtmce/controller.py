@@ -70,7 +70,7 @@ class GTMCEControllerMixin:
     def default_extract_output_dir(source: Path) -> Path:
         source = source.expanduser()
         base_name = source.name if source.is_dir() else source.stem
-        return source.parent / f"{base_name}_tracks"
+        return source.parent / f"{base_name}{extraction_folder_suffix()}"
 
     def set_extract_source(self, source: Path, *, scan: bool) -> None:
         source = source.expanduser()
@@ -84,10 +84,11 @@ class GTMCEControllerMixin:
         # A folder chosen manually by the user is intentionally preserved.
         if previous_source_raw and previous_output_raw:
             previous_source = Path(previous_source_raw).expanduser()
-            previous_default = self.default_extract_output_dir(previous_source)
-            update_output_dir = (
+            base_name = previous_source.name if previous_source.is_dir() else previous_source.stem
+            update_output_dir = any(
                 os.path.normcase(os.path.abspath(previous_output_raw))
-                == os.path.normcase(os.path.abspath(os.fspath(previous_default)))
+                == os.path.normcase(os.path.abspath(os.fspath(previous_source.parent / f"{base_name}{suffix}")))
+                for suffix in ("_tracks", "_parçalar")
             )
 
         self.extract_source_var.set(str(source))
@@ -109,15 +110,12 @@ class GTMCEControllerMixin:
 
         # Folder extraction uses ``<source>_tracks`` by default, therefore a
         # sibling with that base name is the reliable source-folder restore.
-        source_name = root.name[:-7] if root.name.lower().endswith("_tracks") else ""
+        source_name = extraction_folder_base_name(root.name)
         source = root.with_name(source_name) if source_name else None
         if source is not None and source.is_dir():
             self.extract_source_var.set(str(source.resolve()))
 
-        episode_dirs = sorted(
-            (path for path in root.iterdir() if path.is_dir() and path.name.lower().endswith("_tracks")),
-            key=lambda path: path.name.lower(),
-        )
+        episode_dirs = discover_episode_workspace_dirs(root)
         if not episode_dirs:
             # A single-file extraction itself is also a valid track folder.
             episode_dirs = [root]
@@ -127,7 +125,7 @@ class GTMCEControllerMixin:
             sources = video_sources_in_folder(source)
             if sources:
                 first_source = sources[0]
-                candidate = root / f"{safe_filename_stem(first_source.stem)}_tracks"
+                candidate = batch_episode_directory(root, first_source.stem)
                 if candidate.is_dir():
                     first_episode_dir = candidate
                 ref = episode_ref_from_path(first_source, parse_season_number_from_text(source.name))
@@ -177,7 +175,6 @@ class GTMCEControllerMixin:
         audio_language_order = self.audio_language_order_var.get().strip()
         subtitle_language_order = self.subtitle_language_order_var.get().strip()
         auto_chapters = self.auto_chapters_var.get()
-        auto_chapter_detect_intro = self.auto_chapter_detect_intro_var.get()
         chapter_interval_minutes = self.chapter_interval_var.get().strip()
         chapter_name = self.chapter_name_var.get().strip()
         chapter_start_number = self.chapter_start_var.get().strip()
@@ -241,7 +238,6 @@ class GTMCEControllerMixin:
             include_extra_subtitles=self.include_extra_subs_var.get(),
             download_before_mux=self.download_before_mux_var.get(),
             auto_chapters=auto_chapters,
-            auto_chapter_detect_intro=auto_chapter_detect_intro,
             chapter_interval_minutes=chapter_interval_minutes,
             chapter_name=chapter_name,
             chapter_start_number=chapter_start_number,
@@ -251,12 +247,10 @@ class GTMCEControllerMixin:
     def chapter_options_from_settings(self, settings: AppSettings) -> ChapterOptions:
         return ChapterOptions(
             enabled=settings.auto_chapters,
-            detect_intro=settings.auto_chapter_detect_intro,
             interval_minutes=settings.chapter_interval_minutes,
             name=settings.chapter_name,
             start_number=settings.chapter_start_number,
             end_minutes=settings.chapter_end_minutes,
-            video_fps=settings.video_fps,
         )
 
     def chapter_end_needs_auto_detection(self, value: str) -> bool:
@@ -342,7 +336,18 @@ class GTMCEControllerMixin:
             and media_kind_from_path(row.path) == "audio"
         )
 
-    def mux_track_window_rows(self, settings: AppSettings) -> list[MuxTrackWindowRow]:
+    def mux_track_window_rows(self, settings: AppSettings, *, batch_mode: bool = False) -> list[MuxTrackWindowRow]:
+        if batch_mode:
+            (additional_tracks, order_keys, languages, delays, appends, excluded_keys,
+             additional_assets, _download_assets) = self.batch_mux_track_customizations_for(settings.media_dir)
+        else:
+            additional_tracks = self.additional_mux_tracks
+            order_keys = self.mux_track_order_keys
+            languages = self.mux_track_language_overrides
+            delays = self.mux_track_delay_overrides
+            appends = self.mux_track_append_overrides
+            excluded_keys = self.mux_track_excluded_keys
+            additional_assets = self.additional_mux_assets
         config = load_or_create_template_config(settings.template_path, settings.media_dir)
         unknown_language = (
             normalise_language(settings.tag_language)
@@ -354,10 +359,10 @@ class GTMCEControllerMixin:
             settings.media_dir,
             settings.include_extra_subtitles,
             unknown_language,
-            self.additional_mux_tracks,
-            self.mux_track_language_overrides,
-            self.mux_track_delay_overrides,
-            self.mux_track_append_overrides,
+            additional_tracks,
+            languages,
+            delays,
+            appends,
         )
         apply_video_fps_override(items, settings.video_fps)
         ordered = apply_default_track_preferences(
@@ -366,26 +371,31 @@ class GTMCEControllerMixin:
             settings.audio_language_order,
             settings.subtitle_language_order,
         )
-        ordered = apply_custom_track_order(ordered, self.mux_track_order_keys)
-        manual_keys = {path_identity_key(track.path) for track in self.additional_mux_tracks}
+        ordered = apply_custom_track_order(ordered, order_keys)
+        manual_keys = {path_identity_key(track.path) for track in additional_tracks}
         rows = []
         for item in ordered:
             key = path_identity_key(item.path)
+            source_timing = read_extracted_track_timing(item.path)
             rows.append(
                 MuxTrackWindowRow(
                     key=key,
                     path=item.path,
                     kind=track_type_label(item),
                     language=track_language_value(item) or MUX_UNKNOWN_LANGUAGE,
-                    delay=normalise_mux_delay(str(item.track.get("delay") or "")),
+                    delay=normalise_mux_delay(str(
+                        item.track.get("gtmceSourceTiming", {}).get("base_delay", item.track.get("delay")) or ""
+                    )),
                     delay_supported=track_type_value(item) in (0, 2),
                     append_paths=item.append_paths,
-                    append_overridden=key in self.mux_track_append_overrides,
+                    append_overridden=key in appends,
                     manual=key in manual_keys,
-                    included=key not in self.mux_track_excluded_keys,
+                    included=key not in excluded_keys,
+                    source_start_ms=source_timing["first_timestamp_ms"] if source_timing else None,
+                    source_codec_delay_ns=source_timing["codec_delay_ns"] if source_timing else 0,
                 )
             )
-        for asset in self.additional_mux_assets:
+        for asset in additional_assets:
             rows.append(
                 MuxTrackWindowRow(
                     key=self.mux_window_row_key(asset.path, asset.kind, asset.target_name),
@@ -414,7 +424,7 @@ class GTMCEControllerMixin:
                     self.tr("error_track_file_not_found", path=source),
                 )
                 return False
-            target = settings.media_dir / asset.target_name
+            target = workspace_file_path(settings.media_dir, asset.target_name, "artwork" if asset.kind == "artwork" else "metadata", create=True)
             try:
                 if path_identity_key(source) == path_identity_key(target):
                     continue
@@ -477,7 +487,7 @@ class GTMCEControllerMixin:
         source = source.resolve()
 
         output_raw = self.extract_output_dir_var.get().strip()
-        output_dir = Path(output_raw).expanduser() if output_raw else source.parent / f"{source.stem}_tracks"
+        output_dir = Path(output_raw).expanduser() if output_raw else self.default_extract_output_dir(source)
         output_dir = output_dir.resolve()
         self.extract_output_dir_var.set(str(output_dir))
         return source, output_dir
@@ -528,7 +538,7 @@ class GTMCEControllerMixin:
         extract_root = (
             Path(output_raw).expanduser()
             if output_raw
-            else source_dir.parent / f"{source_dir.name}_tracks"
+            else self.default_extract_output_dir(source_dir)
         ).resolve()
         self.extract_output_dir_var.set(str(extract_root))
 
@@ -541,10 +551,11 @@ class GTMCEControllerMixin:
                 raise UserVisibleError(ui_text("error_episode_number_missing", name=source.name))
 
             base_name = safe_filename_stem(source.stem)
-            candidate = extract_root / f"{base_name}_tracks"
+            candidate = batch_episode_directory(extract_root, base_name, for_new=not require_mux)
+            initial_candidate = candidate
             counter = 2
             while str(candidate).lower() in used_extract_dirs:
-                candidate = extract_root / f"{base_name}_tracks_{counter}"
+                candidate = initial_candidate.with_name(f"{initial_candidate.name}_{counter}")
                 counter += 1
             used_extract_dirs.add(str(candidate).lower())
             if require_mux and not candidate.exists():
@@ -571,13 +582,26 @@ class GTMCEControllerMixin:
             include_extra_subtitles=self.include_extra_subs_var.get(),
             download_before_mux=download_before_mux,
             auto_chapters=self.auto_chapters_var.get(),
-            auto_chapter_detect_intro=self.auto_chapter_detect_intro_var.get(),
             chapter_interval_minutes=self.chapter_interval_var.get().strip(),
             chapter_name=self.chapter_name_var.get().strip(),
             chapter_start_number=self.chapter_start_var.get().strip(),
             chapter_end_minutes=self.chapter_end_var.get().strip(),
         )
         return settings, source_dir, extract_root, tasks
+
+    def batch_workspace_selected(self) -> bool:
+        """Whether the selected track folder belongs to the source-folder job."""
+        source_raw = self.extract_source_var.get().strip()
+        folder_raw = self.folder_var.get().strip()
+        if not source_raw or not folder_raw:
+            return False
+        source_dir = Path(source_raw).expanduser()
+        if not source_dir.is_dir():
+            return False
+        output_raw = self.extract_output_dir_var.get().strip()
+        extract_root = (Path(output_raw).expanduser() if output_raw else self.default_extract_output_dir(source_dir)).resolve()
+        media_dir = Path(folder_raw).expanduser().resolve()
+        return media_dir == extract_root or path_is_relative_to(media_dir, extract_root)
 
     def collect_batch_subtitle_download_settings(
         self,
@@ -594,7 +618,7 @@ class GTMCEControllerMixin:
         extract_root = (
             Path(output_raw).expanduser()
             if output_raw
-            else source_dir.parent / f"{source_dir.name}_tracks"
+            else self.default_extract_output_dir(source_dir)
         ).resolve()
 
         folder_raw = self.folder_var.get().strip()
@@ -986,7 +1010,7 @@ class GTMCEControllerMixin:
         extract_root = (
             Path(output_raw).expanduser()
             if output_raw
-            else source_dir.parent / f"{source_dir.name}_tracks"
+            else self.default_extract_output_dir(source_dir)
         ).resolve()
 
         folder_raw = self.folder_var.get().strip()
@@ -1100,8 +1124,6 @@ class GTMCEControllerMixin:
                 if chapter_end:
                     settings.chapter_end_minutes = chapter_end
                     self.log_queue.put(("set_chapter_end_auto", chapter_end))
-            if settings.auto_chapters and settings.auto_chapter_detect_intro:
-                self.queue_log(self.tr("log_detecting_intro_end"))
             settings.output_path.parent.mkdir(parents=True, exist_ok=True)
             generated = write_generated_config(
                 config,
@@ -1132,6 +1154,10 @@ class GTMCEControllerMixin:
             and self.current_operation == "mux"
         ):
             self.cancel_current_operation()
+            return
+
+        if not skip_track_window and self.add_tracks_before_mux_var.get() and self.batch_workspace_selected():
+            self.start_batch_mux_folder()
             return
 
         try:
@@ -1227,8 +1253,6 @@ class GTMCEControllerMixin:
                     settings.chapter_end_minutes = chapter_end
                     self.log_queue.put(("set_chapter_end_auto", chapter_end))
 
-            if settings.auto_chapters and settings.auto_chapter_detect_intro:
-                self.queue_log(self.tr("log_detecting_intro_end"))
             args, missing_optional = build_mkvmerge_args(
                 config,
                 settings.media_dir,
@@ -1332,7 +1356,14 @@ class GTMCEControllerMixin:
             self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
+        workspace_language = self.ui_language_var.get()
+        audio_filter_enabled = self.audio_extract_only_var.get()
+        subtitle_filter_enabled = self.subtitle_extract_only_var.get()
+        audio_filter_languages = self.audio_language_order_var.get()
+        subtitle_filter_languages = self.subtitle_language_order_var.get()
+
         def work() -> None:
+            prepare_extraction_workspace(extract_root, workspace_language, mode="batch")
             extract_root.mkdir(parents=True, exist_ok=True)
             first_fps = ""
 
@@ -1348,8 +1379,16 @@ class GTMCEControllerMixin:
                 )
                 self.queue_log(self.tr("log_batch_extract_dir", path=task.extract_dir))
 
-                payload = identify_mkv(task.source)
+                payload = identify_extract_source(task.source)
                 extract_items = build_extract_items(payload, task.source)
+                apply_extract_language_selection(
+                    extract_items, audio_filter_languages, subtitle_filter_languages,
+                    audio_only=audio_filter_enabled,
+                    subtitle_only=subtitle_filter_enabled,
+                )
+                actual_format = extract_container_mismatch(task.source)
+                if actual_format:
+                    self.queue_log(self.tr("log_extract_container_mismatch", name=task.source.name, format=actual_format))
                 fps = settings.video_fps or first_video_fps_from_items(extract_items)
                 if index == 1:
                     first_fps = fps
@@ -1361,6 +1400,7 @@ class GTMCEControllerMixin:
                 if fps and not settings.video_fps:
                     self.queue_log(self.tr("log_video_fps_detected", fps=fps))
 
+                prepare_extraction_workspace(task.extract_dir, workspace_language)
                 args, command_log_key, exit_error_key = build_extract_command(
                     task.source,
                     task.extract_dir,
@@ -1379,6 +1419,8 @@ class GTMCEControllerMixin:
                     exit_error_key,
                     extract_warning_key,
                 )
+                if source_uses_mkvextract(task.source):
+                    write_extracted_track_timing(task.extract_dir, extract_items)
 
             first_task = tasks[0]
             first_title = batch_episode_preview_title(source_dir, first_task)
@@ -1422,10 +1464,12 @@ class GTMCEControllerMixin:
 
         existing_outputs: list[Path] = []
         for task in tasks:
-            existing_outputs.extend(path for path in task.extract_dir.glob("*.mkv") if path.is_file())
+            existing_outputs.extend(path for path in workspace_output_directory(task.extract_dir).glob("*.mkv") if path.is_file())
             final_dir = tmdb_season_folder_path(
                 source_dir, settings, task.episode_ref.season
             )
+            if workspace_layout(_extract_root) is not None:
+                final_dir = workspace_output_directory(_extract_root) / final_dir.name
             if final_dir.is_dir():
                 existing_outputs.extend(path for path in final_dir.glob("*.mkv") if path.is_file())
         # One confirmation covers the batch. The worker never displays modal
@@ -1485,7 +1529,7 @@ class GTMCEControllerMixin:
                 episode_settings = copy.copy(settings)
                 episode_settings.media_dir = task.extract_dir
                 episode_settings.output_path = (
-                    task.extract_dir / f"{safe_filename_stem(task.source.stem)}.mkv"
+                    workspace_output_directory(task.extract_dir) / f"{safe_filename_stem(task.source.stem)}.mkv"
                 )
                 episode_settings.video_fps = fps
 
@@ -1599,10 +1643,7 @@ class GTMCEControllerMixin:
                         if index == 1:
                             self.log_queue.put(("set_chapter_end_auto", chapter_end))
                 episode_settings.output_path.parent.mkdir(parents=True, exist_ok=True)
-                if episode_settings.auto_chapters and episode_settings.auto_chapter_detect_intro:
-                    self.queue_log(self.tr("log_detecting_intro_end"))
                 episode_chapter_options = self.chapter_options_from_settings(episode_settings)
-                episode_chapter_options.analysis_source = task.source
                 mux_args, missing_optional = build_mkvmerge_args(
                     config,
                     episode_settings.media_dir,
@@ -1669,6 +1710,8 @@ class GTMCEControllerMixin:
                 final_dir = season_dirs.get(episode_ref.season)
                 if final_dir is None:
                     final_dir = tmdb_season_folder_path(source_dir, settings, episode_ref.season)
+                    if workspace_layout(_extract_root) is not None:
+                        final_dir = workspace_output_directory(_extract_root) / final_dir.name
                     season_dirs[episode_ref.season] = final_dir
                 target = final_dir / output_path.name
                 target_key = str(target).lower()
@@ -1709,10 +1752,22 @@ class GTMCEControllerMixin:
             self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
         self.ensure_extract_window()
+        audio_filter_enabled = self.audio_extract_only_var.get()
+        subtitle_filter_enabled = self.subtitle_extract_only_var.get()
+        audio_filter_languages = self.audio_language_order_var.get()
+        subtitle_filter_languages = self.subtitle_language_order_var.get()
 
         def work() -> None:
-            payload = identify_mkv(source)
+            payload = identify_extract_source(source)
             items = build_extract_items(payload, source)
+            apply_extract_language_selection(
+                items, audio_filter_languages, subtitle_filter_languages,
+                audio_only=audio_filter_enabled,
+                subtitle_only=subtitle_filter_enabled,
+            )
+            actual_format = extract_container_mismatch(source)
+            if actual_format:
+                self.queue_log(self.tr("log_extract_container_mismatch", name=source.name, format=actual_format))
             self.log_queue.put(("set_extract_items", items))
             self.log_queue.put(("set_extract_dir", str(output_dir)))
             chapter_end = chapter_end_minutes_from_duration_seconds(
@@ -1758,7 +1813,10 @@ class GTMCEControllerMixin:
             )
             return
 
+        workspace_language = self.ui_language_var.get()
+
         def work() -> None:
+            prepare_extraction_workspace(output_dir, workspace_language)
             args, command_log_key, exit_error_key = build_extract_command(source, output_dir, items)
             self.queue_log(self.tr(command_log_key))
             self.queue_log(command_preview(args))
@@ -1781,7 +1839,10 @@ class GTMCEControllerMixin:
             if return_code == 1:
                 self.queue_log(self.tr("log_mkvextract_warnings"))
 
-            fps = first_video_fps_from_identify_payload(identify_mkv(source), source) or first_video_fps_from_items(items)
+            if source_uses_mkvextract(source):
+                write_extracted_track_timing(output_dir, items)
+
+            fps = first_video_fps_from_identify_payload(identify_extract_source(source), source) or first_video_fps_from_items(items)
             if fps:
                 self.log_queue.put(("set_video_fps", fps))
             self.log_queue.put(("set_folder", str(output_dir)))

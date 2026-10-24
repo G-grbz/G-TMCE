@@ -80,6 +80,8 @@ G-TMCE automates the entire process and keeps every MKV organized using predicta
 - Forced/SDH subtitle naming
 - FPS-aware video extraction
 - Extraction output ready for re-muxing
+- Real container detection from the file header (a renamed MP4 uses FFmpeg rather than mkvextract)
+- Separate **Rest off / Gerisi pasif** checkboxes beside audio/subtitle priorities: only the listed languages start selected during extraction; other tracks including `und` remain available for manual selection
 
 ### 🔊 Audio Processing
 
@@ -213,6 +215,13 @@ Output: `dist\G-TMCE.exe`
 
 The right-click integration is opt-in: enable **Extract right-click menu** once from the main interface. On Windows, it registers a per-user Explorer entry for supported media containers named `Open with G-TMCE Extract`; no admin permission is required because it uses `HKEY_CURRENT_USER`.
 
+The Linux/Dolphin Extract action matches video and supported Matroska, Ogg,
+ASF and RealMedia container MIME types. It does not register for the generic
+`application/octet-stream` parent, which would make it appear for executables,
+AppImages, images, documents and archives. New AppImage launches with the option
+enabled refresh their menu definition; existing `install.sh` installations need
+the updated desktop/service-menu definitions installed.
+
 The EXE is copied to the stable `%LOCALAPPDATA%\G-TMCE\G-TMCE.exe` launcher path; Explorer always uses that path rather than a versioned GitHub download name. Open a newer release once and it atomically updates this stable launcher, so the right-click menu keeps working without unregistering an old version or registering every new one.
 
 On Linux, double-clicking any AppImage version atomically refreshes the stable per-user AppImage and **G-TMCE** application-search entry under `~/.local/share/`. This keeps application search on the newest version without administrator privileges or duplicate entries. The same option additionally enables the user-level KDE/Dolphin service menu; other Linux file managers do not share Dolphin's service-menu API. When the AUR package or `install.sh` installation is launched instead, G-TMCE removes only its own stale per-user AppImage application and service-menu entries so the system `g-tmce` launchers take precedence. `install.sh` also clears the invoking user's stale AppImage application entry during installation. Customized user entries are left untouched. Turning the option off removes only the AppImage context-menu integration.
@@ -290,6 +299,14 @@ Persistent files:
 6. Press `Download Artwork/Tags`
 7. Press `Create MKV`
 
+For a source-folder batch, enable **Add tracks before muxing** and use **Create MKV**
+or the batch mux action to open one tab per episode. Add media/metadata files,
+set audio/subtitle delays, choose included tracks, and reorder tracks in the
+selected tab. Changes belong only to that episode; unedited episodes keep their
+own tracks and settings. Switching tabs preserves pending edits, and tabs are
+loaded on demand to keep large seasons responsive. Confirming starts the batch
+mux with each episode's individual choices.
+
 ---
 
 ## Extract MKV Workflow
@@ -302,13 +319,39 @@ Persistent files:
 
 The extraction folder is automatically set as the current track folder.
 
+Matroska audio and video extraction also saves `*.timestamps.txt` and
+`*.gtmce-timing.json`. New organized workspaces keep these technical files under
+`.gtmce/`; older flat folders keep them beside each raw track. Keep the complete workspace together:
+Create MKV automatically restores source timing, including gaps, variable frame
+intervals and audio/video start offsets, without re-encoding. The automatically
+detected FPS does not flatten these timestamps. Choosing a different video FPS
+explicitly keeps the existing frame-rate override behavior.
+
+Timing is reused only while the extracted file is unchanged and has no appended
+parts. Edited/re-encoded tracks use their own timing instead of stale source
+timestamps. Previously extracted folders need to be extracted again to obtain
+the timing sidecars.
+
+Add Tracks and Audio Adjust display the original first packet timestamp (PTS)
+and its difference from the first video track, when saved source timing is
+available. Missing or stale timing is shown as a dash, rather than a guessed
+zero. Hover for the exact milliseconds and source CodecDelay. A source start
+difference is not necessarily a sync error: enter only your extra correction.
+For a delay without editing the audio or flattening saved source timestamps,
+use Add Tracks → Delay. Audio Adjust shows the retained original's timing as
+a reference even after an audio edit.
+
 ---
 
 ## Track Folder Naming Rules
 
-The selected track folder should contain one media track per file. Files extracted with G-TMCE are already named in the expected format.
+The selected track folder should contain one media track per file. Files extracted with G-TMCE are already named in the expected format. Select the workspace root, not its individual audio/video subfolder.
 
-Media track files must be placed directly inside the selected track folder. Font attachments can be inside subfolders.
+New extractions organize tracks, subtitles, artwork and metadata into localized subfolders. The folder names follow the **interface language at creation**, not the audio/subtitle or TMDB language. English uses `video`, `audio`, `subtitles`, `artwork`, `metadata`; Turkish uses `video`, `ses`, `altyazılar`, `görseller`, `üstveri`. The default extraction folder suffix is `_tracks` in English and `_parçalar` in Turkish. `.gtmce/layout.json` records the chosen layout, so switching interface language later does not rename folders or lose tracks.
+
+Completed single-file MKVs stay at the workspace root and are never rediscovered as source tracks. Batch extractions use `episodes` / `bölümler` for each episode workspace and collect completed MKVs under `output` / `çıktı`, with the existing season grouping retained. Source timing, generated mux configurations, audio-delay records and reversible audio originals live under `.gtmce/` (originals in `backups` / `yedekler`). Audio append names such as `tur.ac3`, `tur.1.ac3`, and `tur.2.ac3` are unchanged. Downloaded, transcribed and AI-translated subtitles use the subtitle subfolder.
+
+Existing flat folders remain supported without moving or renaming their files. The localized folder layout is created automatically for new extractions; no separate organization action is required.
 
 Recommended naming style:
 
@@ -421,7 +464,7 @@ Cover artwork is normalized to Matroska cover-art sizes:
 - `cover.jpg` and `cover_land.jpg`: 600 px on the smallest side
 - `small_cover.jpg` and `small_cover_land.jpg`: 120 px on the smallest side
 
-Font files are attached automatically and may be placed directly in the track folder or inside subfolders.
+Font files are attached automatically: use the artwork subfolder in organized workspaces. Legacy flat folders also support fonts directly in the track folder or inside subfolders.
 
 Supported font extensions: `.ttf` `.otf` `.ttc` `.otc` `.woff` `.woff2`
 
@@ -434,19 +477,26 @@ Font attachment notes:
 
 ```
 Movie.Name.2025_tracks/
-  und.23.976.h265
-  en.eac3
-  tr.ac3
-  forced.en.srt
-  tr.ass
-  cover.jpg
-  small_cover.jpg
-  cover_land.jpg
-  small_cover_land.jpg
-  logo.png
-  fonts/
-    Arial.ttf
-    SomeSubtitleFont.otf
+  Movie.Name.2025.mkv         # completed output
+  video/
+    und.23.976.h265
+  audio/
+    en.eac3
+    tr.ac3
+  subtitles/
+    forced.en.srt
+    tr.ass
+  artwork/
+    cover.jpg
+    small_cover.jpg
+    cover_land.jpg
+    small_cover_land.jpg
+    logo.png
+    fonts/Arial.ttf
+  metadata/
+    chapters.txt
+    tags.xml
+  .gtmce/                    # layout, timing, configs and reversible originals
 ```
 
 Key points:
@@ -528,7 +578,7 @@ Template config is optional. If no config is provided, G-TMCE automatically gene
 
 ## Automatic Chapters
 
-If `chapters.txt` does not exist and automatic chapters are enabled, G-TMCE generates chapters using: chapter name, interval, start number, and end minute. When intro-end detection is enabled, the first automatic chapter is aligned to the detected intro end when the signal is reliable; otherwise the normal interval-based start is used.
+If `chapters.txt` does not exist and automatic chapters are enabled, G-TMCE generates chapters using: chapter name, interval, start number, and end minute.
 
 Example output:
 

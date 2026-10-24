@@ -27,11 +27,13 @@ import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, replace
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 import certifi
+from . import workspace as _workspace
 try:
     from PIL import Image, ImageOps
 except ImportError:
@@ -331,6 +333,9 @@ UI_TEXT = {
         "label_default_tracks": "Default tracks",
         "label_audio_order": "Audio priority",
         "label_subtitle_order": "Subtitle priority",
+        "option_extract_only_listed": "Rest off",
+        "tooltip_extract_only_listed": "When extracting, select only languages entered in this priority field. Other tracks (including und) stay available for manual selection.",
+        "log_extract_container_mismatch": "File extension differs from content: {name} is {format}. The matching extractor will be used.",
         "option_include_extra_subtitles": "Include additional subtitles",
         "option_add_tracks_before_mux": "Add tracks before muxing",
         "option_download_before_mux": "Prepare artwork and tags before muxing",
@@ -339,7 +344,6 @@ UI_TEXT = {
         "option_download_missing_mux_assets": "Fill missing artwork/tags from TMDB",
         "label_auto_chapters": "Automatic chapters",
         "option_create_if_missing": "Create if missing",
-        "option_detect_intro_end": "Detect intro end",
         "label_chapter_name": "Name",
         "label_chapter_interval": "Interval (min)",
         "label_chapter_start": "Start #",
@@ -347,6 +351,7 @@ UI_TEXT = {
         "button_scan_tracks": "Adjust Audio",
         "window_audio_adjust_title": "Audio Adjust",
         "window_mux_tracks_title": "Add Tracks",
+        "hint_batch_mux_tracks": "Changes apply only to the selected episode. Unedited episodes keep their own tracks and settings.",
         "audio_adjust_hint": "Duration (ms): Enter a value in milliseconds. Positive (+) values delay the audio by adding silence at the beginning; negative (-) values advance it by trimming from the beginning. The first Apply keeps a reusable original backup. Every later adjustment is rebuilt from that original, so you can safely change +5000 to +4000 without manually renaming files. Positive delays encode only a short silence segment and automatically mux it with the untouched original as one track, avoiding a full-audio re-encode. Select a track and use Restore Original to discard its generated version.\n\nVolume: 1x preserves the original volume level. Values between 1.1x and 5x increase the audio volume. Higher values may introduce distortion/clipping and should be used with caution. Verify final sync after creating the MKV.",
         "mux_tracks_drop_hint": "Drag and drop files to add tracks, chapters, tags, or artwork",
         "button_add_tracks": "Add Files",
@@ -356,6 +361,14 @@ UI_TEXT = {
         "button_move_track_down": "Down",
         "label_track_language": "Language",
         "label_track_delay": "Delay (ms)",
+        "heading_source_start": "Source start (PTS)",
+        "heading_track_file": "Track file",
+        "source_timing_inline": "Source PTS: {start}\nPTS vs video: {offset} ms",
+        "heading_source_video_offset": "PTS vs video (ms)",
+        "source_timing_hint": "Source start is the first packet timestamp; the difference is relative to the first video track. A starting difference alone does not indicate a sync error. Enter only the extra correction: + delays audio, − advances it.",
+        "source_timing_unknown": "Source timing is unavailable. Extract again with G-TMCE to save source timestamps; keep the timing companion files together with the tracks.",
+        "source_timing_tooltip": "First source packet: {start} ms. Source CodecDelay: {codec_delay} ms. The video difference compares packet timestamps, before CodecDelay. These values describe the original source, before your adjustments.",
+        "source_timing_audio_reference": "Original source timing is shown for reference. For a delay that preserves saved timestamps without editing the audio file, use Delay in Add Tracks.",
         "heading_audio_append": "Append",
         "heading_audio_file": "Audio file",
         "heading_track_type": "Type",
@@ -469,6 +482,7 @@ UI_TEXT = {
         "path_extract_folder": "Extraction folder",
         "path_existing_extract_folder": "Extracted output folder",
         "button_load_existing_extract": "Load Existing",
+        "error_workspace_layout": "Cannot use the media folder layout at {path}: {error}",
         "error_existing_extract_missing": "The extracted folder was not found: {path}",
         "log_existing_extract_loaded": "Loaded existing extracted folder: {path}",
         "button_browse_file": "File",
@@ -582,7 +596,6 @@ UI_TEXT = {
         "status_batch_extract_folder": "Extracting folder...",
         "status_batch_mux_folder": "Muxing extracted folder...",
         "log_detecting_chapter_end": "Detecting chapter end...",
-        "log_detecting_intro_end": "Detecting intro end...",
         "status_cancelling": "Cancelling...",
         "log_operation_cancelled": "Operation cancelled.",
         "button_scan_mkv": "Scan MKV",
@@ -753,6 +766,9 @@ UI_TEXT = {
         "label_default_tracks": "Varsayılan iz",
         "label_audio_order": "Ses sırası",
         "label_subtitle_order": "Altyazı sırası",
+        "option_extract_only_listed": "Gerisi pasif",
+        "tooltip_extract_only_listed": "Parça çıkarırken yalnızca bu sıraya yazılan dilleri seçer. Diğer izler (und dahil) çıkarıcıdan elle etkinleştirilebilir.",
+        "log_extract_container_mismatch": "Dosyanın uzantısı içeriğiyle uyuşmuyor: {name} aslında {format}. Uygun çıkarıcı kullanılacak.",
         "option_include_extra_subtitles": "Fazla altyazıları ekle",
         "option_add_tracks_before_mux": "MKV öncesi parça ekle",
         "option_download_before_mux": "MKV oluşturmadan önce görsel/tag hazırla",
@@ -761,7 +777,6 @@ UI_TEXT = {
         "option_download_missing_mux_assets": "Eksik görsel/tag TMDB'den tamamla",
         "label_auto_chapters": "Otomatik chapter",
         "option_create_if_missing": "Yoksa oluştur",
-        "option_detect_intro_end": "Intro bitişini algıla",
         "label_chapter_name": "Ad",
         "label_chapter_interval": "Aralık dk",
         "label_chapter_start": "Başlangıç",
@@ -769,6 +784,7 @@ UI_TEXT = {
         "button_scan_tracks": "Ses Ayarla",
         "window_audio_adjust_title": "Ses Ayarla",
         "window_mux_tracks_title": "Parça Ekle",
+        "hint_batch_mux_tracks": "Değişiklikler yalnızca seçili bölüme uygulanır. Düzenlenmeyen bölümler kendi parçaları ve ayarlarıyla devam eder.",
         "audio_adjust_hint": "Süre (ms): Milisaniye cinsinden girilir. Pozitif (+) değerler sesi başına sessizlik ekleyerek geciktirir; negatif (-) değerler ise baştan keserek öne alır. İlk Uygula işlemi tekrar kullanılabilir bir orijinal yedek saklar. Sonraki her ayar bu orijinalden yeniden üretilir; yani +5000 değerini dosya adı değiştirmeden güvenle +4000 yapabilirsin. Pozitif gecikmede tüm ses yeniden kodlanmaz: sadece kısa sessizlik parçası oluşturulur ve MKV yapılırken dokunulmamış orijinal sesle tek parça gibi otomatik birleştirilir. Oluşan sürümü silip orijinale dönmek için parçayı seçip Orijinali Geri Yükle'ye bas.\n\nSes: 1x orijinal ses düzeyidir. 1.1x ile 5x arasındaki değerler sesi yükseltir. Yüksek değerlerde ses bozulması (distortion/clipping) oluşabileceğinden dikkatli kullanılması önerilir. Son eşitlemeyi MKV oluştuktan sonra kontrol et.",
         "mux_tracks_drop_hint": "Parça, chapter, tag veya görsel eklemek için dosyaları sürükle & bırak",
         "button_add_tracks": "Dosya Ekle",
@@ -778,6 +794,14 @@ UI_TEXT = {
         "button_move_track_down": "Aşağı",
         "label_track_language": "Dil",
         "label_track_delay": "Delay (ms)",
+        "heading_source_start": "Kaynak başlangıcı (PTS)",
+        "heading_track_file": "Parça dosyası",
+        "source_timing_inline": "Kaynak PTS: {start}\nGörüntüye PTS farkı: {offset} ms",
+        "heading_source_video_offset": "Görüntüye PTS farkı (ms)",
+        "source_timing_hint": "Kaynak başlangıcı ilk paketin zaman damgasıdır; fark ilk görüntü parçasına göredir. Başlangıç farkı tek başına senkron hatası değildir. Yalnızca ek düzeltmeyi gir: + sesi geciktirir, − öne alır.",
+        "source_timing_unknown": "Kaynak zaman bilgisi yok. Kaynak zaman damgalarını kaydetmek için G-TMCE ile yeniden ayır; zaman bilgisi dosyalarını parçalarla birlikte tut.",
+        "source_timing_tooltip": "İlk kaynak paketi: {start} ms. Kaynak CodecDelay: {codec_delay} ms. Görüntüye fark, CodecDelay uygulanmadan paket zaman damgalarını karşılaştırır. Değerler, senin düzeltmelerinden önceki orijinal kaynağa aittir.",
+        "source_timing_audio_reference": "Orijinal kaynak zamanları referans olarak gösterilir. Ses dosyasını değiştirmeden kayıtlı zaman damgalarını koruyan bir gecikme için Parça Ekle ekranındaki Delay alanını kullan.",
         "heading_audio_append": "İlave",
         "heading_audio_file": "Ses dosyası",
         "heading_track_type": "Tür",
@@ -891,6 +915,7 @@ UI_TEXT = {
         "path_extract_folder": "Çıkarma klasörü",
         "path_existing_extract_folder": "Çıkarılmış çıktı klasörü",
         "button_load_existing_extract": "Mevcut Çıktıyı Yükle",
+        "error_workspace_layout": "{path} konumundaki medya klasörü düzeni kullanılamıyor: {error}",
         "error_existing_extract_missing": "Çıkarılmış klasör bulunamadı: {path}",
         "log_existing_extract_loaded": "Mevcut çıkarılmış klasör yüklendi: {path}",
         "button_browse_file": "Dosya",
@@ -1004,7 +1029,6 @@ UI_TEXT = {
         "status_batch_extract_folder": "Klasör çıkarılıyor...",
         "status_batch_mux_folder": "Çıkan klasörler birleştiriliyor...",
         "log_detecting_chapter_end": "Chapter bitişi algılanıyor...",
-        "log_detecting_intro_end": "Intro bitişi algılanıyor...",
         "status_cancelling": "İptal ediliyor...",
         "log_operation_cancelled": "İş iptal edildi.",
         "button_scan_mkv": "MKV Tara",
@@ -1387,6 +1411,16 @@ WINDOWS_CONTEXT_MENU_VERB = "G-TMCEExtract"
 WINDOWS_CONTEXT_MENU_LABEL = "Open with G-TMCE Extract"
 WINDOWS_CONTEXT_MENU_EXTENSIONS = tuple(sorted(VIDEO_CONTAINER_EXTENSIONS))
 LINUX_CONTEXT_MENU_FILE_NAME = "g-tmce-extract.desktop"
+LINUX_EXTRACT_MIME_TYPES = (
+    "video/*",
+    "audio/matroska",
+    "audio/x-matroska",
+    "audio/ogg",
+    "application/ogg",
+    "application/x-matroska",
+    "application/vnd.ms-asf",
+    "application/vnd.rn-realmedia",
+)
 LINUX_KDE_SERVICE_MENU_DIRS = (
     ("kio", "servicemenus"),
     ("kservices5", "ServiceMenus"),
@@ -1794,6 +1828,9 @@ def quote_desktop_exec_arg(value: Path | str) -> str:
 
 def linux_kde_service_menu_contents(launcher: Path) -> str:
     executable = quote_desktop_exec_arg(launcher)
+    # application/octet-stream is the parent of every regular file type in
+    # KDE. Patterns= does not restrict service menus; use media MIME types.
+    mime_types = ";".join(LINUX_EXTRACT_MIME_TYPES) + ";"
     return f"""[Desktop Entry]
 Type=Service
 Name=G-TMCE Extract
@@ -1803,7 +1840,7 @@ Comment[tr]=Medya dosyalarından parça, altyazı, chapter ve ek çıkar
 ServiceTypes=KonqPopupMenu/Plugin
 X-KDE-ServiceTypes=KonqPopupMenu/Plugin
 X-KDE-Priority=TopLevel
-MimeType=application/octet-stream;video/*;
+MimeType={mime_types}
 Icon=g-tmce
 Actions=OpenGTMCEExtract;
 
@@ -1939,11 +1976,17 @@ def remove_stale_appimage_service_menu_for_system_install() -> list[str]:
     if data_home is None:
         return []
     expected = linux_kde_service_menu_contents(data_home / APP_ID / f"{APP_NAME}.AppImage")
+    # Exact old generated contents remain ours after tightening MIME matching.
+    # Keep customized definitions, including user-level system-menu overrides.
+    previous = expected.replace(
+        "MimeType=" + ";".join(LINUX_EXTRACT_MIME_TYPES) + ";",
+        "MimeType=application/octet-stream;video/*;",
+    )
     errors: list[str] = []
     removed = False
     for path in linux_appimage_managed_service_menu_paths():
         try:
-            if path.is_file() and path.read_text(encoding="utf-8") == expected:
+            if path.is_file() and path.read_text(encoding="utf-8") in {expected, previous}:
                 path.unlink()
                 removed = True
         except OSError as exc:
@@ -2066,14 +2109,6 @@ TMDB_LOGO_MAX_BYTES = 512 * 1024
 FONT_ATTACHMENT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"}
 MUX_UNKNOWN_LANGUAGE = "und"
 DEFAULT_OUTPUT_NAME = "output.mkv"
-INTRO_DETECTION_WINDOW_SECONDS = 4 * 60
-INTRO_DETECTION_MIN_SECONDS = 12.0
-INTRO_DETECTION_MAX_SECONDS = 4 * 60
-INTRO_DETECTION_CLUSTER_SECONDS = 4.0
-INTRO_DETECTION_BLACK_SUBTITLE_CLUSTER_SECONDS = 6.0
-INTRO_DETECTION_SUBTITLE_AGREEMENT_SECONDS = 0.5
-INTRO_DETECTION_MIN_CONFIDENCE = 88.0
-INTRO_DETECTION_TOP_CANDIDATES = 12
 RELEASE_STOP_TOKENS = {
     "2160p",
     "1080p",
@@ -2494,6 +2529,8 @@ class MuxTrackWindowRow:
     target_name: str = ""
     manual: bool = False
     included: bool = True
+    source_start_ms: Decimal | None = None
+    source_codec_delay_ns: int = 0
 
 
 @dataclass
@@ -2515,7 +2552,6 @@ class AppSettings:
     include_extra_subtitles: bool
     download_before_mux: bool
     auto_chapters: bool
-    auto_chapter_detect_intro: bool
     chapter_interval_minutes: str
     chapter_name: str
     chapter_start_number: str
@@ -2578,21 +2614,10 @@ class SubtitleLookupMetadata:
 @dataclass
 class ChapterOptions:
     enabled: bool
-    detect_intro: bool
     interval_minutes: str
     name: str
     start_number: str
     end_minutes: str
-    analysis_source: Path | None = None
-    video_fps: str = ""
-
-
-@dataclass(frozen=True)
-class IntroDetectionCandidate:
-    seconds: float
-    score: float
-    source: str
-    interval_start_seconds: float | None = None
 
 
 @dataclass
@@ -2609,6 +2634,8 @@ class ExtractItem:
     track_type: str = ""
     name_prefix_parts: tuple[str, ...] = ()
     name_suffix_parts: tuple[str, ...] = ()
+    codec_delay_ns: int = 0
+    source_fps: str = ""
 
 
 @dataclass
@@ -3881,7 +3908,7 @@ def output_path_with_optional_year(
 
 
 def tmdb_output_path(media_dir: Path, title: str) -> Path:
-    return media_dir / f"{safe_filename_stem(title)}.mkv"
+    return workspace_output_directory(media_dir) / f"{safe_filename_stem(title)}.mkv"
 
 
 def episode_code(ref: EpisodeRef) -> str:
@@ -3917,7 +3944,7 @@ def batch_episode_preview_title(source_dir: Path, task: BatchEpisodeTask) -> str
 
 
 def batch_episode_output_path(source_dir: Path, task: BatchEpisodeTask) -> Path:
-    return task.extract_dir / f"{safe_filename_stem(batch_episode_preview_title(source_dir, task))}.mkv"
+    return workspace_output_directory(task.extract_dir) / f"{safe_filename_stem(batch_episode_preview_title(source_dir, task))}.mkv"
 
 
 def batch_mkv_title_for_episode(
@@ -4055,6 +4082,10 @@ def path_is_relative_to(path: Path, parent: Path) -> bool:
 
 
 def video_sources_in_folder(source_dir: Path) -> list[Path]:
+    if workspace_layout(source_dir) is not None:
+        source_dir = workspace_directory(source_dir, "video")
+    if not source_dir.is_dir():
+        return []
     return sorted(
         (
             path
@@ -4097,11 +4128,11 @@ def parse_release_name(name: str) -> tuple[str, str]:
 
 
 def strip_track_folder_suffix(name: str) -> str:
-    return re.sub(r"(?i)(?:[._\-\s]+)?tracks?$", "", name).strip(" ._-")
+    return re.sub(r"(?i)(?:[._\-\s]+)?(?:tracks?|parçalar)$", "", name).strip(" ._-")
 
 
 def is_generic_track_folder_name(name: str) -> bool:
-    return clean_release_title(name).lower() in {"track", "tracks"}
+    return clean_release_title(name).lower() in {"track", "tracks", "parçalar", "video", "ses", "audio", "bölümler", "episodes"}
 
 
 def release_output_name_candidates(media_dir: Path) -> list[str]:
@@ -4142,7 +4173,7 @@ def default_output_name(config: dict[str, Any], media_dir: Path) -> str:
 
 
 def default_output_path(config: dict[str, Any], media_dir: Path) -> Path:
-    return media_dir / default_output_name(config, media_dir)
+    return workspace_output_directory(media_dir) / default_output_name(config, media_dir)
 
 
 def release_name_candidates(settings: AppSettings) -> list[str]:
@@ -4439,6 +4470,18 @@ def apply_video_fps_override(items: list[TrackItem], video_fps: str) -> None:
         return
     for item in items:
         if is_video_entry(item.entry):
+            timing = item.track.get("gtmceSourceTiming", {})
+            if timing and item.track.get("timestamps"):
+                source_fps = parse_fps_number(str(timing.get("source_fps") or ""))
+                requested_fps = parse_fps_number(default_duration)
+                if source_fps is None or (
+                    requested_fps is not None
+                    and math.isclose(source_fps, requested_fps, rel_tol=0.0001)
+                ):
+                    # The UI also fills this field automatically. Forcing the
+                    # same nominal FPS would erase gaps/VFR from the source.
+                    continue
+                reset_extracted_track_timing(item)
             item.track["defaultDuration"] = default_duration
 
 
@@ -4891,9 +4934,123 @@ def is_media_track_path(path: Path) -> bool:
     return path.is_file() and media_kind_from_path(path) is not None
 
 
+def workspace_layout(root: Path) -> dict[str, Any] | None:
+    try:
+        return _workspace.read_layout(root)
+    except (OSError, ValueError) as exc:
+        raise UserVisibleError(ui_text("error_workspace_layout", path=root, error=exc)) from exc
+
+
+def workspace_directory(root: Path, kind: str, *, create: bool = False) -> Path:
+    try:
+        return _workspace.directory(root, kind, create=create)
+    except (OSError, ValueError) as exc:
+        raise UserVisibleError(ui_text("error_workspace_layout", path=root, error=exc)) from exc
+
+
+def media_workspace_root(path: Path) -> Path | None:
+    try:
+        return _workspace.root_for_path(path)
+    except (OSError, ValueError) as exc:
+        raise UserVisibleError(ui_text("error_workspace_layout", path=path, error=exc)) from exc
+
+
+def ensure_media_workspace(root: Path, language: str | None = None, *, mode: str = "single") -> None:
+    try:
+        _workspace.ensure_layout(root, normalise_ui_language(language or ACTIVE_UI_LANGUAGE), mode=mode)
+        kinds = ("episodes", "output") if mode == "batch" else ("video", "audio", "subtitle", "artwork", "metadata")
+        for kind in kinds:
+            _workspace.directory(root, kind, create=True)
+    except (OSError, ValueError) as exc:
+        raise UserVisibleError(ui_text("error_workspace_layout", path=root, error=exc)) from exc
+
+
+def prepare_extraction_workspace(root: Path, language: str | None = None, *, mode: str = "single") -> None:
+    # Existing flat directories keep their old semantics. The automatic
+    # layout applies only to new/empty destinations and registered workspaces.
+    if workspace_layout(root) is not None or not root.exists() or not any(root.iterdir()):
+        ensure_media_workspace(root, language, mode=mode)
+
+
+def workspace_output_directory(root: Path) -> Path:
+    try:
+        return _workspace.output_directory(root)
+    except (OSError, ValueError) as exc:
+        raise UserVisibleError(ui_text("error_workspace_layout", path=root, error=exc)) from exc
+
+
+def extraction_folder_suffix(language: str | None = None) -> str:
+    return "_parçalar" if normalise_ui_language(language or ACTIVE_UI_LANGUAGE) == "tr" else "_tracks"
+
+
+def extraction_folder_base_name(name: str) -> str:
+    for suffix in ("_tracks", "_parçalar"):
+        if name.casefold().endswith(suffix):
+            return name[:-len(suffix)]
+    return ""
+
+
+def discover_episode_workspace_dirs(root: Path) -> list[Path]:
+    try:
+        return _workspace.episode_directories(root)
+    except (OSError, ValueError) as exc:
+        raise UserVisibleError(ui_text("error_workspace_layout", path=root, error=exc)) from exc
+
+
+def batch_episode_directory(root: Path, stem: str, language: str | None = None, *, for_new: bool = False) -> Path:
+    layout = workspace_layout(root)
+    if layout is not None:
+        parent = workspace_directory(root, "episodes")
+    elif for_new and (not root.exists() or not any(root.iterdir())):
+        names = _workspace.FOLDER_NAMES[normalise_ui_language(language or ACTIVE_UI_LANGUAGE)]
+        parent = root / names["episodes"]
+    else:
+        parent = root
+    for suffix in ("_tracks", "_parçalar"):
+        candidate = parent / f"{safe_filename_stem(stem)}{suffix}"
+        if candidate.is_dir():
+            return candidate
+    return parent / f"{safe_filename_stem(stem)}{extraction_folder_suffix(language)}"
+
+
+def workspace_file_path(root: Path, name: str, kind: str | None = None, *, create: bool = False) -> Path:
+    # Configurations use basenames, even if they contain another machine's
+    # absolute path. Resolve into known categories, not an arbitrary rglob.
+    name = basename_from_config_path(name)
+    if not name or Path(name).name != name:
+        raise UserVisibleError(ui_text("error_workspace_layout", path=root, error="Invalid filename"))
+    if kind is None:
+        kind = media_kind_from_path(Path(name))
+        if kind is None:
+            kind = "artwork" if Path(name).suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"} else "metadata"
+    folder = workspace_directory(root, kind, create=create)
+    if workspace_layout(root) is not None:
+        try:
+            return _workspace.contained_path(root, folder.relative_to(root) / name)
+        except ValueError as exc:
+            raise UserVisibleError(ui_text("error_workspace_layout", path=root, error=exc)) from exc
+    return folder / name
+
+
+def extracted_item_output_path(root: Path, item: ExtractItem, *, name: str | None = None) -> Path:
+    kind = item.track_type if item.kind == "track" else "artwork" if item.kind == "attachment" else "metadata"
+    if kind == "subtitles":
+        kind = "subtitle"
+    if kind not in {"audio", "video", "subtitle", "artwork", "metadata"}:
+        kind = "metadata"
+    return workspace_file_path(root, name or item.output_name, kind, create=True)
+
+
+def generated_subtitle_directory(path: Path) -> Path:
+    root = media_workspace_root(path)
+    return workspace_directory(root, "subtitle", create=True) if root is not None else path.parent
+
+
+
+
 def audio_adjust_delay_manifest_path(path: Path) -> Path:
     """Path of the small manifest that joins a fast delayed-audio pair."""
-    return path.with_name(f"{path.name}.gtmce-delay.json")
+    return _workspace.control_path(path, ".gtmce-delay.json")
 
 
 def read_audio_adjust_delay_append_path(path: Path) -> Path | None:
@@ -4904,9 +5061,20 @@ def read_audio_adjust_delay_append_path(path: Path) -> Path | None:
         append_name = str(payload.get("append") or "")
     except (OSError, ValueError, TypeError):
         return None
-    if not append_name or Path(append_name).name != append_name:
+    if not append_name:
         return None
-    append_path = path.parent / append_name
+    if payload.get("version") == 2 and payload.get("relative_to") == "workspace":
+        root = media_workspace_root(path)
+        if root is None:
+            return None
+        try:
+            append_path = _workspace.contained_path(root, append_name)
+        except ValueError:
+            return None
+    else:
+        if Path(append_name).name != append_name:
+            return None
+        append_path = path.parent / append_name
     if not append_path.is_file() or media_kind_from_path(append_path) != "audio":
         return None
     return append_path
@@ -4921,7 +5089,11 @@ def write_audio_adjust_delay_manifest(path: Path, append_path: Path, delta_secon
         "append": append_path.name,
         "delay_ms": round(delta_seconds * 1000),
     }
+    root = media_workspace_root(path)
+    if root is not None:
+        payload.update(version=2, relative_to="workspace", append=str(append_path.relative_to(root)))
     try:
+        manifest.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(manifest)
     except OSError as exc:
@@ -4942,10 +5114,222 @@ def remove_audio_adjust_delay_manifest(path: Path) -> None:
 
 
 def discover_media_track_paths(media_dir: Path) -> list[Path]:
+    roots = [media_dir]
+    if workspace_layout(media_dir) is not None:
+        roots = [workspace_directory(media_dir, kind) for kind in ("video", "audio", "subtitle")]
     return sorted(
-        (path for path in media_dir.iterdir() if is_media_track_path(path)),
+        (path for root in roots if root.is_dir() for path in root.iterdir() if is_media_track_path(path)),
         key=lambda item: item.name.lower(),
     )
+
+
+def extracted_track_timestamps_path(path: Path) -> Path:
+    return _workspace.control_path(path, ".timestamps.txt")
+
+
+def extracted_track_timing_manifest_path(path: Path) -> Path:
+    return _workspace.control_path(path, ".gtmce-timing.json")
+
+
+def read_extracted_track_timing(path: Path, *, media_path: Path | None = None) -> dict[str, Any] | None:
+    """Validate saved timing and read only the first packet for a cheap preview.
+
+    media_path is used only to display the original retained by Audio Adjust;
+    muxing always validates the actual input file.
+    """
+    try:
+        manifest = json.loads(extracted_track_timing_manifest_path(path).read_text(encoding="utf-8"))
+        info = (media_path or path).stat()
+        timestamps = extracted_track_timestamps_path(path)
+        timestamp_info = timestamps.stat()
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("version") != 1
+            or manifest.get("size") != info.st_size
+            or manifest.get("mtime_ns") != info.st_mtime_ns
+            or manifest.get("timestamps_size") != timestamp_info.st_size
+            or manifest.get("timestamps_mtime_ns") != timestamp_info.st_mtime_ns
+        ):
+            return None
+        with timestamps.open(encoding="utf-8") as handle:
+            if handle.readline().strip() not in {"# timestamp format v2", "# timecode format v2"}:
+                return None
+            for line in handle:
+                value = line.strip()
+                if value and not value.startswith("#"):
+                    first = Decimal(value)
+                    if not first.is_finite():
+                        return None
+                    manifest["first_timestamp_ms"] = first
+                    manifest["codec_delay_ns"] = int(manifest.get("codec_delay_ns", 0))
+                    return manifest
+    except (OSError, ValueError, TypeError, InvalidOperation):
+        pass
+    return None
+
+
+def audio_adjust_source_timing(path: Path) -> dict[str, Any] | None:
+    """Show original timing even after an edit, without reusing it for muxing."""
+    backup = find_audio_adjust_source_backup(path)
+    if backup is not None:
+        try:
+            original = audio_adjust_original_path(backup)
+        except UserVisibleError:
+            return None
+        return read_extracted_track_timing(original, media_path=backup)
+    return read_extracted_track_timing(path)
+
+
+def source_video_start_ms(media_dir: Path) -> Decimal | None:
+    for path in discover_media_track_paths(media_dir):
+        if media_kind_from_path(path) == "video":
+            timing = read_extracted_track_timing(path)
+            if timing is not None:
+                return timing["first_timestamp_ms"]
+            # Do not silently compare against a different video track.
+            return None
+    return None
+
+
+def format_source_timestamp(value: Decimal | None) -> str:
+    if value is None:
+        return "—"
+    milliseconds = int(abs(value).quantize(Decimal("1")))
+    seconds, ms = divmod(milliseconds, 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{'−' if value < 0 else ''}{hours:02d}:{minutes:02d}:{seconds:02d}.{ms:03d}"
+
+
+def format_source_offset(value: Decimal | None, reference: Decimal | None) -> str:
+    if value is None or reference is None:
+        return "—"
+    difference = value - reference
+    return f"{difference:+.3f}".rstrip("0").rstrip(".")
+
+
+def adjusted_extracted_timestamps(path: Path, offset_ms: int, stretch_by: str) -> Path:
+    """External timestamps override --sync, so apply adjustments to the map."""
+    timestamps = extracted_track_timestamps_path(path)
+    if offset_ms == 0 and not stretch_by:
+        return timestamps.resolve()
+    try:
+        numerator, _, denominator = (stretch_by or "1").partition("/")
+        factor = Decimal(numerator) / Decimal(denominator or "1")
+        if not factor.is_finite() or factor <= 0:
+            raise ValueError("Invalid timestamp stretch factor")
+        lines = []
+        with timestamps.open(encoding="utf-8") as handle:
+            for line in handle:
+                value = line.strip()
+                if not value or value.startswith("#"):
+                    lines.append(value)
+                else:
+                    lines.append(format(Decimal(value) * factor + offset_ms, "f"))
+        # Immutable per-adjustment names also protect an active mux from a
+        # subsequent track preview/config generation with different settings.
+        digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
+        adjusted = extracted_track_timestamps_path(path).with_name(f".{path.name}.{digest}.mux.timestamps.txt")
+        if not adjusted.exists():
+            atomic_write_private_text(adjusted, "\n".join(lines) + "\n")
+        return adjusted.resolve()
+    except (OSError, ValueError, InvalidOperation, ZeroDivisionError) as exc:
+        raise UserVisibleError(ui_text("error_file_prepare_failed", name=timestamps.name, error=exc)) from exc
+
+
+def write_extracted_track_timing(output_dir: Path, items: list[ExtractItem]) -> None:
+    """Commit timing sidecars only after a successful Matroska extraction."""
+    for item in items:
+        if not item.selected or item.kind != "track" or item.track_type not in {"audio", "video"}:
+            continue
+        path = extracted_item_output_path(output_dir, item)
+        timestamps = extracted_track_timestamps_path(path)
+        if not path.is_file() or not timestamps.is_file():
+            continue
+        info = path.stat()
+        timestamp_info = timestamps.stat()
+        atomic_write_private_text(
+            extracted_track_timing_manifest_path(path),
+            json.dumps({
+                "version": 1,
+                "size": info.st_size,
+                "mtime_ns": info.st_mtime_ns,
+                "timestamps_size": timestamp_info.st_size,
+                "timestamps_mtime_ns": timestamp_info.st_mtime_ns,
+                "codec_delay_ns": item.codec_delay_ns,
+                "source_fps": item.source_fps,
+            }, ensure_ascii=False, indent=2) + "\n",
+        )
+
+
+def reset_extracted_track_timing(item: TrackItem) -> None:
+    """Undo automatic settings before reloading a generated template."""
+    timing = item.track.pop("gtmceSourceTiming", None)
+    if not isinstance(timing, dict):
+        return
+    if item.track.get("timestamps") == timing.get("timestamps"):
+        item.track.pop("timestamps", None)
+    if str(item.track.get("delay") or "") == timing.get("effective_delay"):
+        base_delay = timing.get("base_delay", "")
+        if base_delay:
+            item.track["delay"] = base_delay
+        else:
+            item.track.pop("delay", None)
+
+
+def apply_extracted_track_timing(items: list[TrackItem]) -> None:
+    """Reuse source timestamps only for untouched, standalone raw tracks."""
+    saved: dict[int, tuple[Path, dict[str, Any], int]] = {}
+    for item in items:
+        if item.append_paths or track_type_value(item) not in {0, 1} or item.track.get("timestamps"):
+            continue
+        path = item.path
+        timestamps = extracted_track_timestamps_path(path)
+        manifest = read_extracted_track_timing(path)
+        if manifest is None:
+            continue
+        try:
+            # Raw audio formats cannot retain Matroska's CodecDelay header.
+            # Ogg/Opus keep their own pre-skip, so do not compensate it twice.
+            codec_delay_ns = int(manifest.get("codec_delay_ns", 0))
+            codec_delay_ms = (
+                round(codec_delay_ns / 1_000_000)
+                if path.suffix.lower() in {".aac", ".ac3", ".eac3", ".ec3", ".dts", ".dtshd", ".mp2", ".mp3", ".thd", ".truehd"}
+                else 0
+            )
+        except (OSError, ValueError, TypeError):
+            continue
+        saved[id(item)] = (timestamps.resolve(), manifest, codec_delay_ms)
+
+    # Negative --sync offsets cause mkvmerge to discard leading raw packets.
+    # Move the common timeline forward instead, preserving all media and the
+    # relative timing of video, other audio tracks and subtitles alike.
+    origin_bias_ms = max([0, *(data[2] for data in saved.values())])
+    for item in items:
+        data = saved.get(id(item))
+        if data is None and (not origin_bias_ms or item.track.get("timestamps")):
+            continue
+        codec_delay_ms = data[2] if data else 0
+        base_delay = str(item.track.get("delay") or "")
+        offset_ms = origin_bias_ms - codec_delay_ms
+        try:
+            effective_delay = str(int(base_delay or 0) + offset_ms) if offset_ms else base_delay
+        except ValueError:
+            continue
+        if data:
+            item.track["timestamps"] = str(adjusted_extracted_timestamps(
+                item.path, int(effective_delay or 0), str(item.track.get("stretchBy") or "").strip(),
+            ))
+            item.track.pop("defaultDuration", None)
+        if effective_delay:
+            item.track["delay"] = effective_delay
+        item.track["gtmceSourceTiming"] = {
+            "timestamps": item.track.get("timestamps"),
+            "source_fps": str(data[1].get("source_fps") or "") if data else "",
+            "base_delay": base_delay,
+            "effective_delay": effective_delay,
+            "origin_bias_ms": origin_bias_ms,
+        }
 
 
 def append_part_number(path: Path) -> tuple[str, int] | None:
@@ -5202,13 +5586,15 @@ def discover_auto_attachment_paths(media_dir: Path) -> list[Path]:
     used: set[str] = set()
 
     for name in STANDARD_ATTACHMENT_NAMES:
-        path = media_dir / name
+        path = workspace_file_path(media_dir, name, "artwork")
         if path.exists() and path.is_file():
             paths.append(path)
             used.add(str(path.resolve()).lower())
 
-    for path in sorted(media_dir.rglob("*"), key=lambda item: str(item).lower()):
-        if not path.is_file() or path.suffix.lower() not in FONT_ATTACHMENT_EXTENSIONS:
+    organized = workspace_layout(media_dir) is not None
+    attachment_root = workspace_directory(media_dir, "artwork")
+    for path in sorted(attachment_root.rglob("*"), key=lambda item: str(item).lower()):
+        if not path.is_file() or (not organized and path.suffix.lower() not in FONT_ATTACHMENT_EXTENSIONS):
             continue
         key = str(path.resolve()).lower()
         if key in used:
@@ -5320,7 +5706,7 @@ def discover_track_items(
         name = basename_from_config_path(str(entry.get("fileName", "")))
         if not name:
             continue
-        candidate = media_dir / name
+        candidate = workspace_file_path(media_dir, name)
         if candidate.name.lower() in append_names:
             continue
         if candidate.exists():
@@ -5505,6 +5891,8 @@ def prepare_mux_track_items(
     # track does not accidentally hide a source that should become independent
     # again.
     items = remove_items_consumed_as_appends(items)
+    for item in items:
+        reset_extracted_track_timing(item)
     apply_mux_track_language_overrides(
         items,
         dict(language_overrides or {}),
@@ -5514,6 +5902,7 @@ def prepare_mux_track_items(
         items,
         dict(delay_overrides or {}),
     )
+    apply_extracted_track_timing(items)
     assign_track_file_ids(items)
     return items, missing_optional
 
@@ -5575,7 +5964,7 @@ def append_source_options(args: list[str], item: TrackItem) -> None:
 
     delay = str(track.get("delay") or "").strip()
     stretch_by = str(track.get("stretchBy") or "").strip()
-    if delay:
+    if delay and not (track.get("gtmceSourceTiming") and track.get("timestamps")):
         sync_value = delay if not stretch_by else f"{delay},{stretch_by}"
         args.extend(["--sync", f"{track_id}:{sync_value}"])
 
@@ -5601,7 +5990,7 @@ def required_attachments(config: dict[str, Any], media_dir: Path) -> list[dict[s
     for _, attachment in numbered_entries(attachments):
         name = str(attachment.get("name") or basename_from_config_path(str(attachment.get("fileName", ""))))
         file_name = basename_from_config_path(str(attachment.get("fileName", name)))
-        path = media_dir / file_name
+        path = workspace_file_path(media_dir, file_name, "artwork")
         result.append(
             {
                 "path": path,
@@ -5825,902 +6214,10 @@ def detect_chapter_end_minutes_for_media_dir(
     )
 
 
-def intro_detection_limit_seconds(duration_seconds: float = 0.0) -> float:
-    if duration_seconds <= 0:
-        return float(INTRO_DETECTION_MAX_SECONDS)
-    return max(
-        INTRO_DETECTION_MIN_SECONDS,
-        min(float(INTRO_DETECTION_MAX_SECONDS), duration_seconds - 30),
-    )
-
-
-def intro_candidate_is_valid(seconds: float, duration_seconds: float = 0.0) -> bool:
-    if seconds < INTRO_DETECTION_MIN_SECONDS:
-        return False
-    if seconds > intro_detection_limit_seconds(duration_seconds):
-        return False
-    if duration_seconds > 0 and seconds >= duration_seconds - 30:
-        return False
-    return True
-
-
-def intro_common_time_bonus(seconds: float) -> float:
-    if 70 <= seconds <= 180:
-        return 12.0
-    if 45 <= seconds <= 260:
-        return 7.0
-    if seconds <= INTRO_DETECTION_MAX_SECONDS:
-        return 3.0
-    return 0.0
-
-
-def top_intro_candidates(
-    candidates: list[IntroDetectionCandidate],
-    duration_seconds: float = 0.0,
-) -> list[IntroDetectionCandidate]:
-    valid = [
-        candidate
-        for candidate in candidates
-        if intro_candidate_is_valid(candidate.seconds, duration_seconds)
-    ]
-    ranked = sorted(valid, key=lambda candidate: candidate.score, reverse=True)
-    top = ranked[:INTRO_DETECTION_TOP_CANDIDATES]
-    if len(ranked) > INTRO_DETECTION_TOP_CANDIDATES:
-        # Dense dialogue or a late scene can fill the score-only shortlist and
-        # hide the first sustained post-opening cue entirely. Keep that early
-        # clue available for corroboration by independent media signals.
-        earliest = min(valid, key=lambda candidate: candidate.seconds)
-        if earliest not in top:
-            top[-1] = earliest
-    return top
-
-
-def parse_intro_timestamp_seconds(value: str) -> float | None:
-    raw = value.strip().replace(",", ".")
-    match = re.search(r"(?:(\d+):)?(\d{1,2}):(\d{2}(?:\.\d+)?)", raw)
-    if match is None:
-        return None
-    hours = int(match.group(1) or 0)
-    minutes = int(match.group(2))
-    seconds = float(match.group(3))
-    if minutes >= 60 or seconds >= 60:
-        return None
-    return hours * 3600 + minutes * 60 + seconds
-
-
-def parse_srt_vtt_events(text: str) -> list[tuple[float, float]]:
-    events: list[tuple[float, float]] = []
-    for line in text.splitlines():
-        if "-->" not in line:
-            continue
-        start_raw, end_raw = line.split("-->", 1)
-        start = parse_intro_timestamp_seconds(start_raw)
-        end = parse_intro_timestamp_seconds(end_raw)
-        if start is None:
-            continue
-        if end is None or end <= start:
-            end = start + 2.0
-        events.append((start, end))
-    return events
-
-
-def parse_ass_events(text: str) -> list[tuple[float, float]]:
-    events: list[tuple[float, float]] = []
-    format_fields: list[str] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        lower = line.lower()
-        if lower.startswith("format:"):
-            format_fields = [
-                field.strip().lower()
-                for field in line.split(":", 1)[1].split(",")
-            ]
-            continue
-        if not lower.startswith("dialogue:"):
-            continue
-
-        payload = line.split(":", 1)[1].lstrip()
-        if format_fields:
-            parts = payload.split(",", max(0, len(format_fields) - 1))
-            try:
-                start_index = format_fields.index("start")
-                end_index = format_fields.index("end")
-            except ValueError:
-                start_index, end_index = 1, 2
-        else:
-            parts = payload.split(",", 9)
-            start_index, end_index = 1, 2
-
-        if len(parts) <= max(start_index, end_index):
-            continue
-        start = parse_intro_timestamp_seconds(parts[start_index])
-        end = parse_intro_timestamp_seconds(parts[end_index])
-        if start is None:
-            continue
-        if end is None or end <= start:
-            end = start + 2.0
-        events.append((start, end))
-    return events
-
-
-def parse_subtitle_intro_events(path: Path) -> list[tuple[float, float]]:
-    suffix = path.suffix.lower()
-    if suffix not in {".srt", ".vtt", ".ass", ".ssa"}:
-        return []
-    try:
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-    except OSError:
-        return []
-    if suffix in {".ass", ".ssa"}:
-        return parse_ass_events(text)
-    return parse_srt_vtt_events(text)
-
-
-def merge_subtitle_events(
-    events: list[tuple[float, float]]
-) -> list[tuple[float, float]]:
-    merged: list[tuple[float, float]] = []
-    for start, end in sorted(events):
-        if not merged or start > merged[-1][1] + 1.0:
-            merged.append((start, end))
-            continue
-        prev_start, prev_end = merged[-1]
-        merged[-1] = (prev_start, max(prev_end, end))
-    return merged
-
-
-def subtitle_intro_candidates(
-    item: TrackItem,
-    duration_seconds: float = 0.0,
-) -> list[IntroDetectionCandidate]:
-    """Return post-intro dialogue hints, never a raw first-subtitle guess.
-
-    A valid subtitle hint must begin a sustained run of cues and must either
-    follow a real subtitle gap or represent a clear density increase. This
-    prevents logos, translator notes, song lyrics, and cold-open dialogue from
-    being treated as the end of the opening sequence.
-    """
-    events = [
-        event
-        for event in parse_subtitle_intro_events(item.path)
-        if event[0] <= intro_detection_limit_seconds(duration_seconds) + 50
-    ]
-    if not events:
-        return []
-
-    forced_multiplier = 0.40 if is_forced_track_item(item) else 1.0
-    merged = merge_subtitle_events(events)
-    candidates: list[IntroDetectionCandidate] = []
-
-    for index, current in enumerate(merged):
-        current_start = current[0]
-        if not intro_candidate_is_valid(current_start, duration_seconds):
-            continue
-
-        previous_end = merged[index - 1][1] if index > 0 else 0.0
-        gap = max(0.0, current_start - previous_end)
-        after_events = [
-            event
-            for event in merged
-            if current_start <= event[0] < current_start + 55.0
-        ]
-        before_events = [
-            event
-            for event in merged
-            if current_start - 55.0 <= event[0] < current_start
-        ]
-        after_count = len(after_events)
-        before_count = len(before_events)
-        after_coverage = sum(
-            max(0.0, min(end, current_start + 55.0) - max(start, current_start))
-            for start, end in after_events
-        )
-
-        # The first subtitle is not evidence by itself. It only becomes useful
-        # when several subsequent cues prove that normal dialogue has started.
-        sustained_dialogue = after_count >= 3 and after_coverage >= 5.0
-        density_increase = after_count >= before_count + 2
-        meaningful_gap = gap >= 18.0
-        if not sustained_dialogue or not (meaningful_gap or density_increase):
-            continue
-
-        score = (
-            34.0
-            + min(gap, 90.0) * 0.28
-            + min(after_count, 9) * 2.8
-            + min(after_coverage, 24.0) * 0.55
-            + max(0, after_count - before_count) * 1.8
-            + intro_common_time_bonus(current_start)
-        )
-        source = "subtitle-gap" if gap >= 35.0 else "subtitle-dialogue"
-        candidates.append(
-            IntroDetectionCandidate(
-                current_start,
-                score * forced_multiplier,
-                source,
-            )
-        )
-
-    return top_intro_candidates(candidates, duration_seconds)
-
-
-def subtitle_consensus_intro_candidate(
-    subtitle_candidates_by_track: list[list[IntroDetectionCandidate]],
-    duration_seconds: float = 0.0,
-) -> IntroDetectionCandidate | None:
-    """Find the first sustained dialogue independently timed by two tracks."""
-    matches: list[IntroDetectionCandidate] = []
-    for index, first_track in enumerate(subtitle_candidates_by_track):
-        for second_track in subtitle_candidates_by_track[index + 1 :]:
-            for first in first_track:
-                if first.score < 65.0:
-                    continue
-                for second in second_track:
-                    if second.score < 65.0:
-                        continue
-                    if abs(first.seconds - second.seconds) > INTRO_DETECTION_SUBTITLE_AGREEMENT_SECONDS:
-                        continue
-                    seconds = min(first.seconds, second.seconds)
-                    if intro_candidate_is_valid(seconds, duration_seconds):
-                        matches.append(
-                            IntroDetectionCandidate(
-                                seconds,
-                                min(first.score, second.score),
-                                "subtitle-consensus",
-                            )
-                        )
-    return min(matches, key=lambda candidate: candidate.seconds) if matches else None
-
-
-def intro_item_paths(
-    items: list[TrackItem],
-    *,
-    track_type: int,
-    media_kind: str,
-    limit: int = 1,
-) -> list[Path]:
-    paths: list[Path] = []
-    seen: set[str] = set()
-    for item in items:
-        if track_type_value(item) != track_type and media_kind_from_path(item.path) != media_kind:
-            continue
-        key = path_identity_key(item.path)
-        if key in seen:
-            continue
-        seen.add(key)
-        paths.append(item.path)
-        if len(paths) >= limit:
-            break
-    return paths
-
-
-def parse_ffmpeg_float(value: str) -> float | None:
-    try:
-        return float(value)
-    except ValueError:
-        return None
-
-
-def run_intro_ffmpeg_analysis(
-    args: list[str],
-    *,
-    cancel_event: threading.Event | None = None,
-    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-) -> str:
-    process = run_cancellable_capture(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=third_party_subprocess_env(),
-        executable=third_party_subprocess_executable(args),
-        cancel_event=cancel_event,
-        register_process=register_process,
-        unregister_process=unregister_process,
-    )
-    if process.returncode != 0:
-        return ""
-    return f"{process.stdout}\n{process.stderr}"
-
-
-def intro_analysis_fps(video_fps: str) -> str:
-    """Return an FFmpeg-compatible frame rate for raw elementary streams.
-
-    Raw .h264/.h265 track files carry no container timing, so FFmpeg has to
-    guess a frame rate on its own (commonly defaulting to 25fps) when it
-    demuxes them. Every blackdetect/scenechange pts_time computed from that
-    guess then drifts away from real playback time whenever the guess is
-    wrong, which is why detected intro-end timestamps could land on the
-    wrong second. Reuse normalize_video_fps() for validation, then strip its
-    mkvmerge-style "fps" suffix since FFmpeg's -r wants a bare number or
-    fraction (e.g. "23.976" or "24000/1001").
-    """
-    try:
-        normalized = normalize_video_fps(video_fps)
-    except UserVisibleError:
-        return ""
-    return normalized.removesuffix("fps")
-
-
-def intro_ffmpeg_input_args(path: Path, video_fps: str = "") -> list[str]:
-    """Build an FFmpeg input that also works for extracted raw video."""
-    args = ["-fflags", "+genpts"]
-    suffix = path.suffix.lower()
-    is_raw_video = suffix in {".h264", ".avc", ".h265", ".hevc"}
-    if suffix in {".h264", ".avc"}:
-        args.extend(["-f", "h264"])
-    elif suffix in {".h265", ".hevc"}:
-        args.extend(["-f", "hevc"])
-    if is_raw_video:
-        fps = intro_analysis_fps(video_fps)
-        if fps:
-            # As an input option, -r tells FFmpeg to generate timestamps for
-            # a constant frame rate instead of guessing one, giving accurate
-            # pts_time for a stream that has no timing info of its own.
-            args.extend(["-r", fps])
-    args.extend(["-i", str(path)])
-    return args
-
-
-def blackdetect_intro_candidates(
-    path: Path,
-    duration_seconds: float = 0.0,
-    *,
-    video_fps: str = "",
-    cancel_event: threading.Event | None = None,
-    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-) -> list[IntroDetectionCandidate]:
-    ffmpeg = ffmpeg_path()
-    args = [
-        ffmpeg,
-        "-nostdin",
-        "-hide_banner",
-        "-nostats",
-        "-t",
-        str(INTRO_DETECTION_WINDOW_SECONDS),
-        *intro_ffmpeg_input_args(path, video_fps),
-        "-map",
-        "0:v:0?",
-        "-an",
-        "-sn",
-        "-vf",
-        "blackdetect=d=0.10:pic_th=0.98:pix_th=0.10",
-        "-f",
-        "null",
-        "-",
-    ]
-    output = run_intro_ffmpeg_analysis(
-        args,
-        cancel_event=cancel_event,
-        register_process=register_process,
-        unregister_process=unregister_process,
-    )
-    candidates: list[IntroDetectionCandidate] = []
-    for match in re.finditer(
-        r"black_start:(\d+(?:\.\d+)?)\s+black_end:(\d+(?:\.\d+)?)\s+black_duration:(\d+(?:\.\d+)?)",
-        output,
-    ):
-        black_start = parse_ffmpeg_float(match.group(1))
-        black_end = parse_ffmpeg_float(match.group(2))
-        black_duration = parse_ffmpeg_float(match.group(3))
-        if black_start is None or black_end is None or black_duration is None:
-            continue
-        if black_start < 18.0 or black_duration < 0.10:
-            continue
-        if not intro_candidate_is_valid(black_end, duration_seconds):
-            continue
-        score = 46.0 + min(black_duration, 2.0) * 8.0 + intro_common_time_bonus(black_end)
-        if black_duration >= 0.35:
-            score += 8.0
-        candidates.append(
-            IntroDetectionCandidate(
-                black_end,
-                score,
-                "blackdetect",
-                interval_start_seconds=black_start,
-            )
-        )
-    return top_intro_candidates(candidates, duration_seconds)
-
-
-def scenechange_intro_candidates(
-    path: Path,
-    duration_seconds: float = 0.0,
-    *,
-    video_fps: str = "",
-    cancel_event: threading.Event | None = None,
-    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-) -> list[IntroDetectionCandidate]:
-    """Find exact video cut timestamps that can refine another intro signal."""
-    ffmpeg = ffmpeg_path()
-    args = [
-        ffmpeg,
-        "-nostdin",
-        "-hide_banner",
-        "-nostats",
-        "-t",
-        str(INTRO_DETECTION_WINDOW_SECONDS),
-        *intro_ffmpeg_input_args(path, video_fps),
-        "-map",
-        "0:v:0?",
-        "-an",
-        "-sn",
-        "-vf",
-        "select='gt(scene,0.32)',showinfo",
-        "-f",
-        "null",
-        "-",
-    ]
-    output = run_intro_ffmpeg_analysis(
-        args,
-        cancel_event=cancel_event,
-        register_process=register_process,
-        unregister_process=unregister_process,
-    )
-
-    candidates: list[IntroDetectionCandidate] = []
-    seen_milliseconds: set[int] = set()
-    for match in re.finditer(r"pts_time:(\d+(?:\.\d+)?)", output):
-        seconds = parse_ffmpeg_float(match.group(1))
-        if seconds is None or not intro_candidate_is_valid(seconds, duration_seconds):
-            continue
-        key = int(round(seconds * 1000))
-        if key in seen_milliseconds:
-            continue
-        seen_milliseconds.add(key)
-        score = 27.0 + intro_common_time_bonus(seconds)
-        candidates.append(IntroDetectionCandidate(seconds, score, "scenechange"))
-
-    return candidates
-
-
-def silencedetect_intro_candidates(
-    path: Path,
-    duration_seconds: float = 0.0,
-    *,
-    cancel_event: threading.Event | None = None,
-    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-) -> list[IntroDetectionCandidate]:
-    ffmpeg = ffmpeg_path()
-    args = [
-        ffmpeg,
-        "-nostdin",
-        "-hide_banner",
-        "-nostats",
-        "-t",
-        str(INTRO_DETECTION_WINDOW_SECONDS),
-        *intro_ffmpeg_input_args(path),
-        "-map",
-        "0:a:0?",
-        "-vn",
-        "-sn",
-        "-dn",
-        "-af",
-        "silencedetect=noise=-35dB:d=0.45",
-        "-f",
-        "null",
-        "-",
-    ]
-    output = run_intro_ffmpeg_analysis(
-        args,
-        cancel_event=cancel_event,
-        register_process=register_process,
-        unregister_process=unregister_process,
-    )
-    candidates: list[IntroDetectionCandidate] = []
-    silence_start: float | None = None
-    for line in output.splitlines():
-        start_match = re.search(r"silence_start:\s*(\d+(?:\.\d+)?)", line)
-        if start_match is not None:
-            silence_start = parse_ffmpeg_float(start_match.group(1))
-            continue
-        end_match = re.search(
-            r"silence_end:\s*(\d+(?:\.\d+)?)\s*\|\s*silence_duration:\s*(\d+(?:\.\d+)?)",
-            line,
-        )
-        if end_match is None:
-            continue
-        silence_end = parse_ffmpeg_float(end_match.group(1))
-        silence_duration = parse_ffmpeg_float(end_match.group(2))
-        if silence_end is None or silence_duration is None:
-            continue
-        start = silence_start if silence_start is not None else silence_end - silence_duration
-        if start < 18.0 or silence_duration < 0.45 or silence_duration > 12.0:
-            continue
-        if not intro_candidate_is_valid(silence_end, duration_seconds):
-            continue
-        score = 34.0 + min(silence_duration, 2.5) * 8.0 + intro_common_time_bonus(silence_end)
-        if silence_duration >= 0.9:
-            score += 7.0
-        candidates.append(IntroDetectionCandidate(silence_end, score, "silencedetect"))
-    return top_intro_candidates(candidates, duration_seconds)
-
-
-def audio_rms_samples_for_intro(
-    path: Path,
-    *,
-    cancel_event: threading.Event | None = None,
-    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-) -> list[tuple[float, float]]:
-    ffmpeg = ffmpeg_path()
-    args = [
-        ffmpeg,
-        "-nostdin",
-        "-hide_banner",
-        "-nostats",
-        "-t",
-        str(INTRO_DETECTION_WINDOW_SECONDS),
-        *intro_ffmpeg_input_args(path),
-        "-map",
-        "0:a:0?",
-        "-vn",
-        "-sn",
-        "-dn",
-        "-af",
-        "aresample=8000,asetnsamples=n=8000:p=1,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level",
-        "-f",
-        "null",
-        "-",
-    ]
-    output = run_intro_ffmpeg_analysis(
-        args,
-        cancel_event=cancel_event,
-        register_process=register_process,
-        unregister_process=unregister_process,
-    )
-    samples: list[tuple[float, float]] = []
-    current_time: float | None = None
-    for line in output.splitlines():
-        time_match = re.search(r"pts_time:(\d+(?:\.\d+)?)", line)
-        if time_match is not None:
-            current_time = parse_ffmpeg_float(time_match.group(1))
-            continue
-        rms_match = re.search(
-            r"lavfi\.astats\.Overall\.RMS_level=([-+]?(?:inf|\d+(?:\.\d+)?))",
-            line,
-            flags=re.IGNORECASE,
-        )
-        if rms_match is None or current_time is None:
-            continue
-        raw = rms_match.group(1).lower()
-        rms = -90.0 if raw == "-inf" else parse_ffmpeg_float(raw)
-        if rms is None:
-            continue
-        samples.append((current_time, max(-90.0, min(0.0, rms))))
-    return samples
-
-
-def mean_value(values: list[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
-
-
-def audio_energy_intro_candidates(
-    path: Path,
-    duration_seconds: float = 0.0,
-    *,
-    cancel_event: threading.Event | None = None,
-    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-) -> list[IntroDetectionCandidate]:
-    samples = audio_rms_samples_for_intro(
-        path,
-        cancel_event=cancel_event,
-        register_process=register_process,
-        unregister_process=unregister_process,
-    )
-    if len(samples) < 80:
-        return []
-
-    candidates: list[IntroDetectionCandidate] = []
-    limit = intro_detection_limit_seconds(duration_seconds)
-    for seconds, _rms in samples:
-        if seconds < INTRO_DETECTION_MIN_SECONDS or seconds > limit:
-            continue
-        before = [rms for time_value, rms in samples if seconds - 55 <= time_value < seconds - 5]
-        after = [rms for time_value, rms in samples if seconds + 5 <= time_value < seconds + 55]
-        if len(before) < 20 or len(after) < 20:
-            continue
-        before_mean = mean_value(before)
-        after_mean = mean_value(after)
-        before_active = sum(1 for value in before if value > -42.0) / len(before)
-        after_active = sum(1 for value in after if value > -42.0) / len(after)
-        drop = before_mean - after_mean
-        active_drop = before_active - after_active
-        if drop < 3.0 and active_drop < 0.18:
-            continue
-        score = (
-            28.0
-            + max(0.0, drop) * 3.2
-            + max(0.0, active_drop) * 28.0
-            + intro_common_time_bonus(seconds)
-        )
-        candidates.append(IntroDetectionCandidate(seconds, min(score, 58.0), "audio-energy"))
-
-    return top_intro_candidates(candidates, duration_seconds)
-
-
-def intro_candidate_group(candidate: IntroDetectionCandidate) -> str:
-    if candidate.source == "subtitle-consensus":
-        return "dialogue-consensus"
-    if candidate.source.startswith("subtitle"):
-        return "subtitle"
-    if candidate.source in {"blackdetect", "scenechange"}:
-        return "video"
-    if candidate.source in {"silencedetect", "audio-energy"}:
-        return "audio"
-    return "other"
-
-
-def intro_candidate_is_media_boundary(candidate: IntroDetectionCandidate) -> bool:
-    return intro_candidate_group(candidate) in {"video", "audio"}
-
-
-def subtitle_starts_during_final_black_frames(
-    black: IntroDetectionCandidate,
-    subtitle: IntroDetectionCandidate,
-) -> bool:
-    """Recognize sustained dialogue that begins before the picture returns."""
-    return (
-        black.source == "blackdetect"
-        and black.interval_start_seconds is not None
-        and subtitle.source.startswith("subtitle")
-        and black.interval_start_seconds <= subtitle.seconds <= black.seconds
-        and black.seconds - subtitle.seconds <= INTRO_DETECTION_BLACK_SUBTITLE_CLUSTER_SECONDS
-    )
-
-
-def intro_boundary_anchor(
-    cluster: list[IntroDetectionCandidate],
-) -> IntroDetectionCandidate:
-    """Choose a confirmed dialogue start or media boundary, not an average."""
-    dialogue_over_black = [
-        subtitle
-        for black in cluster
-        for subtitle in cluster
-        if subtitle_starts_during_final_black_frames(black, subtitle)
-    ]
-    if dialogue_over_black:
-        # The story has already started audibly. Anchoring to black_end would
-        # skip the first spoken line when the image returns several seconds
-        # later.
-        return min(dialogue_over_black, key=lambda item: item.seconds)
-
-    non_scene = [item for item in cluster if item.source != "scenechange"]
-    center_items = non_scene or cluster
-    center = sum(item.seconds * max(item.score, 1.0) for item in center_items) / sum(
-        max(item.score, 1.0) for item in center_items
-    )
-
-    # blackdetect reports black_end and silencedetect reports silence_end; both
-    # are already end boundaries. Prefer them over a scene cut at the *start*
-    # of the transition, which would place the chapter slightly too early.
-    priority = {
-        "subtitle-consensus": -1,
-        "blackdetect": 0,
-        "silencedetect": 1,
-        "scenechange": 2,
-        "subtitle-gap": 3,
-        "subtitle-dialogue": 4,
-        "audio-energy": 5,
-    }
-    return min(
-        cluster,
-        key=lambda item: (priority.get(item.source, 9), abs(item.seconds - center)),
-    )
-
-
-def select_intro_detection_candidate(
-    candidates: list[IntroDetectionCandidate],
-    duration_seconds: float = 0.0,
-) -> IntroDetectionCandidate | None:
-    valid = [
-        candidate
-        for candidate in candidates
-        if intro_candidate_is_valid(candidate.seconds, duration_seconds)
-    ]
-    if not valid:
-        return None
-
-    clusters: list[list[IntroDetectionCandidate]] = []
-    for candidate in sorted(valid, key=lambda item: item.seconds):
-        placed = False
-        for cluster in reversed(clusters):
-            center = mean_value([item.seconds for item in cluster])
-            # Spoken dialogue may start over the final black frames before
-            # the first visible shot. Keep that subtitle cue with the black
-            # interval's end instead of treating the two as unrelated cuts.
-            black_subtitle_pair = any(
-                subtitle_starts_during_final_black_frames(candidate, item)
-                or subtitle_starts_during_final_black_frames(item, candidate)
-                for item in cluster
-            )
-            cluster_limit = (
-                INTRO_DETECTION_BLACK_SUBTITLE_CLUSTER_SECONDS
-                if black_subtitle_pair
-                else INTRO_DETECTION_CLUSTER_SECONDS
-            )
-            if abs(candidate.seconds - center) <= cluster_limit:
-                cluster.append(candidate)
-                placed = True
-                break
-            if candidate.seconds - center > INTRO_DETECTION_BLACK_SUBTITLE_CLUSTER_SECONDS:
-                break
-        if not placed:
-            clusters.append([candidate])
-
-    scored: list[IntroDetectionCandidate] = []
-    for cluster in clusters:
-        group_best: dict[str, IntroDetectionCandidate] = {}
-        for item in cluster:
-            group = intro_candidate_group(item)
-            current = group_best.get(group)
-            if current is None or item.score > current.score:
-                group_best[group] = item
-
-        evidence_groups = {group for group in group_best if group != "other"}
-        support_groups = evidence_groups & {"video", "audio", "dialogue-consensus"}
-
-        # One black frame, one silence, or one RMS drop is not enough. A valid
-        # boundary needs independent agreement. Two separately timed subtitle
-        # tracks can also confirm sustained early dialogue before media
-        # heuristics find a nearby cut or silence.
-        if len(evidence_groups) < 2 or not support_groups:
-            continue
-
-        ordered = sorted(
-            (item.score for group, item in group_best.items() if group != "other"),
-            reverse=True,
-        )
-        score = ordered[0]
-        if len(ordered) > 1:
-            score += ordered[1] * 0.48
-        if len(ordered) > 2:
-            score += ordered[2] * 0.24
-        score += (len(evidence_groups) - 1) * 8.0
-
-        cluster_time = mean_value([item.seconds for item in cluster])
-        if 45.0 <= cluster_time <= 180.0:
-            score += 8.0
-        elif cluster_time > 210.0:
-            score -= 14.0
-
-        anchor = intro_boundary_anchor(cluster)
-        scored.append(
-            IntroDetectionCandidate(
-                anchor.seconds,
-                score,
-                "+".join(sorted({item.source for item in cluster})),
-            )
-        )
-
-    if not scored:
-        return None
-
-    strongest = max(candidate.score for candidate in scored)
-    # A later scene can accumulate more subtitle/audio hints simply because
-    # dialogue and cuts are denser there. Once an earlier boundary has strong
-    # independent support, do not require it to nearly tie that later score.
-    threshold = max(INTRO_DETECTION_MIN_CONFIDENCE, strongest * 0.75)
-    plausible = [candidate for candidate in scored if candidate.score >= threshold]
-    if not plausible:
-        return None
-
-    # The intro end is normally the first strongly corroborated transition.
-    # Choosing the earliest near-best cluster prevents a later commercial-like
-    # silence or dark scene from replacing the real opening boundary.
-    return min(plausible, key=lambda candidate: candidate.seconds)
-
-
-def detect_intro_chapter_start_seconds(
-    items: list[TrackItem],
-    duration_seconds: float = 0.0,
-    *,
-    analysis_source: Path | None = None,
-    video_fps: str = "",
-    cancel_event: threading.Event | None = None,
-    register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-    unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
-) -> float:
-    candidates: list[IntroDetectionCandidate] = []
-    subtitle_candidates_by_track: list[list[IntroDetectionCandidate]] = []
-
-    # Sustained dialogue agreed by two subtitle tracks can establish an early
-    # boundary. Media analysis still runs to catch single-track cases.
-    for item in items:
-        if track_type_value(item) == 2 or media_kind_from_path(item.path) == "subtitle":
-            subtitle_candidates = subtitle_intro_candidates(item, duration_seconds)
-            subtitle_candidates_by_track.append(subtitle_candidates)
-            candidates.extend(subtitle_candidates)
-    subtitle_consensus = subtitle_consensus_intro_candidate(
-        subtitle_candidates_by_track,
-        duration_seconds,
-    )
-    if subtitle_consensus is not None:
-        candidates.append(subtitle_consensus)
-
-    source = analysis_source if analysis_source is not None and analysis_source.is_file() else None
-    if source is not None:
-        # In batch mode this is the original MKV/MP4. It preserves exact
-        # timestamps and avoids guessing from elementary .h264/.h265 streams.
-        audio_paths = [source]
-        video_paths = [source]
-    else:
-        audio_paths = intro_item_paths(items, track_type=0, media_kind="audio")
-        video_paths = intro_item_paths(items, track_type=1, media_kind="video")
-
-    try:
-        for path in video_paths:
-            candidates.extend(
-                blackdetect_intro_candidates(
-                    path,
-                    duration_seconds,
-                    video_fps=video_fps,
-                    cancel_event=cancel_event,
-                    register_process=register_process,
-                    unregister_process=unregister_process,
-                )
-            )
-        for path in audio_paths:
-            candidates.extend(
-                silencedetect_intro_candidates(
-                    path,
-                    duration_seconds,
-                    cancel_event=cancel_event,
-                    register_process=register_process,
-                    unregister_process=unregister_process,
-                )
-            )
-            candidates.extend(
-                audio_energy_intro_candidates(
-                    path,
-                    duration_seconds,
-                    cancel_event=cancel_event,
-                    register_process=register_process,
-                    unregister_process=unregister_process,
-                )
-            )
-
-        # Scene cuts are numerous, so use them only when they are close to an
-        # independently detected subtitle/audio/video signal.  This refines an
-        # approximate energy transition to the exact video frame boundary.
-        reference_candidates = [
-            candidate
-            for candidate in candidates
-            if intro_candidate_is_media_boundary(candidate)
-        ]
-        for path in video_paths:
-            for scene_candidate in scenechange_intro_candidates(
-                path,
-                duration_seconds,
-                video_fps=video_fps,
-                cancel_event=cancel_event,
-                register_process=register_process,
-                unregister_process=unregister_process,
-            ):
-                if any(
-                    abs(scene_candidate.seconds - reference.seconds)
-                    <= INTRO_DETECTION_CLUSTER_SECONDS
-                    for reference in reference_candidates
-                ):
-                    candidates.append(scene_candidate)
-    except OperationCancelled:
-        raise
-    except UserVisibleError:
-        pass
-
-    selected = select_intro_detection_candidate(candidates, duration_seconds)
-    return selected.seconds if selected is not None else 0.0
-
-
 def write_auto_chapters_file(
     path: Path,
     options: ChapterOptions,
     duration_seconds: float,
-    intro_start_seconds: float = 0.0,
 ) -> Path:
     name = options.name.strip()
     if not name:
@@ -6740,16 +6237,12 @@ def write_auto_chapters_file(
             raise UserVisibleError(ui_text("error_auto_chapter_end_required"))
         end_minutes = duration_seconds / 60
 
-    # Work in milliseconds, the precision written to the chapter file. This
-    # keeps every regular chapter on an exact interval boundary and avoids a
-    # duplicate when the intro ends on one of those boundaries.
+    # Work in milliseconds to keep chapters on exact interval boundaries.
     interval_ms = round(interval_minutes * 60_000)
     end_ms = round(end_minutes * 60_000)
-    intro_ms = round(intro_start_seconds * 1000)
     if interval_ms <= 0:
         raise UserVisibleError(ui_text("error_minutes_positive", label=ui_text("field_chapter_interval")))
-    use_intro = 0 < intro_ms <= end_ms
-    current_ms = intro_ms if use_intro else interval_ms * start_number
+    current_ms = interval_ms * start_number
     if current_ms > end_ms:
         raise UserVisibleError(ui_text("error_chapter_start_after_end"))
 
@@ -6760,13 +6253,7 @@ def write_auto_chapters_file(
         lines.append(f"{marker}={format_chapter_timestamp(current_ms / 1000)}")
         lines.append(f"{marker}NAME= {name} {chapter_number}")
         chapter_number += 1
-        if use_intro:
-            # The intro is a one-off chapter start. Continue at 10:00,
-            # 20:00, ... rather than adding the interval to the intro time.
-            current_ms = (intro_ms // interval_ms + 1) * interval_ms
-            use_intro = False
-        else:
-            current_ms += interval_ms
+        current_ms += interval_ms
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -6786,7 +6273,7 @@ def resolve_chapter_path(
     if not chapters_name:
         chapters_name = "chapters.txt"
 
-    chapters_path = media_dir / chapters_name
+    chapters_path = workspace_file_path(media_dir, chapters_name, "metadata", create=True)
     if chapters_path.exists():
         return chapters_path, []
 
@@ -6803,23 +6290,10 @@ def resolve_chapter_path(
                 unregister_process=unregister_process,
             )
 
-        intro_start_seconds = 0.0
-        if options.detect_intro:
-            intro_start_seconds = detect_intro_chapter_start_seconds(
-                items,
-                duration_seconds,
-                analysis_source=options.analysis_source,
-                video_fps=options.video_fps,
-                cancel_event=cancel_event,
-                register_process=register_process,
-                unregister_process=unregister_process,
-            )
-
         return write_auto_chapters_file(
             chapters_path,
             options,
             duration_seconds,
-            intro_start_seconds,
         ), []
 
     return None, [chapters_name]
@@ -6836,7 +6310,7 @@ def resolve_global_tags_path(
     if not tags_name:
         tags_name = "tags.xml"
 
-    tags_path = media_dir / tags_name
+    tags_path = workspace_file_path(media_dir, tags_name, "metadata")
     if tags_path.exists():
         return tags_path, []
 
@@ -6901,6 +6375,10 @@ def build_mkvmerge_args(
         raise OperationCancelled(ui_text("log_operation_cancelled"))
 
     args = [mkvmerge, "--output", str(output_path)]
+    if any(item.track.get("gtmceSourceTiming") for item in items):
+        # Laced audio frames derive intermediate timestamps from sample counts;
+        # standalone blocks preserve repeated/nonuniform source timestamps.
+        args.append("--disable-lacing")
     if title:
         args.extend(["--title", title])
 
@@ -7053,7 +6531,8 @@ def write_generated_config(
         attachments,
     )
 
-    generated_path = output_path.with_suffix(".generated.mtxcfg")
+    generated_path = (workspace_directory(media_dir, "control", create=True) / output_path.with_suffix(".generated.mtxcfg").name
+                      if workspace_layout(media_dir) is not None else output_path.with_suffix(".generated.mtxcfg"))
     generated_path.write_text(
         json.dumps(generated, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -7898,10 +7377,10 @@ def subtitle_destination_path(
         parts.append("sdh")
     parts.append(language)
     stem = ".".join(part for part in parts if part)
-    destination = target.media_dir / f"{stem}.srt"
+    destination = workspace_file_path(target.media_dir, f"{stem}.srt", "subtitle", create=True)
     counter = 2
     while destination.exists():
-        destination = target.media_dir / f"{stem}.{counter}.srt"
+        destination = workspace_file_path(target.media_dir, f"{stem}.{counter}.srt", "subtitle", create=True)
         counter += 1
     return destination
 
@@ -8464,7 +7943,7 @@ def ensure_tmdb_tags_file(
     *,
     replace_existing: bool = False,
 ) -> None:
-    tags_path = settings.media_dir / "tags.xml"
+    tags_path = workspace_file_path(settings.media_dir, "tags.xml", "metadata", create=True)
     if tags_path.exists() and not replace_existing:
         log(ui_text("log_tags_exists"))
         try:
@@ -8536,7 +8015,7 @@ def download_tmdb_assets(
 
     settings.media_dir.mkdir(parents=True, exist_ok=True)
 
-    cover = settings.media_dir / "cover.jpg"
+    cover = workspace_file_path(settings.media_dir, "cover.jpg", "artwork", create=True)
     cover_downloaded = download_optional_tmdb_image(
         client,
         poster,
@@ -8552,7 +8031,7 @@ def download_tmdb_assets(
             log(ui_text("log_cover_ready"))
         except UserVisibleError as exc:
             log(ui_text("log_file_prepare_skipped", name=cover.name, error=exc))
-    small_cover = settings.media_dir / "small_cover.jpg"
+    small_cover = workspace_file_path(settings.media_dir, "small_cover.jpg", "artwork", create=True)
     if cover.exists() and (replace_existing or not small_cover.exists()):
         try:
             make_small_cover(cover, small_cover)
@@ -8560,7 +8039,7 @@ def download_tmdb_assets(
         except UserVisibleError as exc:
             log(ui_text("log_small_cover_skipped", error=exc))
 
-    cover_land = settings.media_dir / "cover_land.jpg"
+    cover_land = workspace_file_path(settings.media_dir, "cover_land.jpg", "artwork", create=True)
     cover_land_downloaded = download_optional_tmdb_image(
         client,
         backdrop,
@@ -8576,7 +8055,7 @@ def download_tmdb_assets(
             log(ui_text("log_cover_land_ready"))
         except UserVisibleError as exc:
             log(ui_text("log_file_prepare_skipped", name=cover_land.name, error=exc))
-    small_cover_land = settings.media_dir / "small_cover_land.jpg"
+    small_cover_land = workspace_file_path(settings.media_dir, "small_cover_land.jpg", "artwork", create=True)
     if cover_land.exists() and (replace_existing or not small_cover_land.exists()):
         try:
             make_small_cover(cover_land, small_cover_land)
@@ -8587,7 +8066,7 @@ def download_tmdb_assets(
     download_optional_tmdb_image(
         client,
         logo,
-        settings.media_dir / "logo.png",
+        workspace_file_path(settings.media_dir, "logo.png", "artwork", create=True),
         "PNG",
         log,
         ui_text("log_logo_ready"),
@@ -8742,7 +8221,7 @@ def command_preview(args: list[str]) -> str:
 def ffmpeg_path() -> str:
     # Runtime media operations must start the already-installed executable
     # immediately.  Do not perform a network release check before every FFmpeg
-    # invocation; on Windows that can make intro detection appear frozen before
+    # invocation; on Windows that can stall media operations before
     # ffmpeg.exe is even spawned.  Automatic installation is only the fallback
     # when the executable is genuinely missing.
     ffmpeg = installed_third_party_tool_path("ffmpeg")
@@ -8779,7 +8258,7 @@ def audio_adjust_backup_path(path: Path) -> Path:
     input format without guessing, and the backup remains understandable when
     inspected in a file manager (``tur.source.ac3``).
     """
-    return path.with_name(f"{path.stem}.source{path.suffix}")
+    return _workspace.backup_path(path, f"{path.stem}.source{path.suffix}")
 
 
 def find_audio_adjust_source_backup(path: Path) -> Path | None:
@@ -8797,7 +8276,8 @@ def find_audio_adjust_source_backup(path: Path) -> Path | None:
     modern_prefix = f"{path.stem}.source."
     legacy_prefix = f"{path.name}.source"
     try:
-        candidates = sorted(path.parent.iterdir(), key=lambda item: item.name.casefold())
+        parents = {path.parent, modern.parent}
+        candidates = sorted((item for parent in parents if parent.is_dir() for item in parent.iterdir()), key=lambda item: item.name.casefold())
     except OSError:
         return None
     for candidate in candidates:
@@ -8811,10 +8291,10 @@ def find_audio_adjust_source_backup(path: Path) -> Path | None:
 def audio_adjust_original_path(backup_path: Path) -> Path:
     """Derive the original track name from modern or legacy backup names."""
     if backup_path.stem.endswith(".source"):
-        return backup_path.with_name(f"{backup_path.stem[:-7]}{backup_path.suffix}")
+        return _workspace.original_audio_path(backup_path, f"{backup_path.stem[:-7]}{backup_path.suffix}")
     legacy_match = re.fullmatch(r"(.+)\.source\d*", backup_path.name)
     if legacy_match:
-        return backup_path.with_name(legacy_match.group(1))
+        return _workspace.original_audio_path(backup_path, legacy_match.group(1))
     raise UserVisibleError(ui_text("error_audio_restore_missing", name=backup_path.name))
 
 
@@ -8827,6 +8307,7 @@ def prepare_audio_adjust_source(path: Path) -> tuple[Path, bool]:
         raise UserVisibleError(ui_text("error_asr_audio_missing", path=path))
     backup = audio_adjust_backup_path(path)
     try:
+        backup.parent.mkdir(parents=True, exist_ok=True)
         path.rename(backup)
     except OSError as exc:
         raise UserVisibleError(ui_text("error_file_prepare_failed", name=path.name, error=exc)) from exc
@@ -8842,6 +8323,7 @@ def upgrade_audio_adjust_backup_path(backup_path: Path) -> Path:
     if modern.exists():
         return backup_path
     try:
+        modern.parent.mkdir(parents=True, exist_ok=True)
         backup_path.rename(modern)
     except OSError:
         return backup_path
@@ -9286,9 +8768,8 @@ def run_audio_adjust_task(
         if task.delta_seconds > 0:
             lavfi = f"anullsrc=channel_layout={task.channel_layout}:sample_rate={task.sample_rate}"
             if needs_reencode:
-                managed_append = target.with_name(
-                    f"{target.stem}.delay-source{target.suffix}"
-                )
+                managed_append = _workspace.backup_path(target, f"{target.stem}.delay-source{target.suffix}")
+                managed_append.parent.mkdir(parents=True, exist_ok=True)
                 temporary_append = managed_append.with_name(
                     f".{managed_append.stem}.gtmce-adjust{managed_append.suffix}"
                 )
@@ -10020,6 +9501,8 @@ def build_extract_items(identify_payload: dict[str, Any], source: Path | None = 
                 track_type=track_type,
                 name_prefix_parts=tuple(prefix_parts),
                 name_suffix_parts=tuple(suffix_parts),
+                codec_delay_ns=int(track.get("properties", {}).get("codec_delay") or 0),
+                source_fps=fps if track_type == "video" else "",
             )
         )
 
@@ -10109,31 +9592,159 @@ def build_mkvextract_args(
     if track_items:
         args.append("tracks")
         args.extend(
-            f"{item.item_id}:{output_dir / item.output_name}"
+            f"{item.item_id}:{extracted_item_output_path(output_dir, item)}"
             for item in track_items
             if item.item_id is not None
         )
+        timing_items = [item for item in track_items if item.track_type in {"audio", "video"}]
+        if timing_items:
+            for item in timing_items:
+                extracted_track_timestamps_path(extracted_item_output_path(output_dir, item)).parent.mkdir(parents=True, exist_ok=True)
+            args.append("timestamps_v2")
+            args.extend(
+                f"{item.item_id}:{extracted_track_timestamps_path(extracted_item_output_path(output_dir, item))}"
+                for item in timing_items
+                if item.item_id is not None
+            )
 
     attachment_items = [item for item in selected if item.kind == "attachment"]
     if attachment_items:
         args.append("attachments")
         args.extend(
-            f"{item.item_id}:{output_dir / item.output_name}"
+            f"{item.item_id}:{extracted_item_output_path(output_dir, item)}"
             for item in attachment_items
             if item.item_id is not None
         )
 
     for item in selected:
         if item.kind == "chapters":
-            args.extend(["chapters", "--simple", str(output_dir / item.output_name)])
+            args.extend(["chapters", "--simple", str(extracted_item_output_path(output_dir, item))])
         elif item.kind == "tags":
-            args.extend(["tags", str(output_dir / item.output_name)])
+            args.extend(["tags", str(extracted_item_output_path(output_dir, item))])
 
     return args
 
 
+def detect_extract_container(source: Path) -> str:
+    """Inspect the actual file signature, never trust a renamed extension.
+
+    An EBML header identifies Matroska/WebM; an ISO-BMFF ``ftyp`` box
+    identifies MP4/MOV/M4V. Other nonempty headers are not Matroska.
+    An unreadable/missing/empty file keeps the old extension fallback so
+    test fixtures and unavailable files don't misidentify an unknown format.
+    """
+    try:
+        with source.open("rb") as stream:
+            header = stream.read(16)
+    except OSError:
+        return "unknown"
+    if not header:
+        return "unknown"
+    if header.startswith(b"\x1a\x45\xdf\xa3"):
+        return "matroska"
+    if len(header) >= 8 and header[4:8] == b"ftyp":
+        return "mp4"
+    return "other"
+
+
 def source_uses_mkvextract(source: Path) -> bool:
+    content_type = detect_extract_container(source)
+    if content_type != "unknown":
+        return content_type == "matroska"
     return source.suffix.lower() in MATROSKA_EXTRACT_EXTENSIONS
+
+
+def extract_container_mismatch(source: Path) -> str:
+    """Report only recognizable, mislabeled Matroska/MP4 content."""
+    actual = detect_extract_container(source)
+    if actual == "matroska" and source.suffix.lower() not in MATROSKA_EXTRACT_EXTENSIONS:
+        return "Matroska/WebM"
+    if actual == "mp4" and source.suffix.lower() in MATROSKA_EXTRACT_EXTENSIONS:
+        return "MP4/MOV"
+    return ""
+
+
+def identify_extract_source(source: Path) -> dict[str, Any]:
+    """Use real FFmpeg stream indexes when extracting non-Matroska media.
+
+    mkvmerge can identify MP4 tracks, but its track IDs need not match the
+    stream indexes used by ffmpeg's ``-map 0:N``. Retain its container/chapter
+    information, while taking the actual stream IDs from ffprobe.
+    """
+    payload = identify_mkv(source)
+    if source_uses_mkvextract(source):
+        return payload
+    ffprobe = ffprobe_path(auto_install=False)
+    if not ffprobe:
+        return payload
+    args = [ffprobe, "-v", "error", "-show_streams", "-of", "json", str(source)]
+    process = subprocess.run(
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        **subprocess_common_kwargs(), check=False,
+        env=third_party_subprocess_env(),
+        executable=third_party_subprocess_executable(args),
+    )
+    if process.returncode != 0 or not process.stdout.strip():
+        return payload
+    try:
+        probe = json.loads(process.stdout)
+    except json.JSONDecodeError:
+        return payload
+    tracks = []
+    for stream in probe.get("streams", []):
+        kind = stream.get("codec_type")
+        if kind not in {"video", "audio", "subtitle"}:
+            continue
+        # Cover art is not a normal video elementary stream.
+        flags = stream.get("disposition") or {}
+        if flags.get("attached_pic"):
+            continue
+        tags = stream.get("tags") or {}
+        codec = str(stream.get("codec_name") or "")
+        tracks.append({
+            "id": int(stream["index"]),
+            "type": "subtitles" if kind == "subtitle" else kind,
+            "codec": codec,
+            "properties": {
+                "language": tags.get("language") or "und",
+                "codec_id": codec.upper(),
+                "track_name": tags.get("title") or "",
+                "forced_track": flags.get("forced", 0),
+                "hearing_impaired": flags.get("hearing_impaired", 0),
+                "frame_rate": stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "",
+            },
+        })
+    if tracks:
+        payload = dict(payload)
+        payload["tracks"] = tracks
+    return payload
+
+
+def apply_extract_language_selection(
+    items: list[ExtractItem],
+    audio_languages: str,
+    subtitle_languages: str,
+    *,
+    audio_only: bool = False,
+    subtitle_only: bool = False,
+) -> None:
+    """Preselect requested audio/subtitle languages without hiding any tracks.
+
+    Video, chapters, tags and attachments retain their original selection.
+    Unknown language tracks are disabled unless the user explicitly lists und.
+    All rows remain manually toggleable in the extraction dialog.
+    """
+    audio_set = set(parse_language_order(audio_languages)) if audio_only else None
+    subtitle_set = set(parse_language_order(subtitle_languages)) if subtitle_only else None
+    for item in items:
+        if item.kind != "track":
+            continue
+        allowed = audio_set if item.track_type == "audio" else (
+            subtitle_set if item.track_type == "subtitles" else None
+        )
+        if allowed is not None:
+            language = normalise_extract_language_override(item.language) or "und"
+            item.selected = language in allowed
 
 
 def ffmpeg_extract_extension(item: ExtractItem) -> str:
@@ -10185,13 +9796,13 @@ def ffmpeg_extract_output_path(output_dir: Path, item: ExtractItem, used_paths: 
     stem = original.stem or "track"
 
     if original.suffix.lower().lstrip(".") == extension:
-        candidate = output_dir / original.name
+        candidate = extracted_item_output_path(output_dir, item, name=original.name)
     else:
-        candidate = output_dir / f"{stem}.{extension}"
+        candidate = extracted_item_output_path(output_dir, item, name=f"{stem}.{extension}")
 
     counter = 2
     while str(candidate).lower() in used_paths:
-        candidate = output_dir / f"{stem}.{counter}.{extension}"
+        candidate = extracted_item_output_path(output_dir, item, name=f"{stem}.{counter}.{extension}")
         counter += 1
     used_paths.add(str(candidate).lower())
     return candidate
@@ -10261,7 +9872,7 @@ def build_ffmpeg_extract_args(
 
     for item in selected:
         if item.kind == "chapters":
-            output_path = output_dir / item.output_name
+            output_path = extracted_item_output_path(output_dir, item)
             args.extend([
                 "-map_metadata",
                 "-1",
@@ -10272,7 +9883,7 @@ def build_ffmpeg_extract_args(
                 str(output_path),
             ])
         elif item.kind == "tags":
-            output_path = output_dir / item.output_name
+            output_path = extracted_item_output_path(output_dir, item)
             args.extend([
                 "-map_metadata",
                 "0",

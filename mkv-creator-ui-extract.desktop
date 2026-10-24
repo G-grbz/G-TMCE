@@ -11,24 +11,7 @@ ServiceTypes=KonqPopupMenu/Plugin
 X-KDE-ServiceTypes=KonqPopupMenu/Plugin
 X-KDE-Priority=TopLevel
 
-MimeType=application/octet-stream;video/*;
-
-Patterns=\
-*.mkv;\
-*.mk3d;\
-*.mka;\
-*.mks;\
-*.webm;\
-*.mp4;\
-*.m4v;\
-*.mov;\
-*.avi;\
-*.wmv;\
-*.mpg;\
-*.mpeg;\
-*.ts;\
-*.m2ts;\
-*.mts
+MimeType=video/*;audio/matroska;audio/x-matroska;audio/ogg;application/ogg;application/x-matroska;application/vnd.ms-asf;application/vnd.rn-realmedia;
 
 Icon=g-tmce
 

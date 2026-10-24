@@ -292,6 +292,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.video_fps_var = ValueVar(self.saved_preferences.get("video_fps", ""))
         self.audio_language_order_var = ValueVar(self.saved_preferences.get("audio_language_order", ""))
         self.subtitle_language_order_var = ValueVar(self.saved_preferences.get("subtitle_language_order", ""))
+        self.audio_extract_only_var = ValueVar(self.saved_preferences.get("audio_extract_only", "false") == "true")
+        self.subtitle_extract_only_var = ValueVar(self.saved_preferences.get("subtitle_extract_only", "false") == "true")
         self.include_extra_subs_var = ValueVar(True)
         self.add_tracks_before_mux_var = ValueVar(False)
         self.download_before_mux_var = ValueVar(True)
@@ -300,9 +302,6 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         )
         self.mux_tracks_download_missing_assets_var = ValueVar(False)
         self.auto_chapters_var = ValueVar(self.saved_preferences.get("auto_chapters", "false") == "true")
-        self.auto_chapter_detect_intro_var = ValueVar(
-            self.saved_preferences.get("auto_chapter_detect_intro", "false") == "true"
-        )
         self.chapter_interval_var = ValueVar(self.saved_preferences.get("chapter_interval_minutes", "10"))
         self.chapter_name_var = ValueVar(self.saved_preferences.get("chapter_name", ""))
         self.chapter_start_var = ValueVar(self.saved_preferences.get("chapter_start_number", "1"))
@@ -381,6 +380,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.mux_track_auto_excluded_append_keys_by_episode: dict[str, set[str]] = {}
         self.mux_batch_tasks: list[BatchEpisodeTask] = []
         self.mux_batch_settings: AppSettings | None = None
+        self.mux_active_episode_key = ""
+        self.mux_batch_session_key: tuple[tuple[str, str], ...] = ()
         self.batch_mux_track_customizations: dict[str, tuple[
             list[AdditionalMuxTrack], list[str], dict[str, str], dict[str, str],
             dict[str, tuple[Path, ...]], set[str], list[AdditionalMuxAsset], bool,
@@ -566,8 +567,21 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             self._refresh_tmdb_headers()
         if self.extract_window is not None:
             self._refresh_extract_headers()
+        if hasattr(self, "audio_extract_only_check"):
+            self.audio_extract_only_check.setToolTip(self.tr("tooltip_extract_only_listed"))
+            self.subtitle_extract_only_check.setToolTip(self.tr("tooltip_extract_only_listed"))
         if self.audio_adjust_window is not None:
             self._refresh_audio_headers()
+        if self.mux_tracks_window is not None:
+            for table in self.mux_tracks_window.findChildren(MuxTracksTable):
+                table.setHorizontalHeaderLabels([
+                    self.tr(key) for key in (
+                        "heading_selected", "heading_track_type", "label_track_language",
+                        "label_track_delay", "heading_audio_append", "heading_track_file",
+                        "heading_source_start", "heading_source_video_offset",
+                    )
+                ])
+            self._refresh_mux_source_timing()
         self.update_mux_track_toggle_button_text()
         self.update_audio_adjust_apply_button_text()
         self.update_extract_source_mode()
@@ -930,11 +944,29 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         audio_lbl = self._field_label("label_audio_order")
         form.addWidget(audio_lbl, row, 1)
         self.audio_order_entry = self._bind_line(self.audio_language_order_var, QLineEdit())
-        form.addWidget(self.audio_order_entry, row, 2, 1, 2)
+        audio_order_group = QHBoxLayout()
+        audio_order_group.setSpacing(6)
+        audio_order_group.addWidget(self.audio_order_entry, 1)
+        self.audio_extract_only_check = self._bind_check(self.audio_extract_only_var, QCheckBox())
+        self.localize_widget(self.audio_extract_only_check, "option_extract_only_listed")
+        self.audio_extract_only_check.setToolTip(self.tr("tooltip_extract_only_listed"))
+        audio_order_group.addWidget(self.audio_extract_only_check)
+        form.addLayout(audio_order_group, row, 2, 1, 2)
         sub_lbl = self._field_label("label_subtitle_order")
         form.addWidget(sub_lbl, row, 4)
         self.subtitle_order_entry = self._bind_line(self.subtitle_language_order_var, QLineEdit())
-        form.addWidget(self.subtitle_order_entry, row, 5, 1, 2)
+        subtitle_order_group = QHBoxLayout()
+        subtitle_order_group.setSpacing(6)
+        subtitle_order_group.addWidget(self.subtitle_order_entry, 1)
+        self.subtitle_extract_only_check = self._bind_check(self.subtitle_extract_only_var, QCheckBox())
+        self.localize_widget(self.subtitle_extract_only_check, "option_extract_only_listed")
+        self.subtitle_extract_only_check.setToolTip(self.tr("tooltip_extract_only_listed"))
+        subtitle_order_group.addWidget(self.subtitle_extract_only_check)
+        form.addLayout(subtitle_order_group, row, 5, 1, 2)
+        self.audio_extract_only_check.toggled.connect(lambda _checked: self._update_live_extract_selection("audio"))
+        self.subtitle_extract_only_check.toggled.connect(lambda _checked: self._update_live_extract_selection("subtitles"))
+        self.audio_order_entry.textChanged.connect(lambda _value: self._update_live_extract_selection("audio", only_when_enabled=True))
+        self.subtitle_order_entry.textChanged.connect(lambda _value: self._update_live_extract_selection("subtitles", only_when_enabled=True))
         fps_label = QLabel("Video FPS")
         fps_label.setObjectName("FieldLabel")
         form.addWidget(fps_label, row, 7)
@@ -985,9 +1017,6 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         end_edit = self._bind_line(self.chapter_end_var, QLineEdit())
         end_edit.setFixedWidth(72)
         chapter_row.addWidget(end_edit)
-        intro_check = self._bind_check(self.auto_chapter_detect_intro_var, QCheckBox())
-        self.localize_widget(intro_check, "option_detect_intro_end")
-        chapter_row.addWidget(intro_check)
         chapter_row.addStretch(1)
         form.addLayout(chapter_row, row, 1, 1, 9)
 
@@ -1090,6 +1119,17 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.ui_language_var.set(code)
         self.ui_language_display_var.set(UI_LANGUAGE_NAMES[code])
         set_active_ui_language(code)
+        # Update only an automatically suggested, not-yet-created destination.
+        # Existing workspaces and explicitly named folders keep their paths.
+        source_raw = self.extract_source_var.get().strip()
+        destination_raw = self.extract_output_dir_var.get().strip()
+        if source_raw and destination_raw:
+            source = Path(source_raw).expanduser()
+            destination = Path(destination_raw).expanduser()
+            base = source.name if source.is_dir() else source.stem
+            suggestions = [source.parent / f"{base}{suffix}" for suffix in ("_tracks", "_parçalar")]
+            if not destination.exists() and any(path_identity_key(destination) == path_identity_key(path) for path in suggestions):
+                self.extract_output_dir_var.set(str(self.default_extract_output_dir(source)))
         self.apply_qt_language()
         self.progress_status_var.set(self.tr("status_ready"))
         self.refresh_localized_text()
@@ -1149,8 +1189,9 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                     "video_fps": self.video_fps_var.get().strip(),
                     "audio_language_order": self.audio_language_order_var.get().strip(),
                     "subtitle_language_order": self.subtitle_language_order_var.get().strip(),
+                    "audio_extract_only": "true" if self.audio_extract_only_var.get() else "false",
+                    "subtitle_extract_only": "true" if self.subtitle_extract_only_var.get() else "false",
                     "auto_chapters": "true" if self.auto_chapters_var.get() else "false",
-                    "auto_chapter_detect_intro": "true" if self.auto_chapter_detect_intro_var.get() else "false",
                     "chapter_interval_minutes": self.chapter_interval_var.get().strip(),
                     "chapter_name": self.chapter_name_var.get().strip(),
                     "chapter_start_number": self.chapter_start_var.get().strip(),
@@ -1259,6 +1300,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         except UserVisibleError as exc:
             self.show_error(self.tr("dialog_missing_info"), str(exc))
 
+
     def open_initial_extract_source(self, source: Path) -> None:
         """Open a file supplied by the desktop/Open-With integration in Extract.
 
@@ -1325,6 +1367,10 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     # ------------------------------------------------------------------
     def open_mux_tracks_window(self, settings: AppSettings | None = None) -> None:
         try:
+            if self.batch_workspace_selected():
+                batch_settings, source_dir, _root, tasks = self.collect_batch_folder_settings(require_mux=True)
+                self.open_batch_mux_tracks_window(batch_settings, source_dir, tasks)
+                return
             settings = settings or self.collect_settings()
             rows = self.mux_track_window_rows(settings)
         except UserVisibleError as exc:
@@ -1335,7 +1381,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         dialog = QDialog(self)
         dialog.setObjectName("DialogRoot")
         dialog.setWindowTitle(f"{APP_NAME} - {self.tr('window_mux_tracks_title')}")
-        dialog.resize(1050, 560)
+        dialog.resize(1280, 560)
         self.mux_tracks_window = dialog
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -1344,6 +1390,9 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         layout.addWidget(card, 1)
         table = self._build_mux_tracks_table(rows)
         card_layout.addWidget(table, 1)
+        hint = self.localize_widget(QLabel(), "source_timing_hint")
+        hint.setObjectName("Muted"); hint.setWordWrap(True)
+        card_layout.addWidget(hint)
         controls = QHBoxLayout()
         add = self._button("button_add_tracks", self.add_mux_track_files)
         remove = self._button("button_remove_track", self.remove_selected_mux_track)
@@ -1369,10 +1418,11 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
 
     def _build_mux_tracks_table(self, rows: list[MuxTrackWindowRow]) -> MuxTracksTable:
         """Create one editable track table for the active episode."""
-        table = MuxTracksTable(0, 6)
+        table = MuxTracksTable(0, 8)
         table.setHorizontalHeaderLabels([
             self.tr("heading_selected"), self.tr("heading_track_type"), self.tr("label_track_language"),
-            self.tr("label_track_delay"), self.tr("heading_audio_append"), self.tr("heading_audio_file"),
+            self.tr("label_track_delay"), self.tr("heading_audio_append"), self.tr("heading_track_file"),
+            self.tr("heading_source_start"), self.tr("heading_source_video_offset"),
         ])
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -1390,6 +1440,12 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         table.setColumnWidth(4, 250)
         table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Interactive)
         table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        table.setColumnWidth(6, 185)
+        table.setColumnWidth(7, 195)
+        # Keep the stable file/key column index while placing timing beside it.
+        header = table.horizontalHeader()
+        for target, logical in enumerate((0, 1, 2, 5, 6, 7, 3, 4)):
+            header.moveSection(header.visualIndex(logical), target)
         self.mux_tracks_tree = table
         self.mux_tracks_rows_by_iid = {}
         self.mux_track_source_keys = {row.key for row in rows if not row.manual}
@@ -1398,14 +1454,14 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             self.mux_tracks_rows_by_iid[key] = row_model
             table.insertRow(index)
             use = QCheckBox(); use.setChecked(row_model.included)
-            use.toggled.connect(lambda checked, row_key=key: self._mux_row_inclusion_changed(row_key, checked))
+            use.toggled.connect(lambda checked, row_key=key, model=row_model: self._mux_row_inclusion_changed(row_key, checked, model))
             table.setCellWidget(index, 0, self._center_widget(use))
             table.setItem(index, 1, QTableWidgetItem(row_model.kind))
             lang = QLineEdit(row_model.language)
-            lang.editingFinished.connect(lambda row_key=key, editor=lang: self._mux_row_language_changed(row_key, editor.text()))
+            lang.editingFinished.connect(lambda row_key=key, editor=lang, model=row_model: self._mux_row_language_changed(row_key, editor.text(), model))
             table.setCellWidget(index, 2, self._table_editor_host(lang))
             delay = QLineEdit(row_model.delay); delay.setEnabled(row_model.delay_supported)
-            delay.editingFinished.connect(lambda row_key=key, editor=delay: self._mux_row_delay_changed(row_key, editor.text()))
+            delay.editingFinished.connect(lambda row_key=key, editor=delay, model=row_model: self._mux_row_delay_changed(row_key, editor.text(), model))
             table.setCellWidget(index, 3, self._table_editor_host(delay))
             table.setCellWidget(index, 4, self._build_mux_append_cell(row_model))
             item = QTableWidgetItem(self._mux_base_file_label(row_model)); item.setData(Qt.UserRole, key)
@@ -1429,27 +1485,30 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.mux_tracks_rows_by_episode = {}
         self.mux_track_source_keys_by_episode = {}
         self.mux_track_auto_excluded_append_keys_by_episode = {}
-        self.batch_mux_track_customizations = {}
-        self.additional_mux_tracks = []
-        self.additional_mux_assets = []
-        self.mux_track_order_keys = []
-        self.mux_track_language_overrides = {}
-        self.mux_track_delay_overrides = {}
-        self.mux_track_append_overrides = {}
-        self.mux_track_excluded_keys = set()
+        session_key = tuple((str(task.source.resolve()), str(task.extract_dir.resolve())) for task in tasks)
+        if self.mux_batch_session_key != session_key:
+            self.batch_mux_track_customizations = {}
+            self.mux_batch_session_key = session_key
 
         dialog = QDialog(self)
         dialog.setObjectName("DialogRoot")
         dialog.setWindowTitle(f"{APP_NAME} - {self.tr('window_mux_tracks_title')}")
-        dialog.resize(1050, 610)
+        dialog.resize(1280, 610)
         self.mux_tracks_window = dialog
         layout = QVBoxLayout(dialog); layout.setContentsMargins(16, 16, 16, 16); layout.setSpacing(10)
         card, card_layout = self._card("DialogCard"); layout.addWidget(card, 1)
         tabs = QTabWidget(); self.mux_tracks_tabs = tabs; card_layout.addWidget(tabs, 1)
+        episode_hint = self.localize_widget(QLabel(), "hint_batch_mux_tracks")
+        episode_hint.setObjectName("Muted"); episode_hint.setWordWrap(True)
+        card_layout.addWidget(episode_hint)
+        hint = self.localize_widget(QLabel(), "source_timing_hint")
+        hint.setObjectName("Muted"); hint.setWordWrap(True)
+        card_layout.addWidget(hint)
 
         for task in tasks:
             tab_label = f"{episode_code(task.episode_ref)} · {task.source.name}"
-            tabs.addTab(QWidget(), tab_label)
+            index = tabs.addTab(QWidget(), tab_label)
+            tabs.setTabToolTip(index, str(task.extract_dir))
 
         tabs.currentChanged.connect(self._activate_mux_batch_tab)
         self._activate_mux_batch_tab(0)
@@ -1476,13 +1535,21 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         page = self.mux_tracks_tabs.widget(index)
         if page is None:
             return
+        self._save_active_mux_batch_tab()
         table = page.findChild(MuxTracksTable)
         if table is None:
             if self.mux_batch_settings is None:
                 return
             episode_settings = copy.copy(self.mux_batch_settings)
             episode_settings.media_dir = task.extract_dir
-            rows = self.mux_track_window_rows(episode_settings)
+            try:
+                rows = self.mux_track_window_rows(episode_settings, batch_mode=True)
+            except UserVisibleError as exc:
+                self.mux_tracks_tree = None
+                self.mux_tracks_rows_by_iid = {}
+                self.mux_active_episode_key = ""
+                self.show_error(self.tr("dialog_missing_info"), f"{episode_code(task.episode_ref)}: {exc}")
+                return
             self.mux_track_auto_excluded_append_keys = set()
             table = self._build_mux_tracks_table(rows)
             page_layout = QVBoxLayout(page); page_layout.setContentsMargins(0, 0, 0, 0)
@@ -1494,6 +1561,35 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.mux_tracks_rows_by_iid = self.mux_tracks_rows_by_episode.get(key, {})
         self.mux_track_source_keys = self.mux_track_source_keys_by_episode.get(key, set())
         self.mux_track_auto_excluded_append_keys = self.mux_track_auto_excluded_append_keys_by_episode.get(key, set())
+        self.mux_active_episode_key = key
+        self._sync_mux_append_source_rows()
+
+    def _flush_mux_track_editors(self) -> None:
+        """Capture pending text before tab switches, table rebuilds or muxing."""
+        table = self.mux_tracks_tree
+        if table is None:
+            return
+        for index in range(table.rowCount()):
+            model = self._mux_model_for_row(index)
+            if model is None or model.asset_kind:
+                continue
+            host = table.cellWidget(index, 2)
+            editor = host.findChild(QLineEdit) if host is not None else None
+            if editor is not None:
+                model.language = normalise_mux_language(editor.text())
+            host = table.cellWidget(index, 3)
+            editor = host.findChild(QLineEdit) if host is not None else None
+            if editor is not None and model.delay_supported:
+                model.delay = editor.text().strip()
+
+    def _save_active_mux_batch_tab(self) -> None:
+        self._flush_mux_track_editors()
+        key = self.mux_active_episode_key
+        if not key:
+            return
+        self.mux_tracks_rows_by_episode[key] = self.mux_tracks_rows_by_iid
+        self.mux_track_source_keys_by_episode[key] = self.mux_track_source_keys
+        self.mux_track_auto_excluded_append_keys_by_episode[key] = self.mux_track_auto_excluded_append_keys
 
     @staticmethod
     def _center_widget(widget: QWidget) -> QWidget:
@@ -1561,6 +1657,9 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         model = self.mux_tracks_rows_by_iid.get(key)
         if row_index < 0 or model is None:
             return
+        previous = self.mux_tracks_tree.cellWidget(row_index, 4)
+        if previous is not None:
+            previous.hide()
         self.mux_tracks_tree.setCellWidget(row_index, 4, self._build_mux_append_cell(model))
         file_item = self.mux_tracks_tree.item(row_index, 5)
         if file_item is not None:
@@ -1613,6 +1712,44 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 checkbox.setEnabled(not is_append_source)
             self._style_mux_row(row_index, model.included)
             self._refresh_mux_append_cell(model.key)
+        self._refresh_mux_source_timing()
+
+    def _source_timing_tooltip(self, start: Decimal | None, codec_delay_ns: int = 0) -> str:
+        if start is None:
+            return self.tr("source_timing_unknown")
+        return self.tr(
+            "source_timing_tooltip", start=format(start, "f"),
+            codec_delay=format(Decimal(codec_delay_ns) / 1_000_000, "f"),
+        )
+
+    def _refresh_mux_source_timing(self) -> None:
+        table = self.mux_tracks_tree
+        if table is None:
+            return
+        reference = None
+        for row in range(table.rowCount()):
+            model = self._mux_model_for_row(row)
+            if model is not None and model.included and not model.asset_kind and media_kind_from_path(model.path) == "video":
+                reference = model.source_start_ms
+                break
+        for row in range(table.rowCount()):
+            model = self._mux_model_for_row(row)
+            if model is None:
+                continue
+            tooltip = self._source_timing_tooltip(model.source_start_ms, model.source_codec_delay_ns)
+            values = (
+                format_source_timestamp(model.source_start_ms),
+                format_source_offset(model.source_start_ms, reference),
+            )
+            for col, value in zip((6, 7), values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setToolTip(tooltip)
+                table.setItem(row, col, item)
+            delay_host = table.cellWidget(row, 3)
+            if delay_host is not None:
+                delay_host.setToolTip(self.tr("source_timing_hint"))
+            self._style_mux_row(row, model.included)
 
     def _mux_row_index(self, key: str) -> int:
         if self.mux_tracks_tree is None:
@@ -1642,19 +1779,20 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 return model
         return None
 
-    def _mux_row_inclusion_changed(self, key: str, checked: bool) -> None:
-        model = self.mux_tracks_rows_by_iid.get(key)
+    def _mux_row_inclusion_changed(self, key: str, checked: bool, model: MuxTrackWindowRow | None = None) -> None:
+        model = model if model is not None else self.mux_tracks_rows_by_iid.get(key)
         if model is None:
             return
         model.included = checked
-        self._sync_mux_append_source_rows()
+        if self.mux_tracks_rows_by_iid.get(key) is model:
+            self._sync_mux_append_source_rows()
 
     def _style_mux_row(self, row: int, active: bool) -> None:
         if self.mux_tracks_tree is None:
             return
         palette = palette_for(self.theme_mode)
         color = QColor(palette.text if active else palette.disabled)
-        for col in (1, 5):
+        for col in (1, 5, 6, 7):
             item = self.mux_tracks_tree.item(row, col)
             if item is not None:
                 item.setForeground(color)
@@ -1662,13 +1800,13 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 font.setStrikeOut(not active)
                 item.setFont(font)
 
-    def _mux_row_language_changed(self, key: str, value: str) -> None:
-        model = self.mux_tracks_rows_by_iid.get(key)
+    def _mux_row_language_changed(self, key: str, value: str, model: MuxTrackWindowRow | None = None) -> None:
+        model = model if model is not None else self.mux_tracks_rows_by_iid.get(key)
         if model is not None:
             model.language = normalise_mux_language(value)
 
-    def _mux_row_delay_changed(self, key: str, value: str) -> None:
-        model = self.mux_tracks_rows_by_iid.get(key)
+    def _mux_row_delay_changed(self, key: str, value: str, model: MuxTrackWindowRow | None = None) -> None:
+        model = model if model is not None else self.mux_tracks_rows_by_iid.get(key)
         if model is None:
             return
         value = value.strip()
@@ -1732,7 +1870,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self._rebuild_mux_table_from_models(selected_key=moved.key)
 
     def add_mux_track_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self.mux_tracks_window or self, self.tr("dialog_add_track_files_title"), self.folder_var.get() or str(APP_DIR), "Media / metadata files (*)")
+        initial = self.mux_active_episode_key or self.folder_var.get() or str(APP_DIR)
+        paths, _ = QFileDialog.getOpenFileNames(self.mux_tracks_window or self, self.tr("dialog_add_track_files_title"), initial, "Media / metadata files (*)")
         if paths:
             self.add_mux_track_paths([Path(path) for path in paths])
             self._rebuild_mux_table_from_models()
@@ -1762,6 +1901,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             if kind is None or path_identity_key(path) in existing:
                 continue
             key = self.mux_window_row_key(path)
+            timing = read_extracted_track_timing(path)
             self.mux_tracks_rows_by_iid[key] = MuxTrackWindowRow(
                 key=key,
                 path=path,
@@ -1771,12 +1911,15 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 delay_supported=kind in {"audio", "subtitle"},
                 manual=True,
                 included=True,
+                source_start_ms=timing["first_timestamp_ms"] if timing else None,
+                source_codec_delay_ns=timing["codec_delay_ns"] if timing else 0,
             )
             existing.add(path_identity_key(path))
 
     def _rebuild_mux_table_from_models(self, selected_key: str | None = None) -> None:
         if self.mux_tracks_tree is None:
             return
+        self._flush_mux_track_editors()
         models = list(self.mux_tracks_rows_by_iid.values())
         self.mux_tracks_tree.setRowCount(0)
         self.mux_tracks_rows_by_iid = {}
@@ -1784,12 +1927,12 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             self.mux_tracks_rows_by_iid[model.key] = model
             self.mux_tracks_tree.insertRow(idx)
             use = QCheckBox(); use.setChecked(model.included)
-            use.toggled.connect(lambda checked, key=model.key: self._mux_row_inclusion_changed(key, checked))
+            use.toggled.connect(lambda checked, key=model.key, row_model=model: self._mux_row_inclusion_changed(key, checked, row_model))
             self.mux_tracks_tree.setCellWidget(idx, 0, self._center_widget(use))
             self.mux_tracks_tree.setItem(idx, 1, QTableWidgetItem(model.kind))
-            lang = QLineEdit(model.language); lang.editingFinished.connect(lambda key=model.key, e=lang: self._mux_row_language_changed(key, e.text()))
+            lang = QLineEdit(model.language); lang.editingFinished.connect(lambda key=model.key, e=lang, row_model=model: self._mux_row_language_changed(key, e.text(), row_model))
             self.mux_tracks_tree.setCellWidget(idx, 2, self._table_editor_host(lang))
-            delay = QLineEdit(model.delay); delay.setEnabled(model.delay_supported); delay.editingFinished.connect(lambda key=model.key, e=delay: self._mux_row_delay_changed(key, e.text()))
+            delay = QLineEdit(model.delay); delay.setEnabled(model.delay_supported); delay.editingFinished.connect(lambda key=model.key, e=delay, row_model=model: self._mux_row_delay_changed(key, e.text(), row_model))
             self.mux_tracks_tree.setCellWidget(idx, 3, self._table_editor_host(delay))
             self.mux_tracks_tree.setCellWidget(idx, 4, self._build_mux_append_cell(model))
             file_item = QTableWidgetItem(self._mux_base_file_label(model))
@@ -1797,6 +1940,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             self.mux_tracks_tree.setItem(idx, 5, file_item)
             self._style_mux_row(idx, model.included)
         self._sync_mux_append_source_rows()
+        self._save_active_mux_batch_tab()
         if selected_key:
             selected_row = self._mux_row_index(selected_key)
             if selected_row >= 0:
@@ -1830,15 +1974,28 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     def confirm_mux_tracks_and_start_mux(self) -> None:
         if self.mux_tracks_tree is None:
             return
+        self._save_active_mux_batch_tab()
         if self.mux_batch_tasks:
+            customizations = dict(self.batch_mux_track_customizations)
             for task in self.mux_batch_tasks:
                 key = str(task.extract_dir.resolve())
+                if key not in self.mux_tracks_rows_by_episode:
+                    continue  # Unvisited episodes keep their own default/saved tracks.
                 rows = list(self.mux_tracks_rows_by_episode.get(key, {}).values())
                 active_rows = [row for row in rows if row.included]
                 active_tracks = [row for row in active_rows if not row.asset_kind]
                 active_assets = [row for row in active_rows if row.asset_kind]
                 source_keys = self.mux_track_source_keys_by_episode.get(key, set())
-                self.batch_mux_track_customizations[key] = (
+                try:
+                    if not active_tracks:
+                        raise UserVisibleError(self.tr("error_mux_no_files"))
+                    for row in active_tracks:
+                        if row.delay_supported:
+                            row.delay = normalise_mux_delay(row.delay)
+                except UserVisibleError as exc:
+                    self.show_error(self.tr("dialog_missing_info"), f"{episode_code(task.episode_ref)}: {exc}")
+                    return
+                customizations[key] = (
                     [AdditionalMuxTrack(row.path, normalise_mux_language(row.language), row.delay, row.append_paths)
                      for row in active_tracks if row.manual],
                     [row.key for row in active_tracks],
@@ -1850,6 +2007,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                      for row in active_assets if row.manual],
                     bool(self.mux_tracks_download_missing_assets_var.get()),
                 )
+            self.batch_mux_track_customizations = customizations
             self.close_mux_tracks_window()
             self.start_batch_mux_folder(skip_track_window=True)
             return
@@ -1864,6 +2022,13 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         active_rows = [row for row in ordered_rows if row.included]
         active_track_rows = [row for row in active_rows if not row.asset_kind]
         active_asset_rows = [row for row in active_rows if row.asset_kind]
+        try:
+            for row in active_track_rows:
+                if row.delay_supported:
+                    row.delay = normalise_mux_delay(row.delay)
+        except UserVisibleError as exc:
+            self.show_error(self.tr("dialog_missing_info"), str(exc))
+            return
         self.additional_mux_tracks = [
             AdditionalMuxTrack(row.path, normalise_mux_language(row.language), row.delay, row.append_paths)
             for row in active_track_rows if row.manual
@@ -1900,6 +2065,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.mux_track_auto_excluded_append_keys_by_episode = {}
         self.mux_batch_tasks = []
         self.mux_batch_settings = None
+        self.mux_active_episode_key = ""
 
     def update_mux_track_toggle_button_text(self) -> None:
         pass
@@ -2036,6 +2202,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         output_root = Path(output_root_raw).expanduser()
         if not output_root.is_dir():
             raise UserVisibleError(self.tr("error_subtitle_create_output_dir"))
+        output_root = workspace_directory(output_root, "subtitle", create=True)
         # AI output is never the plain language file: preserve original subtitles.
         first = output_root / f"{code}(ai).srt"
         if not first.exists():
@@ -2446,7 +2613,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         if not groups:
             self.show_info(self.tr("dialog_missing_info"), self.tr("error_audio_adjust_none")); return
         self.close_audio_adjust_window()
-        dialog = QDialog(self); dialog.setObjectName("DialogRoot"); dialog.setWindowTitle(f"{APP_NAME} - {self.tr('window_audio_adjust_title')}"); dialog.resize(1180, 560)
+        dialog = QDialog(self); dialog.setObjectName("DialogRoot"); dialog.setWindowTitle(f"{APP_NAME} - {self.tr('window_audio_adjust_title')}"); dialog.resize(1280, 560)
         self.audio_adjust_window = dialog
         layout = QVBoxLayout(dialog); layout.setContentsMargins(16,16,16,16); layout.setSpacing(10)
         card, card_layout = self._card("DialogCard"); layout.addWidget(card, 1)
@@ -2471,7 +2638,10 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
                 tabs.addTab(QWidget(), label)
             tabs.currentChanged.connect(self._activate_audio_adjust_tab)
             self._activate_audio_adjust_tab(0)
-        hint=QLabel(self.tr("audio_adjust_hint")); hint.setObjectName("Muted"); hint.setWordWrap(True); card_layout.addWidget(hint)
+        for key in ("source_timing_hint", "source_timing_audio_reference", "audio_adjust_hint"):
+            hint = self.localize_widget(QLabel(), key)
+            hint.setObjectName("Muted"); hint.setWordWrap(True)
+            card_layout.addWidget(hint)
         progress_layout=QVBoxLayout(); self.audio_adjust_progress_bar,_=self._dialog_progress_block(progress_layout)
         current_label = QLabel(); current_label.setObjectName("Muted"); current_label.setWordWrap(True)
         self.audio_adjust_current_var.bind(lambda value: current_label.setText(str(value)))
@@ -2503,6 +2673,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             label = QLabel(); label.setObjectName("TableHeading"); self.localize_widget(label,key); grid.addWidget(label,0,col); self._audio_heading_labels.append((label,key))
         grid.setColumnStretch(1,1)
         rows: list[dict[str, Any]] = []
+        video_starts: dict[Path, Decimal | None] = {}
         codec_values = sorted(SUPPORTED_AUDIO_ENCODERS)
         speed_values = [("auto", self.tr("speed_factor_auto"))] + [(key,self.tr(f"speed_factor_{key}")) for key in AUDIO_SPEED_FACTORS if key != "auto"]
         for r,item in enumerate(audio_items, start=1):
@@ -2511,8 +2682,14 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             delta.bind(lambda value, path=item.path: self.remember_audio_adjust_delta(path, value))
             bitrate=ValueVar(defaults["bitrate"]); rate=ValueVar(defaults["sample_rate"]); layout_var=ValueVar(defaults["channel_layout"]); volume=ValueVar(1.0); speed=ValueVar(speed_values[0][1])
             check=self._bind_check(selected,QCheckBox()); check.toggled.connect(self.update_audio_apply_all_button_state); grid.addWidget(check,r,0)
-            name=QLabel(item.path.name); name.setObjectName("FieldLabel"); grid.addWidget(name,r,1)
-            grid.addWidget(self._bind_line(delta,QLineEdit()),r,2)
+            name_host = QWidget(); name_layout = QVBoxLayout(name_host); name_layout.setContentsMargins(0, 0, 0, 0); name_layout.setSpacing(3)
+            name=QLabel(item.path.name); name.setObjectName("FieldLabel"); name.setWordWrap(True); name_layout.addWidget(name)
+            source_label = QLabel(); source_label.setObjectName("Muted"); source_label.setWordWrap(True); name_layout.addWidget(source_label)
+            name_host.setMinimumWidth(235)
+            grid.addWidget(name_host, r, 1)
+            delta_editor = self._bind_line(delta,QLineEdit())
+            delta_editor.setToolTip(self.tr("source_timing_hint") + "\n\n" + self.tr("source_timing_audio_reference"))
+            grid.addWidget(delta_editor,r,2)
             speed_combo=QComboBox(); speed_combo.addItems([label for _,label in speed_values]); self._bind_combo_text(speed,speed_combo); grid.addWidget(speed_combo,r,3)
             codec_combo=QComboBox(); codec_combo.setEditable(True); codec_combo.addItems(codec_values); self._bind_combo_text(codec,codec_combo); grid.addWidget(codec_combo,r,4)
             grid.addWidget(self._bind_line(bitrate,QLineEdit()),r,5); grid.addWidget(self._bind_line(rate,QLineEdit()),r,6); grid.addWidget(self._bind_line(layout_var,QLineEdit()),r,7)
@@ -2521,6 +2698,12 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             vh.addWidget(slider,1); vh.addWidget(value_label); grid.addWidget(volume_host,r,8)
             language = track_language_value(item) or "und"
             row_data = {"path":item.path,"language":language,"selected":selected,"delta":delta,"codec":codec,"bitrate":bitrate,"sample_rate":rate,"layout":layout_var,"volume":volume,"volume_slider":slider,"volume_label":value_label,"speed":speed,"speed_values":speed_values,"defaults":defaults,"name_label":name}
+            if item.path.parent not in video_starts:
+                video_starts[item.path.parent] = source_video_start_ms(item.path.parent)
+            row_data["source_video_start_ms"] = video_starts[item.path.parent]
+            row_data["source_timing_label"] = source_label
+            row_data["delta_editor"] = delta_editor
+            self._refresh_audio_source_timing(row_data)
             subtitle_host = QWidget(); subtitle_layout = QHBoxLayout(subtitle_host); subtitle_layout.setContentsMargins(0,0,0,0); subtitle_layout.setSpacing(6)
             subtitle_button = self._button("button_create_subtitle_from_audio", lambda _checked=False, row=row_data: self.prompt_audio_transcription(row))
             subtitle_button.setEnabled(language != "und")
@@ -2554,6 +2737,18 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         # between the header and editors.
         grid.setRowStretch(len(audio_items) + 1, 1)
         return scroll, rows
+
+    def _refresh_audio_source_timing(self, row: dict[str, Any]) -> None:
+        timing = audio_adjust_source_timing(Path(row["path"]))
+        start = timing["first_timestamp_ms"] if timing else None
+        row["source_start_ms"] = start
+        label = row["source_timing_label"]
+        label.setText(self.tr(
+            "source_timing_inline", start=format_source_timestamp(start),
+            offset=format_source_offset(start, row["source_video_start_ms"]),
+        ))
+        label.setToolTip(self._source_timing_tooltip(start, timing["codec_delay_ns"] if timing else 0))
+        row["delta_editor"].setToolTip(self.tr("source_timing_hint") + "\n\n" + self.tr("source_timing_audio_reference"))
 
     def _activate_audio_adjust_tab(self, index: int) -> None:
         """Build a batch episode's heavy audio controls only when it is opened."""
@@ -2688,6 +2883,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             label = row.get("name_label")
             if isinstance(label, QLabel):
                 label.setText(original.name)
+            self._refresh_audio_source_timing(row)
             subtitle_button = row.get("subtitle_button")
             translation_button = row.get("translation_button")
             if isinstance(subtitle_button, QPushButton):
@@ -3016,14 +3212,13 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.start_audio_transcription(row, quality_profile=quality_profile)
 
     def choose_existing_subtitle_for_ai(self, row: dict[str, Any]) -> Path | None:
-        """Choose an already extracted SRT next to the selected audio track.
+        """Choose an SRT from the selected audio track's workspace.
 
         Returning ``None`` means "use the normal Whisper/generated-source path".
-        The chooser intentionally stays in the media directory first because
-        extracted tracks are normally written there by G-TMCE.
+        Flat legacy folders and localized subtitle folders are both supported.
         """
         source = Path(row["path"])
-        folder = source.parent
+        folder = generated_subtitle_directory(source)
         generated = generated_subtitle_path(source, str(row.get("language") or "und"))
         candidates = sorted(
             (path for path in folder.glob("*.srt") if path.is_file()),
@@ -3372,6 +3567,8 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
 
     def _refresh_audio_headers(self) -> None:
         for label,key in getattr(self,"_audio_heading_labels",[]): label.setText(self.tr(key))
+        for row in self.audio_adjust_rows:
+            self._refresh_audio_source_timing(row)
 
     def mark_audio_adjust_done(self, source: Path, output: Path) -> None:
         """Keep a batch dialog usable after one row has been regenerated."""
@@ -3384,6 +3581,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             label = row.get("name_label")
             if isinstance(label, QLabel):
                 label.setText(output.name)
+            self._refresh_audio_source_timing(row)
             return
 
     def close_audio_adjust_window(self) -> None:
@@ -3586,6 +3784,29 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     def _clear_extract_refs(self) -> None:
         if self.extract_progress_bar in self._progress_bars: self._progress_bars.remove(self.extract_progress_bar)
         self.extract_window=None; self.extract_tree=None; self.extract_progress_bar=None; self.extract_toggle_button=None; self.extract_all_button=None; self.extract_button=None
+
+    def _update_live_extract_selection(self, track_type: str, *, only_when_enabled: bool = False) -> None:
+        """Apply changed defaults to visible rows; manual toggling remains possible."""
+        enabled = (self.audio_extract_only_var.get() if track_type == "audio"
+                   else self.subtitle_extract_only_var.get())
+        if only_when_enabled and not enabled:
+            return
+        if self.extract_items:
+            affected = [item for item in self.extract_items.values()
+                        if item.kind == "track" and item.track_type == track_type]
+            if enabled:
+                apply_extract_language_selection(
+                    affected, self.audio_language_order_var.get(),
+                    self.subtitle_language_order_var.get(),
+                    audio_only=track_type == "audio",
+                    subtitle_only=track_type == "subtitles",
+                )
+            else:
+                for item in affected:
+                    item.selected = True
+            self.populate_extract_tree()
+            self.update_extract_all_button_text()
+        self.save_preferences()
 
     def set_extract_items(self, items: list[ExtractItem]) -> None:
         self.extract_items={item.key:item for item in items}; self.ensure_extract_window(); self.populate_extract_tree(); self.update_extract_all_button_text()

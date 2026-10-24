@@ -116,7 +116,6 @@ def test_automatic_tmdb_lookup_tries_official_title_variant():
         include_extra_subtitles=False,
         download_before_mux=False,
         auto_chapters=False,
-        auto_chapter_detect_intro=False,
         chapter_interval_minutes="",
         chapter_name="",
         chapter_start_number="",
