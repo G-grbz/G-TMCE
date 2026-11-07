@@ -40,7 +40,7 @@ def batch(monkeypatch, tmp_path):
         paths.append(tracks)
     app.extract_source_var.set(str(source))
     app.extract_output_dir_var.set(str(root))
-    app.folder_var.set(str(paths[0]["tur.ac3"].parent.parent))
+    app.folder_var.set(str(paths[0]["tur.ac3"].parent))
     app.media_type_var.set("tv")
     app.media_type_display_var.set(app.tmdb_media_type_display("tv"))
     app.add_tracks_before_mux_var.set(True)
@@ -116,9 +116,9 @@ def test_confirmation_keeps_episode_customizations_isolated_and_unvisited_defaul
     monkeypatch.setattr(app, "start_batch_mux_folder", lambda **kwargs: started.append(kwargs))
     app.confirm_mux_tracks_and_start_mux()
     assert started == [{"skip_track_window": True}]
-    first = app.batch_mux_track_customizations_for(batch.paths[0]["tur.ac3"].parent.parent)
-    second = app.batch_mux_track_customizations_for(batch.paths[1]["tur.ac3"].parent.parent)
-    third = app.batch_mux_track_customizations_for(batch.paths[2]["tur.ac3"].parent.parent)
+    first = app.batch_mux_track_customizations_for(batch.paths[0]["tur.ac3"].parent)
+    second = app.batch_mux_track_customizations_for(batch.paths[1]["tur.ac3"].parent)
+    third = app.batch_mux_track_customizations_for(batch.paths[2]["tur.ac3"].parent)
     assert first[0][0].path == extra and first[0][0].delay == "75"
     assert first[3][core.path_identity_key(batch.paths[0]["tur.ac3"])] == "100"
     assert core.path_identity_key(batch.paths[0]["eng.ac3"]) in first[5]
@@ -127,7 +127,7 @@ def test_confirmation_keeps_episode_customizations_isolated_and_unvisited_defaul
     assert third == ([], [], {}, {}, {}, set(), [], False)
     # The mux worker consumes each episode's paths and overrides independently.
     for index, choices in enumerate((first, second, third)):
-        folder = batch.paths[index]["tur.ac3"].parent.parent
+        folder = batch.paths[index]["tur.ac3"].parent
         config = core.create_auto_template_config(folder)
         args, _ = core.build_mkvmerge_args(
             config, folder, folder / "output.mkv", "", True,
@@ -213,7 +213,7 @@ def test_add_file_picker_starts_in_active_episode(batch, monkeypatch):
     seen = []
     monkeypatch.setattr(ui.QFileDialog, "getOpenFileNames", lambda *args: (seen.append(args[2]) or [], ""))
     app.add_mux_track_files()
-    assert seen == [str(batch.paths[2]["tur.ac3"].parent.parent)]
+    assert seen == [str(batch.paths[2]["tur.ac3"].parent)]
 
 
 def test_unrelated_single_track_folder_does_not_route_to_batch(batch):
