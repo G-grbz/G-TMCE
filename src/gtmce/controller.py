@@ -1421,6 +1421,7 @@ class GTMCEControllerMixin:
                 )
                 if source_uses_mkvextract(task.source):
                     write_extracted_track_timing(task.extract_dir, extract_items)
+                    record_extracted_attachments(task.extract_dir, extract_items)
 
             first_task = tasks[0]
             first_title = batch_episode_preview_title(source_dir, first_task)
@@ -1841,6 +1842,7 @@ class GTMCEControllerMixin:
 
             if source_uses_mkvextract(source):
                 write_extracted_track_timing(output_dir, items)
+                record_extracted_attachments(output_dir, items)
 
             fps = first_video_fps_from_identify_payload(identify_extract_source(source), source) or first_video_fps_from_items(items)
             if fps:

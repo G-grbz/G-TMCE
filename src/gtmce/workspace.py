@@ -17,6 +17,15 @@ FOLDER_NAMES = {
            "episodes": "bölümler", "backups": "yedekler"},
 }
 
+# Version 1 placed editable assets in five separate folders.  Version 2
+# keeps the media, artwork, tags and chapters at the episode/workspace root;
+# only ancillary metadata remains in its localized directory.  Retain the
+# original folder names in the manifest so existing v1 workspaces can be read
+# without moving or rewriting user files.
+FLAT_MEDIA_KINDS = frozenset({"video", "audio", "subtitle", "artwork"})
+ROOT_METADATA_NAMES = frozenset({"chapters.txt", "tags.xml"})
+CURRENT_LAYOUT_VERSION = 2
+
 
 def layout_path(root: Path) -> Path:
     return root / ".gtmce" / "layout.json"
@@ -38,7 +47,7 @@ def read_layout(root: Path) -> dict[str, Any] | None:
         return None
     contained_path(root, ".gtmce/layout.json")
     data = json.loads(manifest.read_text(encoding="utf-8"))
-    if (not isinstance(data, dict) or data.get("version") != 1
+    if (not isinstance(data, dict) or data.get("version") not in (1, CURRENT_LAYOUT_VERSION)
             or not isinstance(data.get("language"), str) or data["language"] not in FOLDER_NAMES
             or not isinstance(data.get("mode"), str) or data["mode"] not in {"single", "batch"}
             or data.get("folders") != FOLDER_NAMES[data["language"]]):
@@ -58,6 +67,10 @@ def _directory_path(root: Path, relative: str | Path) -> Path:
 def directory(root: Path, kind: str, *, create: bool = False) -> Path:
     data = read_layout(root)
     if data is None:
+        return root
+    if data["version"] >= 2 and kind in FLAT_MEDIA_KINDS:
+        if create:
+            root.mkdir(parents=True, exist_ok=True)
         return root
     relative = ".gtmce" if kind == "control" else data["folders"][kind]
     if kind == "backups":
@@ -86,7 +99,7 @@ def ensure_layout(root: Path, language: str, *, mode: str = "single") -> dict[st
     control.mkdir(exist_ok=True)
     manifest = layout_path(root)
     temporary = control / ".layout.json.tmp"
-    data = {"version": 1, "language": language, "mode": mode, "folders": names}
+    data = {"version": CURRENT_LAYOUT_VERSION, "language": language, "mode": mode, "folders": names}
     with temporary.open("x", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False, indent=2)
         handle.write("\n")

@@ -2107,6 +2107,7 @@ TMDB_LOGO_CANVAS_SIZE = (800, 320)
 TMDB_LOGO_CONTENT_SIZE = (760, 280)
 TMDB_LOGO_MAX_BYTES = 512 * 1024
 FONT_ATTACHMENT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"}
+IMAGE_ATTACHMENT_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 MUX_UNKNOWN_LANGUAGE = "und"
 DEFAULT_OUTPUT_NAME = "output.mkv"
 RELEASE_STOP_TOKENS = {
@@ -5019,12 +5020,22 @@ def workspace_file_path(root: Path, name: str, kind: str | None = None, *, creat
     name = basename_from_config_path(name)
     if not name or Path(name).name != name:
         raise UserVisibleError(ui_text("error_workspace_layout", path=root, error="Invalid filename"))
+    layout = workspace_layout(root)
     if kind is None:
         kind = media_kind_from_path(Path(name))
         if kind is None:
-            kind = "artwork" if Path(name).suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2"} else "metadata"
-    folder = workspace_directory(root, kind, create=create)
-    if workspace_layout(root) is not None:
+            suffix = Path(name).suffix.lower()
+            kind = ("artwork" if suffix in IMAGE_ATTACHMENT_EXTENSIONS
+                    or (suffix in FONT_ATTACHMENT_EXTENSIONS and (layout is None or layout["version"] == 1))
+                    else "metadata")
+    # Editable Matroska tags/chapters belong alongside the raw tracks, not
+    # with ffmetadata dumps and other technical files in metadata/üstveri.
+    if (layout is not None and layout["version"] >= 2 and kind == "metadata"
+            and name.casefold() in _workspace.ROOT_METADATA_NAMES):
+        folder = root
+    else:
+        folder = workspace_directory(root, kind, create=create)
+    if layout is not None:
         try:
             return _workspace.contained_path(root, folder.relative_to(root) / name)
         except ValueError as exc:
@@ -5038,7 +5049,16 @@ def extracted_item_output_path(root: Path, item: ExtractItem, *, name: str | Non
         kind = "subtitle"
     if kind not in {"audio", "video", "subtitle", "artwork", "metadata"}:
         kind = "metadata"
-    return workspace_file_path(root, name or item.output_name, kind, create=True)
+    output_name = name or item.output_name
+    layout = workspace_layout(root)
+    if layout is not None and layout["version"] >= 2:
+        if item.kind == "attachment" and Path(output_name).suffix.casefold() not in IMAGE_ATTACHMENT_EXTENSIONS:
+            kind = "metadata"
+        elif item.kind in {"chapters", "tags"}:
+            # Even a collision-renamed chapter/tag filename stays editable at
+            # the root (v1 continues using its existing metadata directory).
+            kind = "artwork"
+    return workspace_file_path(root, output_name, kind, create=True)
 
 
 def generated_subtitle_directory(path: Path) -> Path:
@@ -5116,7 +5136,9 @@ def remove_audio_adjust_delay_manifest(path: Path) -> None:
 def discover_media_track_paths(media_dir: Path) -> list[Path]:
     roots = [media_dir]
     if workspace_layout(media_dir) is not None:
-        roots = [workspace_directory(media_dir, kind) for kind in ("video", "audio", "subtitle")]
+        # All three kinds resolve to the same root in v2.  Never yield three
+        # copies of each track to the muxer.
+        roots = list(dict.fromkeys(workspace_directory(media_dir, kind) for kind in ("video", "audio", "subtitle")))
     return sorted(
         (path for root in roots if root.is_dir() for path in root.iterdir() if is_media_track_path(path)),
         key=lambda item: item.name.lower(),
@@ -5591,10 +5613,24 @@ def discover_auto_attachment_paths(media_dir: Path) -> list[Path]:
             paths.append(path)
             used.add(str(path.resolve()).lower())
 
-    organized = workspace_layout(media_dir) is not None
+    layout = workspace_layout(media_dir)
+    organized = layout is not None
     attachment_root = workspace_directory(media_dir, "artwork")
-    for path in sorted(attachment_root.rglob("*"), key=lambda item: str(item).lower()):
-        if not path.is_file() or (not organized and path.suffix.lower() not in FONT_ATTACHMENT_EXTENSIONS):
+    if not attachment_root.is_dir():
+        return paths
+    flat_layout = layout is not None and layout["version"] >= 2
+    # In v2 artwork lives beside media tracks. Never recurse through the
+    # workspace root: doing so would attach audio, video and .gtmce sidecars
+    # to the remux as Matroska attachments.
+    candidates = (attachment_root.iterdir() if flat_layout else attachment_root.rglob("*"))
+    for path in sorted(candidates, key=lambda item: str(item).lower()):
+        if not path.is_file():
+            continue
+        if flat_layout and not path.resolve().is_relative_to(media_dir.resolve()):
+            continue
+        if flat_layout and path.suffix.lower() not in IMAGE_ATTACHMENT_EXTENSIONS | FONT_ATTACHMENT_EXTENSIONS:
+            continue
+        if not organized and path.suffix.lower() not in FONT_ATTACHMENT_EXTENSIONS:
             continue
         key = str(path.resolve()).lower()
         if key in used:
@@ -5602,7 +5638,56 @@ def discover_auto_attachment_paths(media_dir: Path) -> list[Path]:
         paths.append(path)
         used.add(key)
 
+    if flat_layout:
+        # Non-image MKV attachments (such as font files, XML or text files)
+        # are retained under metadata/üstveri. Only recorded extracted files
+        # and font files are candidates, never arbitrary metadata sidecars.
+        metadata_root = workspace_directory(media_dir, "metadata")
+        attachment_names = read_extracted_attachment_names(media_dir)
+        if metadata_root.is_dir():
+            for path in sorted(metadata_root.iterdir(), key=lambda item: item.name.casefold()):
+                if (not path.is_file() or path.suffix.casefold() not in FONT_ATTACHMENT_EXTENSIONS
+                        and path.name not in attachment_names):
+                    continue
+                if not path.resolve().is_relative_to(media_dir.resolve()):
+                    continue
+                key = str(path.resolve()).lower()
+                if key not in used:
+                    paths.append(path)
+                    used.add(key)
+
     return paths
+
+
+def read_extracted_attachment_names(media_dir: Path) -> set[str]:
+    """Only trust a list of basenames within this workspace's metadata dir."""
+    manifest = media_dir / ".gtmce" / "extracted-attachments.json"
+    try:
+        names = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(names, list):
+        return set()
+    return {name for name in names if isinstance(name, str) and name not in {".", ".."}
+            and Path(name).name == name and not name.startswith(".")}
+
+
+def record_extracted_attachments(media_dir: Path, items: list[ExtractItem]) -> None:
+    """Remember non-image attachments after successful extraction for remux."""
+    layout = workspace_layout(media_dir)
+    if layout is None or layout["version"] < 2:
+        return
+    selected = [item for item in items if item.selected and item.kind == "attachment"]
+    if not selected:
+        return
+    metadata_root = workspace_directory(media_dir, "metadata")
+    remembered = read_extracted_attachment_names(media_dir)
+    for item in selected:
+        path = extracted_item_output_path(media_dir, item)
+        if path.parent == metadata_root and path.is_file():
+            remembered.add(path.name)
+    manifest = workspace_directory(media_dir, "control", create=True) / "extracted-attachments.json"
+    atomic_write_private_text(manifest, json.dumps(sorted(remembered), ensure_ascii=False, indent=2) + "\n")
 
 
 def attachment_mime_type(path: Path) -> str:

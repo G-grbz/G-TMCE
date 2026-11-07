@@ -345,13 +345,13 @@ a reference even after an audio edit.
 
 ## Track Folder Naming Rules
 
-The selected track folder should contain one media track per file. Files extracted with G-TMCE are already named in the expected format. Select the workspace root, not its individual audio/video subfolder.
+The selected track folder should contain one media track per file. Files extracted with G-TMCE are already named in the expected format. Select the workspace root.
 
-New extractions organize tracks, subtitles, artwork and metadata into localized subfolders. The folder names follow the **interface language at creation**, not the audio/subtitle or TMDB language. English uses `video`, `audio`, `subtitles`, `artwork`, `metadata`; Turkish uses `video`, `ses`, `altyazılar`, `görseller`, `üstveri`. The default extraction folder suffix is `_tracks` in English and `_parçalar` in Turkish. `.gtmce/layout.json` records the chosen layout, so switching interface language later does not rename folders or lose tracks.
+New extractions keep **video, audio, subtitles, images, `tags.xml` and `chapters.txt` directly at the track folder root** for quick manual editing. Other extracted attachments and technical metadata are stored in `metadata/` (English) or `üstveri/` (Turkish). The default extraction folder suffix is `_tracks` in English and `_parçalar` in Turkish. `.gtmce/layout.json` records the chosen layout, so switching the UI language later does not rename folders or lose tracks.
 
-Completed single-file MKVs stay at the workspace root and are never rediscovered as source tracks. Batch extractions use `episodes` / `bölümler` for each episode workspace and collect completed MKVs under `output` / `çıktı`, with the existing season grouping retained. Source timing, generated mux configurations, audio-delay records and reversible audio originals live under `.gtmce/` (originals in `backups` / `yedekler`). Audio append names such as `tur.ac3`, `tur.1.ac3`, and `tur.2.ac3` are unchanged. Downloaded, transcribed and AI-translated subtitles use the subtitle subfolder.
+Completed single-file MKVs stay at the workspace root and are never rediscovered as source tracks. Batch extractions use `episodes` / `bölümler`; each episode workspace has the same flat editing layout, and completed MKVs are collected under `output` / `çıktı`, with existing season grouping retained. Source timing, generated mux configurations, audio-delay records and reversible audio originals live under `.gtmce/` (original audio in `.gtmce/backups/audio/` or `.gtmce/yedekler/ses/`). Even when audio is transcoded to a different format, only the new audio file is placed at the editable root; the original audio backup is kept inside that separate folder and can be restored. Audio append names such as `tur.ac3`, `tur.1.ac3`, and `tur.2.ac3` are unchanged. Downloaded, transcribed and AI-translated subtitles now go to the workspace root.
 
-Existing flat folders remain supported without moving or renaming their files. The localized folder layout is created automatically for new extractions; no separate organization action is required.
+Existing flat folders **and previous organized workspaces** remain supported without moving or renaming their files. The new flat layout is created automatically for new extractions; no separate organization action is required.
 
 Recommended naming style:
 
@@ -464,7 +464,7 @@ Cover artwork is normalized to Matroska cover-art sizes:
 - `cover.jpg` and `cover_land.jpg`: 600 px on the smallest side
 - `small_cover.jpg` and `small_cover_land.jpg`: 120 px on the smallest side
 
-Font files are attached automatically: use the artwork subfolder in organized workspaces. Legacy flat folders also support fonts directly in the track folder or inside subfolders.
+Font files are attached automatically: place them inside `metadata/` or `üstveri/` in new workspaces (or at the root). Previous organized workspaces continue supporting the artwork subfolder. Legacy flat folders also support fonts in subfolders.
 
 Supported font extensions: `.ttf` `.otf` `.ttc` `.otc` `.woff` `.woff2`
 
@@ -478,24 +478,21 @@ Font attachment notes:
 ```
 Movie.Name.2025_tracks/
   Movie.Name.2025.mkv         # completed output
-  video/
-    und.23.976.h265
-  audio/
-    en.eac3
-    tr.ac3
-  subtitles/
-    forced.en.srt
-    tr.ass
-  artwork/
-    cover.jpg
-    small_cover.jpg
-    cover_land.jpg
-    small_cover_land.jpg
-    logo.png
-    fonts/Arial.ttf
+  und.23.976.h265
+  en.eac3
+  tr.ac3
+  forced.en.srt
+  tr.ass
+  chapters.txt
+  tags.xml
+  cover.jpg
+  small_cover.jpg
+  cover_land.jpg
+  small_cover_land.jpg
+  logo.png
   metadata/
-    chapters.txt
-    tags.xml
+    Arial.ttf
+    other-extracted-attachment.txt
   .gtmce/                    # layout, timing, configs and reversible originals
 ```
 
