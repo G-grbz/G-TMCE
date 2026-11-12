@@ -132,3 +132,32 @@ def test_manual_tracks_and_language_switch_keep_source_fields(app, tmp_path):
     app.refresh_localized_text()
     assert app.mux_tracks_tree.horizontalHeaderItem(6).text() == "Source start (PTS)"
     assert "Source PTS" in app.audio_adjust_rows[0]["source_timing_label"].text()
+
+
+def test_audio_adjust_bitrate_and_rate_choices_follow_codec(app, tmp_path):
+    save_track(tmp_path, "tur.ac3", 0)
+    app.open_audio_adjust_window()
+    row = app.audio_adjust_rows[0]
+    bitrate_combo, rate_combo = row["bitrate_combo"], row["rate_combo"]
+    items = lambda combo: [combo.itemText(i) for i in range(combo.count())]
+
+    assert items(bitrate_combo) == [f"{v}k" for v in core.AUDIO_CODEC_BITRATES["ac3"]]
+    assert bitrate_combo.currentText() == "192k" and rate_combo.currentText() == "48000"
+
+    rate_combo.setCurrentText("44100")
+    assert row["sample_rate"].get() == "44100"
+    row["codec"].set("opus")
+    assert items(rate_combo) == [str(v) for v in core.AUDIO_CODEC_SAMPLE_RATES["opus"]]
+    assert row["sample_rate"].get() == "48000" and rate_combo.currentText() == "48000"
+
+    row["codec"].set("dts")
+    assert row["bitrate"].get() == "768k" and bitrate_combo.currentText() == "768k"
+
+    row["codec"].set("flac")
+    assert not bitrate_combo.isEnabled() and row["bitrate"].get() == ""
+
+    # Returning to the source codec restores the source bitrate.
+    row["codec"].set("ac3")
+    assert bitrate_combo.isEnabled() and row["bitrate"].get() == "192k"
+    bitrate_combo.setCurrentText("640k")
+    assert row["bitrate"].get() == "640k"

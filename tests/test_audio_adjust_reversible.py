@@ -103,3 +103,22 @@ def test_managed_delay_keeps_manual_numbered_audio_appends_in_order(tmp_path):
 
     assert roots == [base]
     assert append_paths[base.name.lower()] == (source, append_one, append_two)
+
+
+def test_codec_choices_keep_source_value_and_snap_invalid_values():
+    assert "317k" in core.audio_codec_bitrate_options("aac", "317k")
+    assert "317k" not in core.audio_codec_bitrate_options("aac")
+    assert core.snap_audio_bitrate("aac", "317k", "317k") == "317k"
+    assert core.snap_audio_bitrate("opus", "640k") == "510k"
+    assert core.snap_audio_bitrate("ac3", "") == "448k"
+    assert core.snap_audio_bitrate("flac", "900k") == ""
+    assert core.snap_audio_sample_rate("opus", "44100") == "48000"
+    assert core.snap_audio_sample_rate("dts", "96000") == "48000"
+
+
+def test_lossless_codec_ignores_bitrate_difference(tmp_path):
+    task = audio_task(tmp_path / "tur.flac", 0)
+    task.codec = task.original_codec = "flac"
+    task.bitrate, task.original_bitrate = "", "900k"
+    assert not core.audio_adjust_requires_reencode(task)
+    assert "-b:a" not in core.ffmpeg_audio_output_args(task)

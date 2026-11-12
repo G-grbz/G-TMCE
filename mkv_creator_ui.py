@@ -2691,13 +2691,21 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             delta_editor.setToolTip(self.tr("source_timing_hint") + "\n\n" + self.tr("source_timing_audio_reference"))
             grid.addWidget(delta_editor,r,2)
             speed_combo=QComboBox(); speed_combo.addItems([label for _,label in speed_values]); self._bind_combo_text(speed,speed_combo); grid.addWidget(speed_combo,r,3)
-            codec_combo=QComboBox(); codec_combo.setEditable(True); codec_combo.addItems(codec_values); self._bind_combo_text(codec,codec_combo); grid.addWidget(codec_combo,r,4)
-            grid.addWidget(self._bind_line(bitrate,QLineEdit()),r,5); grid.addWidget(self._bind_line(rate,QLineEdit()),r,6); grid.addWidget(self._bind_line(layout_var,QLineEdit()),r,7)
+            codec_combo=QComboBox(); codec_combo.addItems(codec_values); self._bind_combo_text(codec,codec_combo); grid.addWidget(codec_combo,r,4)
+            bitrate_combo=QComboBox(); rate_combo=QComboBox()
+            grid.addWidget(bitrate_combo,r,5); grid.addWidget(rate_combo,r,6); grid.addWidget(self._bind_line(layout_var,QLineEdit()),r,7)
             volume_host=QWidget(); volume_host.setMinimumHeight(32); vh=QHBoxLayout(volume_host); vh.setContentsMargins(0,3,0,3); slider=QSlider(Qt.Horizontal); slider.setMinimumHeight(26); slider.setRange(10,50); slider.setValue(10); value_label=QLabel("1.0x"); value_label.setMinimumWidth(42)
             slider.valueChanged.connect(lambda v,var=volume,lbl=value_label: (var.set(v/10.0), lbl.setText(f"{v/10.0:.1f}x")))
             vh.addWidget(slider,1); vh.addWidget(value_label); grid.addWidget(volume_host,r,8)
             language = track_language_value(item) or "und"
             row_data = {"path":item.path,"language":language,"selected":selected,"delta":delta,"codec":codec,"bitrate":bitrate,"sample_rate":rate,"layout":layout_var,"volume":volume,"volume_slider":slider,"volume_label":value_label,"speed":speed,"speed_values":speed_values,"defaults":defaults,"name_label":name}
+            row_data["bitrate_combo"] = bitrate_combo
+            row_data["rate_combo"] = rate_combo
+            # Codec first fills both pickers with encoder-valid choices, then the
+            # value bindings select (or, for presets, insert) the stored value.
+            codec.bind(lambda _value, row=row_data: self._refresh_audio_codec_choices(row))
+            self._bind_audio_choice_combo(bitrate, bitrate_combo)
+            self._bind_audio_choice_combo(rate, rate_combo)
             if item.path.parent not in video_starts:
                 video_starts[item.path.parent] = source_video_start_ms(item.path.parent)
             row_data["source_video_start_ms"] = video_starts[item.path.parent]
@@ -2737,6 +2745,75 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         # between the header and editors.
         grid.setRowStretch(len(audio_items) + 1, 1)
         return scroll, rows
+
+    @staticmethod
+    def _audio_choice_sort_key(text: str) -> float:
+        match = re.match(r"\d+(?:\.\d+)?", text)
+        return float(match.group(0)) if match else float("inf")
+
+    def _bind_audio_choice_combo(self, variable: ValueVar, combo: QComboBox) -> None:
+        """Bind a bitrate/sample-rate picker whose items depend on the codec."""
+        def apply(value: Any) -> None:
+            text = str(value if value is not None else "").strip()
+            blocker = QSignalBlocker(combo)
+            index = combo.findText(text) if text else -1
+            if text and index < 0 and combo.count():
+                # A preset copied from another episode may carry that track's
+                # source value; keep it selectable instead of silently dropping it.
+                key = self._audio_choice_sort_key(text)
+                position = next(
+                    (i for i in range(combo.count()) if self._audio_choice_sort_key(combo.itemText(i)) > key),
+                    combo.count(),
+                )
+                combo.insertItem(position, text)
+                index = position
+            combo.setCurrentIndex(index)
+            del blocker
+
+        variable.bind(apply)
+        combo.currentTextChanged.connect(variable.set)
+        self._bound_widgets.append(combo)
+
+    @staticmethod
+    def _fill_audio_choice_combo(combo: QComboBox, options: list[str], value: str) -> None:
+        blocker = QSignalBlocker(combo)
+        combo.clear()
+        combo.addItems(options)
+        combo.setCurrentIndex(combo.findText(value) if value else -1)
+        combo.setEnabled(bool(options))
+        del blocker
+
+    def _refresh_audio_codec_choices(self, row: dict[str, Any]) -> None:
+        """Limit bitrate and sample-rate choices to what the selected codec supports."""
+        codec = str(row["codec"].get() or "").strip().lower()
+        if codec not in SUPPORTED_AUDIO_ENCODERS:
+            return
+        defaults = row.get("defaults") or {}
+        same_codec = codec == str(defaults.get("codec") or "").strip().lower()
+        # Keep the source track's exact values available for its own codec so a
+        # delay-only edit does not force a re-encode just to land on a list value.
+        keep_bitrate = defaults.get("bitrate", "") if same_codec else ""
+        keep_rate = defaults.get("sample_rate", "") if same_codec else ""
+        bitrate_options = audio_codec_bitrate_options(codec, keep_bitrate)
+        rate_options = audio_codec_sample_rate_options(codec, keep_rate)
+        bitrate = snap_audio_bitrate(codec, row["bitrate"].get(), keep_bitrate)
+        rate = snap_audio_sample_rate(codec, row["sample_rate"].get(), keep_rate)
+        if same_codec:
+            original_bitrate = snap_audio_bitrate(codec, keep_bitrate, keep_bitrate)
+            if original_bitrate and str(row["bitrate"].get() or "").strip() not in bitrate_options:
+                bitrate = original_bitrate
+            original_rate = snap_audio_sample_rate(codec, keep_rate, keep_rate)
+            if keep_rate and str(row["sample_rate"].get() or "").strip() not in rate_options:
+                rate = original_rate
+        bitrate_combo = row.get("bitrate_combo")
+        rate_combo = row.get("rate_combo")
+        if isinstance(bitrate_combo, QComboBox):
+            self._fill_audio_choice_combo(bitrate_combo, bitrate_options, bitrate)
+            bitrate_combo.setToolTip("" if bitrate_options else self.tr("tooltip_audio_bitrate_lossless"))
+        if isinstance(rate_combo, QComboBox):
+            self._fill_audio_choice_combo(rate_combo, rate_options, rate)
+        row["bitrate"].set(bitrate)
+        row["sample_rate"].set(rate)
 
     def _refresh_audio_source_timing(self, row: dict[str, Any]) -> None:
         timing = audio_adjust_source_timing(Path(row["path"]))

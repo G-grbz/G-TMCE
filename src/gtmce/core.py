@@ -395,6 +395,7 @@ UI_TEXT = {
         "asr_quality_slow_hint": "High-accuracy large-v3; can use substantial CPU/RAM",
         "asr_quality_slower_hint": "large-v3 with wider, more patient beam search; highest CPU/RAM use",
         "tooltip_subtitle_language_required": "Set a language for this audio track before creating subtitles.",
+        "tooltip_audio_bitrate_lossless": "This codec is lossless/PCM; bitrate does not apply.",
         "tooltip_ai_translation": "Translate the generated subtitle locally with AI. Choose the target language after clicking; if no source subtitle exists, G-TMCE transcribes the audio first.",
         "dialog_ai_translation_language_title": "AI Translation",
         "dialog_ai_translation_language_label": "Translate to:",
@@ -828,6 +829,7 @@ UI_TEXT = {
         "asr_quality_slow_hint": "Yüksek doğruluklu large-v3; yüksek CPU/RAM kullanabilir",
         "asr_quality_slower_hint": "Daha geniş beam search kullanan large-v3; en yüksek CPU/RAM kullanımı",
         "tooltip_subtitle_language_required": "Altyazı oluşturmadan önce bu ses parçasına bir dil atanmalı.",
+        "tooltip_audio_bitrate_lossless": "Bu kodek kayıpsız/PCM; bitrate ayarı uygulanmaz.",
         "tooltip_ai_translation": "Oluşturulan altyazı metnini yerel AI ile çevirir. Tıklayınca hedef dil seçilir; kaynak altyazı yoksa önce ses yazıya dökülür.",
         "dialog_ai_translation_language_title": "AI Çeviri",
         "dialog_ai_translation_language_label": "Çevrilecek dil:",
@@ -2667,6 +2669,35 @@ FFMPEG_AUDIO_ENCODERS = {
     "flac": "flac",
     "opus": "libopus",
 }
+# Encoder-valid choices offered by the Ses Ayarla dialog.  Lossless/PCM codecs
+# have no bitrate control, so their list is empty and the bitrate is ignored.
+AUDIO_CODECS_WITHOUT_BITRATE = {"wav", "flac"}
+AUDIO_CODEC_BITRATES: dict[str, tuple[int, ...]] = {
+    "ac3": (96, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640),
+    "eac3": (96, 128, 192, 224, 256, 320, 384, 448, 512, 576, 640, 768, 1024, 1536),
+    "aac": (64, 96, 128, 160, 192, 224, 256, 320, 384, 448, 512),
+    "dts": (768, 960, 1152, 1344, 1536),
+    "mp3": (32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
+    "ogg": (64, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 500),
+    "opus": (32, 48, 64, 96, 128, 160, 192, 256, 320, 384, 448, 510),
+    "wav": (),
+    "flac": (),
+}
+AUDIO_CODEC_DEFAULT_BITRATES = {
+    "ac3": 448, "eac3": 640, "aac": 256, "dts": 1536, "mp3": 320, "ogg": 256, "opus": 192,
+}
+AUDIO_CODEC_SAMPLE_RATES: dict[str, tuple[int, ...]] = {
+    "ac3": (32000, 44100, 48000),
+    "eac3": (32000, 44100, 48000),
+    "aac": (8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000),
+    "dts": (8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000),
+    "mp3": (8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000),
+    "ogg": (8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000),
+    "opus": (8000, 12000, 16000, 24000, 48000),
+    "wav": (8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000),
+    "flac": (8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000),
+}
+AUDIO_DEFAULT_SAMPLE_RATE = 48000
 AUDIO_OUTPUT_SUFFIXES = {
     "ac3": ".ac3",
     "eac3": ".eac3",
@@ -8653,11 +8684,16 @@ def audio_adjust_requires_reencode(task: AudioAdjustTask) -> bool:
         return True
     if abs(task.speed_factor - 1.0) > 0.0001:
         return True
+    bitrate_pair = (
+        ("", "")
+        if normalise_audio_adjust_value(task.codec) in AUDIO_CODECS_WITHOUT_BITRATE
+        else (task.bitrate, task.original_bitrate)
+    )
     return any(
         normalise_audio_adjust_value(current) != normalise_audio_adjust_value(original)
         for current, original in (
             (task.codec, task.original_codec),
-            (task.bitrate, task.original_bitrate),
+            bitrate_pair,
             (task.sample_rate, task.original_sample_rate),
             (task.channel_layout, task.original_channel_layout),
         )
@@ -8702,13 +8738,78 @@ def audio_encoder_bitrate(task: AudioAdjustTask) -> str:
     return bitrate
 
 
+def _audio_choice_number(value: Any, parser: Callable[[str], int | None]) -> int | None:
+    try:
+        return parser(str(value or "").strip().lower())
+    except (TypeError, ValueError):
+        return None
+
+
+def _audio_sample_rate_number(value: str) -> int | None:
+    raw = value.removesuffix("hz").strip()
+    if raw.endswith("k"):
+        return round(float(raw[:-1]) * 1000)
+    return round(float(raw)) if raw else None
+
+
+def audio_codec_bitrate_options(codec: str, keep: Any = "") -> list[str]:
+    """Bitrates valid for ``codec``; ``keep`` adds the source value if it is off-list."""
+    codec = str(codec or "").strip().lower()
+    values = set(AUDIO_CODEC_BITRATES.get(codec, ()))
+    if values:
+        kept = _audio_choice_number(keep, audio_bitrate_kbps)
+        if kept:
+            values.add(kept)
+    return [f"{value}k" for value in sorted(values)]
+
+
+def audio_codec_sample_rate_options(codec: str, keep: Any = "") -> list[str]:
+    """Sample rates valid for ``codec``; ``keep`` adds the source value if it is off-list."""
+    codec = str(codec or "").strip().lower()
+    values = set(AUDIO_CODEC_SAMPLE_RATES.get(codec, (AUDIO_DEFAULT_SAMPLE_RATE,)))
+    kept = _audio_choice_number(keep, _audio_sample_rate_number)
+    if kept:
+        values.add(kept)
+    return [str(value) for value in sorted(values)]
+
+
+def _nearest_audio_choice(options: list[str], target: int | None, fallback: int, parser: Callable[[str], int | None]) -> str:
+    if not options:
+        return ""
+    numbers = {option: _audio_choice_number(option, parser) or 0 for option in options}
+    wanted = target if target else fallback
+    return min(options, key=lambda option: (abs(numbers[option] - wanted), -numbers[option]))
+
+
+def snap_audio_bitrate(codec: str, value: Any, keep: Any = "") -> str:
+    """Return ``value`` if valid for ``codec``, else the closest valid bitrate."""
+    codec = str(codec or "").strip().lower()
+    options = audio_codec_bitrate_options(codec, keep)
+    if not options:
+        return ""
+    current = _audio_choice_number(value, audio_bitrate_kbps)
+    if current and f"{current}k" in options:
+        return f"{current}k"
+    fallback = AUDIO_CODEC_DEFAULT_BITRATES.get(codec, 192)
+    return _nearest_audio_choice(options, current, fallback, audio_bitrate_kbps)
+
+
+def snap_audio_sample_rate(codec: str, value: Any, keep: Any = "") -> str:
+    """Return ``value`` if valid for ``codec``, else the closest valid sample rate."""
+    options = audio_codec_sample_rate_options(codec, keep)
+    current = _audio_choice_number(value, _audio_sample_rate_number)
+    if current and str(current) in options:
+        return str(current)
+    return _nearest_audio_choice(options, current, AUDIO_DEFAULT_SAMPLE_RATE, _audio_sample_rate_number)
+
+
 def ffmpeg_audio_output_args(task: AudioAdjustTask) -> list[str]:
     encoder = FFMPEG_AUDIO_ENCODERS[task.codec]
     args = ["-c:a", encoder]
     if task.codec == "dts":
         args.extend(["-strict", "-2"])
     bitrate = audio_encoder_bitrate(task)
-    if task.codec != "wav" and bitrate:
+    if task.codec not in AUDIO_CODECS_WITHOUT_BITRATE and bitrate:
         args.extend(["-b:a", bitrate])
     if task.sample_rate.strip():
         args.extend(["-ar", task.sample_rate.strip()])
