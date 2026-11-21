@@ -244,6 +244,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.log_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.log_lines: list[str] = []
         self.worker: threading.Thread | None = None
+        self._busy = False
         self.app_update_thread: threading.Thread | None = None
         self.app_update_url = APP_LATEST_RELEASE_URL
         self.current_operation: str | None = None
@@ -297,6 +298,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.include_extra_subs_var = ValueVar(True)
         self.add_tracks_before_mux_var = ValueVar(False)
         self.download_before_mux_var = ValueVar(True)
+        self.overwrite_tmdb_assets_var = ValueVar(False)
         self.context_menu_enabled_var = ValueVar(
             self.saved_preferences.get("context_menu_enabled", "false") == "true"
         )
@@ -986,11 +988,14 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         self.localize_widget(self.download_before_mux_checkbutton, "option_download_before_mux")
         self.download_before_mux_checkbutton.toggled.connect(lambda _v: self.update_download_before_mux_state())
         options.addWidget(self.download_before_mux_checkbutton)
+        self.overwrite_tmdb_assets_check = self._bind_check(self.overwrite_tmdb_assets_var, QCheckBox())
+        self.localize_widget(self.overwrite_tmdb_assets_check, "option_overwrite_tmdb_assets")
+        options.addWidget(self.overwrite_tmdb_assets_check)
         self.add_tracks_check = self._bind_check(self.add_tracks_before_mux_var, QCheckBox())
         self.localize_widget(self.add_tracks_check, "option_add_tracks_before_mux")
         options.addWidget(self.add_tracks_check)
         options.addStretch(1)
-        form.addLayout(options, row, 1, 1, 9)
+        form.addLayout(options, row, 0, 1, 10)
         row += 1
 
         form.addWidget(self._field_label("label_auto_chapters"), row, 0)
@@ -1077,7 +1082,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
     def _mux_button_clicked(self) -> None:
         if self.current_operation == "mux" and self.worker is not None and self.worker.is_alive():
             self.cancel_current_operation()
-        else:
+        elif not self._busy:
             self.start_mux()
 
     # ------------------------------------------------------------------
@@ -1361,6 +1366,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         if not has_api_key:
             self.download_before_mux_var.set(False)
         self.download_before_mux_checkbutton.setEnabled(has_api_key)
+        self.overwrite_tmdb_assets_check.setEnabled(has_api_key and not self._busy)
 
     # ------------------------------------------------------------------
     # Add-tracks dialog
@@ -4168,9 +4174,11 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
         # main Ses Ayarla button reachable while ASR is running so the user can
         # close the dialog, reopen it, and still cancel the active job. All other
         # long-running operations retain the normal global busy lock.
+        self._busy = busy
         buttons=(self.find_tmdb_button,self.tmdb_lookup_button,self.tmdb_search_action_button,self.download_button,self.subtitle_button,self.config_button,self.extract_scan_button,self.extract_toggle_button,self.extract_all_button,self.extract_button,self.batch_extract_button,self.batch_mux_button,self.third_party_button,self.subtitle_search_button,self.subtitle_download_button,self.subtitle_best_button)
         for button in buttons:
             if button is not None: button.setEnabled(not busy)
+        self.update_download_before_mux_state()
         if self.scan_button is not None:
             keep_audio_adjust_reachable = bool(
                 busy and self.current_operation == "audio_transcription"
@@ -4268,6 +4276,7 @@ class MkvCreatorApp(GTMCEControllerMixin, QMainWindow):
             elif kind=="set_output":self.output_var.set(str(self.output_path_with_current_name_extra(Path(str(value)))))
             elif kind=="set_batch_operation_current":self.batch_operation_current_var.set(str(value))
             elif kind=="set_tmdb_id":self.tmdb_id_var.set(str(value))
+            elif kind=="overwrite_tmdb_assets_used":self.overwrite_tmdb_assets_var.set(False)
             elif kind=="set_tmdb_search_results":self.set_tmdb_search_results(list(value))
             elif kind=="set_tmdb_search_status":self.tmdb_search_status_var.set(str(value))
             elif kind=="set_title":self.title_var.set(str(value))

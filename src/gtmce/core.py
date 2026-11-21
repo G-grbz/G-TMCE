@@ -275,7 +275,7 @@ UI_TEXT = {
         "log_file_not_found_skipped": "{name} was not found; skipped.",
         "log_file_prepare_skipped": "{name} could not be prepared; skipped: {error}",
         "log_file_exists_skipped": "{name} already exists; skipped.",
-        "log_tags_exists": "tags.xml already exists; checked.",
+        "log_tags_exists": "Kept existing tags.xml.",
         "log_tags_ready": "tags.xml is ready.",
         "log_tmdb_title": "TMDB title: {title}",
         "log_cover_ready": "cover.jpg is ready.",
@@ -339,6 +339,7 @@ UI_TEXT = {
         "option_include_extra_subtitles": "Include additional subtitles",
         "option_add_tracks_before_mux": "Add tracks before muxing",
         "option_download_before_mux": "Prepare artwork and tags before muxing",
+        "option_overwrite_tmdb_assets": "Overwrite once",
         "option_enable_extract_context_menu": "Enable Extract right-click menu",
         "tooltip_context_menu_unavailable": "Available in the Windows EXE and Linux AppImage (KDE Dolphin).",
         "option_download_missing_mux_assets": "Fill missing artwork/tags from TMDB",
@@ -585,6 +586,8 @@ UI_TEXT = {
         "error_mkvmerge_exit": "mkvmerge exited with error code: {code}",
         "error_output_delete_failed": "{name} could not be deleted: {error}",
         "log_mkvmerge_warnings": "mkvmerge completed with warnings.",
+        "error_mkvpropedit_exit": "Could not restore video frame duration (mkvpropedit exit code {code}).",
+        "log_mkvpropedit_warnings": "mkvpropedit completed with warnings.",
         "log_mkv_created": "MKV created: {path}",
         "log_batch_episode": "Batch episode {index}/{count}: {name}",
         "log_batch_extract_dir": "Episode tracks folder: {path}",
@@ -709,7 +712,7 @@ UI_TEXT = {
         "log_file_not_found_skipped": "{name} bulunamadı, atlandı.",
         "log_file_prepare_skipped": "{name} hazırlanamadı, atlandı: {error}",
         "log_file_exists_skipped": "{name} zaten var, atlandı.",
-        "log_tags_exists": "tags.xml zaten var, kontrol edildi.",
+        "log_tags_exists": "Mevcut tags.xml korundu.",
         "log_tags_ready": "tags.xml hazır.",
         "log_tmdb_title": "TMDB içerik: {title}",
         "log_cover_ready": "cover.jpg hazır.",
@@ -773,6 +776,7 @@ UI_TEXT = {
         "option_include_extra_subtitles": "Fazla altyazıları ekle",
         "option_add_tracks_before_mux": "MKV öncesi parça ekle",
         "option_download_before_mux": "MKV oluşturmadan önce görsel/tag hazırla",
+        "option_overwrite_tmdb_assets": "Bir kez üzerine yaz",
         "option_enable_extract_context_menu": "Extract sağ tık menüsünü etkinleştir",
         "tooltip_context_menu_unavailable": "Windows EXE ve Linux AppImage (KDE Dolphin) için kullanılabilir.",
         "option_download_missing_mux_assets": "Eksik görsel/tag TMDB'den tamamla",
@@ -1019,6 +1023,8 @@ UI_TEXT = {
         "error_mkvmerge_exit": "mkvmerge hata kodu ile bitti: {code}",
         "error_output_delete_failed": "{name} silinemedi: {error}",
         "log_mkvmerge_warnings": "mkvmerge uyarılarla tamamlandı.",
+        "error_mkvpropedit_exit": "Video kare süresi geri yüklenemedi (mkvpropedit hata kodu {code}).",
+        "log_mkvpropedit_warnings": "mkvpropedit uyarılarla tamamlandı.",
         "log_mkv_created": "MKV oluşturuldu: {path}",
         "log_batch_episode": "Toplu bölüm {index}/{count}: {name}",
         "log_batch_extract_dir": "Bölüm parça klasörü: {path}",
@@ -2639,6 +2645,7 @@ class ExtractItem:
     name_suffix_parts: tuple[str, ...] = ()
     codec_delay_ns: int = 0
     source_fps: str = ""
+    source_default_duration_ns: int = 0
 
 
 @dataclass
@@ -2713,16 +2720,18 @@ AUDIO_OUTPUT_SUFFIXES = {
 THIRD_PARTY_TOOL_GROUPS = {
     "mkvmerge": "mkvtoolnix",
     "mkvextract": "mkvtoolnix",
+    "mkvpropedit": "mkvtoolnix",
     "ffmpeg": "ffmpeg",
     "ffprobe": "ffmpeg",
 }
 THIRD_PARTY_GROUP_TOOLS = {
-    "mkvtoolnix": ("mkvmerge", "mkvextract"),
+    "mkvtoolnix": ("mkvmerge", "mkvextract", "mkvpropedit"),
     "ffmpeg": ("ffmpeg", "ffprobe"),
 }
 THIRD_PARTY_EXECUTABLE_NAMES = {
     "mkvmerge": "mkvmerge.exe" if os.name == "nt" else "mkvmerge",
     "mkvextract": "mkvextract.exe" if os.name == "nt" else "mkvextract",
+    "mkvpropedit": "mkvpropedit.exe" if os.name == "nt" else "mkvpropedit",
     "ffmpeg": "ffmpeg.exe" if os.name == "nt" else "ffmpeg",
     "ffprobe": "ffprobe.exe" if os.name == "nt" else "ffprobe",
 }
@@ -3322,13 +3331,14 @@ def cleanup_third_party_workdirs() -> None:
         remove_path(path)
 
 
-def third_party_group_installed(group: str) -> bool:
+def third_party_group_installed(group: str, *, require_mkvpropedit: bool = True) -> bool:
     if platform_name() == "linux" and group == "mkvtoolnix" and not mkvtoolnix_appdir_ready():
         return False
 
     tool_paths = [
         THIRD_PARTY_BIN_DIR / THIRD_PARTY_EXECUTABLE_NAMES.get(tool, tool)
         for tool in THIRD_PARTY_GROUP_TOOLS[group]
+        if require_mkvpropedit or tool != "mkvpropedit"
     ]
     if not all(path.exists() for path in tool_paths):
         return False
@@ -3446,8 +3456,7 @@ def install_mkvtoolnix_windows_zip(latest: dict[str, str]) -> dict[str, str]:
         THIRD_PARTY_BIN_DIR.mkdir(parents=True, exist_ok=True)
 
         required_files = {
-            "mkvmerge.exe",
-            "mkvextract.exe",
+            THIRD_PARTY_EXECUTABLE_NAMES[tool] for tool in THIRD_PARTY_GROUP_TOOLS["mkvtoolnix"]
         }
 
         required_patterns = (
@@ -3479,7 +3488,7 @@ def install_mkvtoolnix_windows_zip(latest: dict[str, str]) -> dict[str, str]:
             remove_path(destination)
             temporary.rename(destination)
 
-        for tool in ("mkvmerge", "mkvextract"):
+        for tool in THIRD_PARTY_GROUP_TOOLS["mkvtoolnix"]:
             candidate = THIRD_PARTY_BIN_DIR / THIRD_PARTY_EXECUTABLE_NAMES[tool]
             if not candidate.exists():
                 raise FileNotFoundError(candidate)
@@ -3570,7 +3579,9 @@ def install_third_party_group(group: str, latest: dict[str, str]) -> dict[str, s
     raise KeyError(group)
 
 
-def ensure_third_party_group(group: str, force_check: bool = False) -> dict[str, Any]:
+def ensure_third_party_group(
+    group: str, force_check: bool = False, *, require_mkvpropedit: bool = False,
+) -> dict[str, Any]:
     if group == "mkvtoolnix":
         try:
             migrate_legacy_third_party_links()
@@ -3584,7 +3595,7 @@ def ensure_third_party_group(group: str, force_check: bool = False) -> dict[str,
     if (
         not force_check
         and group in THIRD_PARTY_READY_GROUPS
-        and third_party_group_installed(group)
+        and third_party_group_installed(group, require_mkvpropedit=require_mkvpropedit)
     ):
         migrate_legacy_third_party_links()
         cleanup_third_party_workdirs()
@@ -3599,7 +3610,7 @@ def ensure_third_party_group(group: str, force_check: bool = False) -> dict[str,
     try:
         latest = latest_third_party_release(group)
     except UserVisibleError:
-        if third_party_group_installed(group):
+        if third_party_group_installed(group, require_mkvpropedit=require_mkvpropedit):
             THIRD_PARTY_READY_GROUPS.add(group)
             migrate_legacy_third_party_links()
             cleanup_third_party_workdirs()
@@ -3617,7 +3628,7 @@ def ensure_third_party_group(group: str, force_check: bool = False) -> dict[str,
             state[group] = install_third_party_group(group, latest)
             save_third_party_state(state)
         except UserVisibleError:
-            if third_party_group_installed(group):
+            if third_party_group_installed(group, require_mkvpropedit=require_mkvpropedit):
                 THIRD_PARTY_READY_GROUPS.add(group)
                 migrate_legacy_third_party_links()
                 cleanup_third_party_workdirs()
@@ -3674,7 +3685,7 @@ def third_party_tool_path(
     group = THIRD_PARTY_TOOL_GROUPS[tool_name]
     try:
         with THIRD_PARTY_LOCK:
-            ensure_third_party_group(group)
+            ensure_third_party_group(group, require_mkvpropedit=tool_name == "mkvpropedit")
     except UserVisibleError:
         if required:
             raise
@@ -5261,16 +5272,21 @@ def format_source_offset(value: Decimal | None, reference: Decimal | None) -> st
     return f"{difference:+.3f}".rstrip("0").rstrip(".")
 
 
+def timestamp_stretch_factor(stretch_by: str) -> Decimal:
+    numerator, _, denominator = (stretch_by or "1").partition("/")
+    factor = Decimal(numerator) / Decimal(denominator or "1")
+    if not factor.is_finite() or factor <= 0:
+        raise ValueError("Invalid timestamp stretch factor")
+    return factor
+
+
 def adjusted_extracted_timestamps(path: Path, offset_ms: int, stretch_by: str) -> Path:
     """External timestamps override --sync, so apply adjustments to the map."""
     timestamps = extracted_track_timestamps_path(path)
     if offset_ms == 0 and not stretch_by:
         return timestamps.resolve()
     try:
-        numerator, _, denominator = (stretch_by or "1").partition("/")
-        factor = Decimal(numerator) / Decimal(denominator or "1")
-        if not factor.is_finite() or factor <= 0:
-            raise ValueError("Invalid timestamp stretch factor")
+        factor = timestamp_stretch_factor(stretch_by)
         lines = []
         with timestamps.open(encoding="utf-8") as handle:
             for line in handle:
@@ -5311,6 +5327,7 @@ def write_extracted_track_timing(output_dir: Path, items: list[ExtractItem]) -> 
                 "timestamps_mtime_ns": timestamp_info.st_mtime_ns,
                 "codec_delay_ns": item.codec_delay_ns,
                 "source_fps": item.source_fps,
+                "source_default_duration_ns": item.source_default_duration_ns,
             }, ensure_ascii=False, indent=2) + "\n",
         )
 
@@ -5379,10 +5396,27 @@ def apply_extracted_track_timing(items: list[TrackItem]) -> None:
         item.track["gtmceSourceTiming"] = {
             "timestamps": item.track.get("timestamps"),
             "source_fps": str(data[1].get("source_fps") or "") if data else "",
+            "source_default_duration_ns": data[1].get("source_default_duration_ns", 0) if data else 0,
             "base_delay": base_delay,
             "effective_delay": effective_delay,
             "origin_bias_ms": origin_bias_ms,
         }
+
+
+def muxed_source_video_duration_ns(item: TrackItem) -> int:
+    timing = item.track.get("gtmceSourceTiming", {})
+    if not timing.get("timestamps"):
+        return 0
+    duration = timing.get("source_default_duration_ns")
+    if type(duration) is not int or duration <= 0:
+        # Older extraction manifests store the formatted frame rate only.
+        rate = str(timing.get("source_fps") or "")
+        fps = COMMON_FPS_RATES.get(rate) or parse_fps_rate(rate)
+        if not math.isfinite(fps) or fps <= 0:
+            return 0
+        duration = int(1_000_000_000 / fps)
+    stretch_by = str(item.track.get("stretchBy") or "").strip()
+    return int(Decimal(duration) * timestamp_stretch_factor(stretch_by))
 
 
 def append_part_number(path: Path) -> tuple[str, int] | None:
@@ -6453,6 +6487,8 @@ def build_mkvmerge_args(
     cancel_event: threading.Event | None = None,
     register_process: Callable[[subprocess.Popen[Any]], None] | None = None,
     unregister_process: Callable[[subprocess.Popen[Any]], None] | None = None,
+    *,
+    source_video_durations: dict[int, int] | None = None,
 ) -> tuple[list[str], list[str]]:
     if cancel_event is not None and cancel_event.is_set():
         raise OperationCancelled(ui_text("log_operation_cancelled"))
@@ -6484,6 +6520,13 @@ def build_mkvmerge_args(
         subtitle_language_order,
     )
     ordered = apply_custom_track_order(ordered, list(track_order_keys or []))
+    if source_video_durations is not None:
+        source_video_durations.clear()
+        videos = (item for item in ordered if is_video_entry(item.entry))
+        for track_number, item in enumerate(videos, start=1):
+            duration = muxed_source_video_duration_ns(item)
+            if duration > 0:
+                source_video_durations[track_number] = duration
 
     attachments, missing_attachments = discover_attachments(config, media_dir)
     missing_optional.extend(missing_attachments)
@@ -6548,6 +6591,21 @@ def build_mkvmerge_args(
         append_source_options(args, item)
 
     return args, sorted(set(missing_optional))
+
+
+def build_mkvpropedit_video_duration_args(output_path: Path, durations: dict[int, int]) -> list[str]:
+    if not durations:
+        return []
+    # With a v2 timestamp file, mkvmerge derives DefaultDuration from the
+    # quantized timestamps, even when given --default-duration. Restore only
+    # the header after muxing so the original packet times remain intact.
+    mkvpropedit = third_party_tool_path("mkvpropedit")
+    if not mkvpropedit:
+        raise UserVisibleError(ui_text("error_third_party_missing", name="mkvpropedit"))
+    args = [mkvpropedit, str(output_path.resolve())]
+    for track_number, duration in durations.items():
+        args.extend(["--edit", f"track:v{track_number}", "--set", f"default-duration={duration}"])
+    return args
 
 
 def rebuild_numbered_section(
@@ -8058,16 +8116,11 @@ def ensure_tmdb_tags_file(
     episode_ref: EpisodeRef | None = None,
     *,
     replace_existing: bool = False,
-) -> None:
+) -> bool:
     tags_path = workspace_file_path(settings.media_dir, "tags.xml", "metadata", create=True)
     if tags_path.exists() and not replace_existing:
         log(ui_text("log_tags_exists"))
-        try:
-            if ensure_app_credit_tags_file(tags_path, language):
-                log(ui_text("log_tags_ready"))
-        except (OSError, ValueError, ET.ParseError) as exc:
-            log(ui_text("log_file_prepare_skipped", name=tags_path.name, error=exc))
-        return
+        return False
 
     details = client.get_json(
         f"/{media_type}/{tmdb_id}",
@@ -8095,6 +8148,7 @@ def ensure_tmdb_tags_file(
     else:
         write_tmdb_tags_file(tags_path, details, media_type, tmdb_id, language)
     log(ui_text("log_tags_ready"))
+    return True
 
 
 def download_tmdb_assets(
@@ -8103,7 +8157,12 @@ def download_tmdb_assets(
     episode_ref: EpisodeRef | None = None,
     *,
     replace_existing: bool = False,
+    on_asset_written: Callable[[], None] | None = None,
 ) -> tuple[str, str]:
+    def report_asset_written() -> None:
+        if on_asset_written is not None:
+            on_asset_written()
+
     client = TMDBClient(settings.api_key)
     language = normalise_language(settings.image_language)
     tag_language = normalise_language(settings.tag_language)
@@ -8142,6 +8201,7 @@ def download_tmdb_assets(
         replace_existing=replace_existing,
     )
     if cover_downloaded:
+        report_asset_written()
         try:
             resize_jpeg_cover_art(cover, cover, NORMAL_COVER_SMALLEST_SIDE)
             log(ui_text("log_cover_ready"))
@@ -8151,6 +8211,7 @@ def download_tmdb_assets(
     if cover.exists() and (replace_existing or not small_cover.exists()):
         try:
             make_small_cover(cover, small_cover)
+            report_asset_written()
             log(ui_text("log_small_cover_ready"))
         except UserVisibleError as exc:
             log(ui_text("log_small_cover_skipped", error=exc))
@@ -8166,6 +8227,7 @@ def download_tmdb_assets(
         replace_existing=replace_existing,
     )
     if cover_land_downloaded:
+        report_asset_written()
         try:
             resize_jpeg_cover_art(cover_land, cover_land, NORMAL_COVER_SMALLEST_SIDE)
             log(ui_text("log_cover_land_ready"))
@@ -8175,11 +8237,12 @@ def download_tmdb_assets(
     if cover_land.exists() and (replace_existing or not small_cover_land.exists()):
         try:
             make_small_cover(cover_land, small_cover_land)
+            report_asset_written()
             log(ui_text("log_small_cover_land_ready"))
         except UserVisibleError as exc:
             log(ui_text("log_small_cover_land_skipped", error=exc))
 
-    download_optional_tmdb_image(
+    logo_downloaded = download_optional_tmdb_image(
         client,
         logo,
         workspace_file_path(settings.media_dir, "logo.png", "artwork", create=True),
@@ -8189,8 +8252,10 @@ def download_tmdb_assets(
         replace_existing=replace_existing,
         fixed_tmdb_logo=True,
     )
+    if logo_downloaded:
+        report_asset_written()
 
-    ensure_tmdb_tags_file(
+    tags_written = ensure_tmdb_tags_file(
         settings,
         client,
         media_type,
@@ -8200,6 +8265,8 @@ def download_tmdb_assets(
         episode_ref=episode_ref if media_type == "tv" else None,
         replace_existing=replace_existing,
     )
+    if tags_written:
+        report_asset_written()
 
     if media_type == "tv" and episode_ref is not None:
         episode_details = client.get_json(
@@ -9356,18 +9423,20 @@ def parse_duration_seconds(value: Any) -> float:
     return 0.0
 
 
+COMMON_FPS_RATES = {
+    "23.976": 24000 / 1001,
+    "24": 24,
+    "25": 25,
+    "29.970": 30000 / 1001,
+    "30": 30,
+    "50": 50,
+    "59.940": 60000 / 1001,
+    "60": 60,
+}
+
+
 def format_fps_value(fps: float) -> str:
-    common = [
-        (24000 / 1001, "23.976"),
-        (24, "24"),
-        (25, "25"),
-        (30000 / 1001, "29.970"),
-        (30, "30"),
-        (50, "50"),
-        (60000 / 1001, "59.940"),
-        (60, "60"),
-    ]
-    for expected, label in common:
+    for label, expected in COMMON_FPS_RATES.items():
         if abs(fps - expected) < 0.02:
             return label
     if abs(fps - round(fps)) < 0.01:
@@ -9689,6 +9758,10 @@ def build_extract_items(identify_payload: dict[str, Any], source: Path | None = 
                 name_suffix_parts=tuple(suffix_parts),
                 codec_delay_ns=int(track.get("properties", {}).get("codec_delay") or 0),
                 source_fps=fps if track_type == "video" else "",
+                source_default_duration_ns=(
+                    int(track.get("properties", {}).get("default_duration") or 0)
+                    if use_mkvextract and track_type == "video" else 0
+                ),
             )
         )
 

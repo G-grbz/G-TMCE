@@ -1032,6 +1032,28 @@ class GTMCEControllerMixin:
             raise UserVisibleError(ui_text("error_tmdb_id_numeric"))
         return settings, source_dir, extract_root, tasks
 
+    def tmdb_asset_preparer(self) -> Callable[..., tuple[str, str]]:
+        # All episodes in this job share the selection. The first write clears it for the next job.
+        replace_existing = self.overwrite_tmdb_assets_var.get()
+        overwrite_used = False
+
+        def consume_overwrite() -> None:
+            nonlocal overwrite_used
+            if not overwrite_used:
+                overwrite_used = True
+                self.log_queue.put(("overwrite_tmdb_assets_used", None))
+
+        def prepare(settings: AppSettings, episode_ref: EpisodeRef | None = None) -> tuple[str, str]:
+            return download_tmdb_assets(
+                settings,
+                self.queue_log,
+                episode_ref=episode_ref,
+                replace_existing=replace_existing,
+                on_asset_written=consume_overwrite if replace_existing else None,
+            )
+
+        return prepare
+
     def start_download(self) -> None:
         try:
             batch_settings = self.collect_batch_asset_download_settings()
@@ -1044,6 +1066,7 @@ class GTMCEControllerMixin:
             self.show_error(self.tr("dialog_missing_info"), str(exc))
             return
 
+        prepare_assets = self.tmdb_asset_preparer()
         if batch_settings is not None:
             def batch_work() -> None:
                 for index, task in enumerate(tasks, start=1):
@@ -1059,23 +1082,14 @@ class GTMCEControllerMixin:
                     self.queue_log(self.tr("log_batch_extract_dir", path=task.extract_dir))
                     episode_settings = copy.copy(settings)
                     episode_settings.media_dir = task.extract_dir
-                    download_tmdb_assets(
-                        episode_settings,
-                        self.queue_log,
-                        episode_ref=task.episode_ref,
-                        replace_existing=True,
-                    )
+                    prepare_assets(episode_settings, task.episode_ref)
                 self.queue_log(self.tr("log_batch_assets_complete", count=len(tasks)))
 
             self.run_background(batch_work, self.tr("status_downloading_assets"))
             return
 
         def work() -> None:
-            title, tmdb_year = download_tmdb_assets(
-                settings,
-                self.queue_log,
-                replace_existing=True,
-            )
+            title, tmdb_year = prepare_assets(settings)
             if title:
                 output_path = output_path_with_optional_year(
                     tmdb_output_path(settings.media_dir, title),
@@ -1187,6 +1201,8 @@ class GTMCEControllerMixin:
             if not overwrite_existing:
                 return
 
+        prepare_assets = self.tmdb_asset_preparer()
+
         def work() -> None:
             config = load_or_create_template_config(settings.template_path, settings.media_dir)
             (
@@ -1200,7 +1216,7 @@ class GTMCEControllerMixin:
             settings.output_path.parent.mkdir(parents=True, exist_ok=True)
 
             if settings.download_before_mux:
-                title, tmdb_year = download_tmdb_assets(settings, self.queue_log)
+                title, tmdb_year = prepare_assets(settings)
                 if title:
                     settings.output_path = output_path_with_optional_year(
                         tmdb_output_path(settings.media_dir, title),
@@ -1253,6 +1269,7 @@ class GTMCEControllerMixin:
                     settings.chapter_end_minutes = chapter_end
                     self.log_queue.put(("set_chapter_end_auto", chapter_end))
 
+            source_video_durations: dict[int, int] = {}
             args, missing_optional = build_mkvmerge_args(
                 config,
                 settings.media_dir,
@@ -1273,6 +1290,7 @@ class GTMCEControllerMixin:
                 cancel_event=self.cancel_event,
                 register_process=self.register_active_process,
                 unregister_process=self.unregister_active_process,
+                source_video_durations=source_video_durations,
             )
 
             self.check_cancelled()
@@ -1306,34 +1324,12 @@ class GTMCEControllerMixin:
             self.queue_log(self.tr("log_mkvmerge_command"))
             self.queue_log(command_preview(args))
 
-            process = subprocess.Popen(
+            self.run_mux_process(
                 args,
-                cwd=str(settings.media_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                **subprocess_common_kwargs(),
-                bufsize=1,
-                env=third_party_subprocess_env(),
-                executable=third_party_subprocess_executable(args),
+                settings.media_dir,
+                settings.output_path,
+                source_video_durations,
             )
-            self.register_active_process(process)
-            try:
-                assert process.stdout is not None
-                for line in process.stdout:
-                    if self.cancel_event.is_set():
-                        terminate_process(process)
-                        break
-                    self.queue_log(line.rstrip())
-                if self.cancel_event.is_set():
-                    terminate_process(process)
-                    raise OperationCancelled(self.tr("log_operation_cancelled"))
-                return_code = process.wait()
-            finally:
-                self.unregister_active_process(process)
-            if return_code > 1:
-                raise UserVisibleError(ui_text("error_mkvmerge_exit", code=return_code))
-            if return_code == 1:
-                self.queue_log(self.tr("log_mkvmerge_warnings"))
             self.queue_log(self.tr("log_mkv_created", path=settings.output_path))
 
         self.run_background(work, self.tr("status_creating_mkv"), operation="mux")
@@ -1485,6 +1481,8 @@ class GTMCEControllerMixin:
             if not overwrite_existing:
                 return
 
+        prepare_assets = self.tmdb_asset_preparer()
+
         def work() -> None:
             if settings.download_before_mux and not settings.tmdb_id:
                 self.queue_log(self.tr("status_finding_tmdb"))
@@ -1548,11 +1546,7 @@ class GTMCEControllerMixin:
                     )
 
                 if episode_settings.download_before_mux:
-                    output_title, _tmdb_year = download_tmdb_assets(
-                        episode_settings,
-                        self.queue_log,
-                        episode_ref=task.episode_ref,
-                    )
+                    output_title, _tmdb_year = prepare_assets(episode_settings, task.episode_ref)
                     if output_title:
                         episode_settings.output_path = tmdb_output_path(
                             episode_settings.media_dir,
@@ -1645,6 +1639,7 @@ class GTMCEControllerMixin:
                             self.log_queue.put(("set_chapter_end_auto", chapter_end))
                 episode_settings.output_path.parent.mkdir(parents=True, exist_ok=True)
                 episode_chapter_options = self.chapter_options_from_settings(episode_settings)
+                source_video_durations: dict[int, int] = {}
                 mux_args, missing_optional = build_mkvmerge_args(
                     config,
                     episode_settings.media_dir,
@@ -1665,6 +1660,7 @@ class GTMCEControllerMixin:
                     cancel_event=self.cancel_event,
                     register_process=self.register_active_process,
                     unregister_process=self.unregister_active_process,
+                    source_video_durations=source_video_durations,
                 )
 
                 generated = write_generated_config(
@@ -1695,11 +1691,11 @@ class GTMCEControllerMixin:
                     )
                 self.queue_log(self.tr("log_mkvmerge_command"))
                 self.queue_log(command_preview(mux_args))
-                self.run_cancellable_tool_process(
+                self.run_mux_process(
                     mux_args,
                     episode_settings.media_dir,
-                    "error_mkvmerge_exit",
-                    "log_mkvmerge_warnings",
+                    episode_settings.output_path,
+                    source_video_durations,
                 )
                 self.queue_log(self.tr("log_mkv_created", path=episode_settings.output_path))
                 created_outputs.append((episode_settings.output_path, task.episode_ref))
@@ -1877,12 +1873,32 @@ class GTMCEControllerMixin:
         for process in processes:
             terminate_process(process)
 
+    def run_mux_process(
+        self,
+        mux_args: list[str],
+        media_dir: Path,
+        output_path: Path,
+        source_video_durations: dict[int, int],
+    ) -> None:
+        header_args = build_mkvpropedit_video_duration_args(media_dir / output_path, source_video_durations)
+        self.run_cancellable_tool_process(mux_args, media_dir, "error_mkvmerge_exit", "log_mkvmerge_warnings")
+        if header_args:
+            self.check_cancelled()
+            # Let the header write finish if cancellation arrives during the edit.
+            self.run_cancellable_tool_process(
+                header_args, media_dir, "error_mkvpropedit_exit", "log_mkvpropedit_warnings",
+                cancellable=False,
+            )
+            self.check_cancelled()
+
     def run_cancellable_tool_process(
         self,
         args: list[str],
         cwd: Path,
         exit_error_key: str,
         warning_key: str | None = None,
+        *,
+        cancellable: bool = True,
     ) -> int:
         process = subprocess.Popen(
             args,
@@ -1894,20 +1910,22 @@ class GTMCEControllerMixin:
             env=third_party_subprocess_env(),
             executable=third_party_subprocess_executable(args),
         )
-        self.register_active_process(process)
+        if cancellable:
+            self.register_active_process(process)
         try:
             assert process.stdout is not None
             for line in process.stdout:
-                if self.cancel_event.is_set():
+                if cancellable and self.cancel_event.is_set():
                     terminate_process(process)
                     break
                 self.queue_log(line.rstrip())
-            if self.cancel_event.is_set():
+            if cancellable and self.cancel_event.is_set():
                 terminate_process(process)
                 raise OperationCancelled(self.tr("log_operation_cancelled"))
             return_code = process.wait()
         finally:
-            self.unregister_active_process(process)
+            if cancellable:
+                self.unregister_active_process(process)
 
         if return_code > 1 or (return_code == 1 and not warning_key):
             raise UserVisibleError(ui_text(exit_error_key, code=return_code))
@@ -1921,7 +1939,7 @@ class GTMCEControllerMixin:
         status: str | None = None,
         operation: str | None = None,
     ) -> bool:
-        if self.worker and self.worker.is_alive():
+        if self._busy or (self.worker and self.worker.is_alive()):
             self.show_info(
                 self.tr("dialog_in_progress_title"),
                 self.tr("dialog_in_progress_message"),

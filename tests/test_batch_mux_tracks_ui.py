@@ -8,7 +8,7 @@ import pytest
 from PySide6.QtWidgets import QApplication, QLineEdit
 
 import mkv_creator_ui as ui
-from src.gtmce import core
+from src.gtmce import controller, core
 
 
 @pytest.fixture
@@ -226,3 +226,28 @@ def test_unrelated_single_track_folder_does_not_route_to_batch(batch):
     app.open_mux_tracks_window()
     assert app.mux_tracks_tabs is None
     assert [row.path for row in app.mux_tracks_rows_by_iid.values()] == [single / "tur.ac3"]
+
+
+def test_batch_download_uses_overwrite_for_one_job(batch, monkeypatch):
+    app = batch.app
+    app.api_key_var.set("test-key")
+    app.tmdb_id_var.set("123")
+    requests = []
+
+    def download(settings, log, episode_ref, *, replace_existing, on_asset_written):
+        requests.append((episode_ref.episode, replace_existing))
+        if on_asset_written is not None:
+            on_asset_written()
+        return "", ""
+
+    monkeypatch.setattr(controller, "download_tmdb_assets", download)
+    app.overwrite_tmdb_assets_check.click()
+    for replace_existing in (True, False):
+        app.start_download()
+        app.worker.join(timeout=10)
+        assert not app.worker.is_alive()
+        app._drain_log_queue()
+        assert not batch.errors
+        assert not app.overwrite_tmdb_assets_check.isChecked()
+        assert requests == [(episode, replace_existing) for episode in range(1, 5)]
+        requests.clear()

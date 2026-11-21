@@ -2,6 +2,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -47,6 +48,7 @@ def test_extract_saves_timestamps_for_selected_audio_video_only(tmp_path, mux_to
     ]
     assert items[1].codec_delay_ns == 5333333
     assert items[0].source_fps == "25"
+    assert items[0].source_default_duration_ns == 40000000
 
 
 def test_auto_fps_keeps_source_timing_and_user_delay_is_added(tmp_path, mux_tools):
@@ -69,9 +71,14 @@ def test_auto_fps_keeps_source_timing_and_user_delay_is_added(tmp_path, mux_tool
 def test_explicit_different_fps_retains_manual_override(tmp_path, mux_tools):
     saved_track(tmp_path, "und.25.h264", fps="25")
     config = core.create_auto_template_config(tmp_path)
-    args, _ = core.build_mkvmerge_args(config, tmp_path, tmp_path / "out.mkv", "", False, video_fps="24")
+    durations = {}
+    args, _ = core.build_mkvmerge_args(
+        config, tmp_path, tmp_path / "out.mkv", "", False, video_fps="24",
+        source_video_durations=durations,
+    )
     assert "--timestamps" not in args
     assert args[args.index("--default-duration") + 1] == "0:24fps"
+    assert not durations
 
 
 @pytest.mark.parametrize("change", ["media", "timestamps", "manifest", "append"])
@@ -175,6 +182,60 @@ def probe_packets(path):
         "ffprobe", "-v", "error", "-show_packets", "-show_data_hash", "sha256",
         "-show_entries", "packet=stream_index,pts_time,data_hash", "-of", "json", path,
     ))["packets"]
+
+
+@pytest.mark.skipif(
+    any(shutil.which(tool) is None for tool in ("ffmpeg", "ffprobe", "mkvmerge", "mkvextract", "mkvpropedit")),
+    reason="Media tools not installed",
+)
+@pytest.mark.parametrize(
+    ("rate", "fps", "duration_ns", "legacy_manifest"),
+    [("24", "24", 41666666, False), ("24000/1001", "23.976", 41708333, True)],
+)
+def test_mux_restores_source_fps_header_without_changing_pts(
+    tmp_path, mux_tools, rate, fps, duration_ns, legacy_manifest,
+):
+    source = tmp_path / "source.mkv"
+    run(
+        "ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+        f"testsrc2=size=160x90:rate={rate}:duration=3", "-c:v", "libx264", source,
+    )
+    payload = json.loads(run("mkvmerge", "-J", source))
+    items = core.build_extract_items(payload, source)
+    folder = tmp_path / "tracks"
+    run(*core.build_mkvextract_args(source, folder, items))
+    core.write_extracted_track_timing(folder, items)
+    if legacy_manifest:
+        manifest_path = core.extracted_track_timing_manifest_path(folder / items[0].output_name)
+        manifest = json.loads(manifest_path.read_text())
+        manifest.pop("source_default_duration_ns")
+        manifest_path.write_text(json.dumps(manifest))
+
+    output_name = Path("output.mkv")
+    config = core.create_auto_template_config(folder)
+    durations = {}
+    args, _ = core.build_mkvmerge_args(
+        config, folder, output_name, "", False, video_fps=fps, source_video_durations=durations,
+    )
+    assert durations == {1: duration_ns}
+    controller = GTMCEControllerMixin()
+    controller.cancel_event = Event()
+    controller.queue_log = lambda _message: None
+    cancellable_tools = []
+    controller.register_active_process = lambda process: cancellable_tools.append(process.args[0])
+    controller.unregister_active_process = lambda _process: None
+    controller.run_mux_process(args, folder, output_name, durations)
+    assert cancellable_tools == ["mkvmerge"]
+
+    output = folder / output_name
+    video = json.loads(run("mkvmerge", "-J", output))["tracks"][0]
+    assert video["properties"]["default_duration"] == duration_ns
+    reported_fps = run(
+        "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate",
+        "-of", "default=noprint_wrappers=1:nokey=1", output,
+    ).strip()
+    assert reported_fps == ("24/1" if rate == "24" else rate)
+    assert [p["pts_time"] for p in probe_packets(output)] == [p["pts_time"] for p in probe_packets(source)]
 
 
 @pytest.mark.skipif(any(shutil.which(tool) is None for tool in ("ffmpeg", "ffprobe", "mkvmerge", "mkvextract")), reason="Media tools not installed")
